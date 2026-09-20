@@ -140,8 +140,14 @@ describe("desktop Codex subagent routing broker", () => {
     ).toEqual({ model: "gpt-5.6-sol", effort: "high" });
     const request = decide.mock.calls[0]?.[0];
     expect(request.prompt).toBe("a".repeat(20000) + " password=[redacted]");
-    expect(request.context.originalTask).not.toContain("secret-value");
-    expect(request.context.history[0].text).toBe("Parent context");
+    expect(request.context.originalTask).toBe(request.prompt);
+    expect(request.context.history).toBeUndefined();
+    expect(request.context.currentModel).toBeUndefined();
+    expect(request.context.target).toEqual({
+      kind: "independent_child",
+      inheritedContext: "bounded",
+    });
+    expect(request.context.missingContext).toHaveLength(1);
     expect(request.context.failure).toBeUndefined();
   });
   it("context-only updates preserve pending selections and accounting", async () => {
@@ -211,24 +217,89 @@ describe("desktop Codex subagent routing broker", () => {
       costUsd: success.costUsd,
     });
   });
-  it("rejects oversized total context visibly without a router call", async () => {
-    const { broker, post, decide, onDecision } = await setup();
+  it("does not mix an oversized parent snapshot into a standalone child", async () => {
+    const { broker, post, decide } = await setup();
     broker.setPolicy({
       ...policy,
       context: {
-        existingSession: false,
-        hasAttachments: false,
-        interactionMode: "subagent",
+        existingSession: true,
+        hasAttachments: true,
+        interactionMode: "default",
         originalTask: "x".repeat(240000),
+        currentModel: "gpt-6-astra",
+        failure: { unresolved: true, signals: ["failed"], model: "gpt-6-astra", effort: "xhigh" },
       },
     });
     expect(
       await (
-        await post({ threadId: "thread", providerInstanceId: "codex-local", taskPrompt: "Review" })
+        await post({
+          threadId: "thread",
+          providerInstanceId: "codex-local",
+          taskPrompt: "Review parser",
+          forkTurns: "none",
+        })
       ).json(),
-    ).toEqual({ model: null });
+    ).toEqual({ model: "gpt-strong" });
+    expect(decide.mock.calls[0]?.[0].context).toMatchObject({
+      originalTask: "Review parser",
+      target: { kind: "independent_child", inheritedContext: "none" },
+      historyCompleteness: "complete",
+      selectionSource: "agent_default",
+      hasAttachments: false,
+    });
+    expect(decide.mock.calls[0]?.[0].context.missingContext).toBeUndefined();
+    expect(decide.mock.calls[0]?.[0].context.failure).toBeUndefined();
+    expect(decide.mock.calls[0]?.[0].context.currentModel).toBeUndefined();
+  });
+  it("preserves explicit proposed selections and rejects full forks at the broker boundary", async () => {
+    const { broker, post, decide } = await setup();
+    broker.setPolicy(policy);
+    for (const proposal of [
+      { proposedModel: "gpt-6-astra", proposedEffort: "xhigh" },
+      { proposedModel: "gpt-5.6-luna" },
+      { proposedEffort: "high" },
+      { forkTurns: "all" },
+    ]) {
+      expect(
+        await (
+          await post({
+            threadId: "thread",
+            providerInstanceId: "codex-local",
+            taskPrompt: "Review",
+            ...proposal,
+          })
+        ).json(),
+      ).toEqual({ model: null });
+    }
     expect(decide).not.toHaveBeenCalled();
-    expect(onDecision.mock.calls[0]?.[0].result.error).toContain("context limit");
+  });
+  it("does not apply non-route, low-confidence or errored choices and preserves accounting", async () => {
+    for (const change of [
+      { policyOutcome: "review" },
+      { policyOutcome: "needs_context" },
+      { policyOutcome: "unavailable" },
+      { confidence: 0.49 },
+      { admissibleCandidateKeys: ["c0"] },
+      { error: "Incomplete response" },
+    ]) {
+      const { broker, post, onDecision } = await setup(
+        vi.fn().mockResolvedValue({ ...success, ...change }),
+      );
+      broker.setPolicy(policy);
+      expect(
+        await (
+          await post({
+            threadId: "thread",
+            providerInstanceId: "codex-local",
+            taskPrompt: "Review",
+          })
+        ).json(),
+      ).toEqual({ model: null });
+      expect(onDecision.mock.calls.at(-1)?.[0].result).toMatchObject({
+        choice: null,
+        costUsd: success.costUsd,
+      });
+    }
   });
   it("reports opt-in state without making Jev calls", async () => {
     const { broker, post, decide } = await setup();

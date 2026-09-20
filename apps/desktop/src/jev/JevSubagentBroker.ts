@@ -18,7 +18,13 @@ import * as Schema from "effect/Schema";
 import { failedJevDecision } from "./decision.ts";
 
 const Identity = Schema.Struct({ threadId: Schema.String, providerInstanceId: Schema.String });
-const SpawnRequest = Schema.Struct({ ...Identity.fields, taskPrompt: Schema.String });
+const SpawnRequest = Schema.Struct({
+  ...Identity.fields,
+  taskPrompt: Schema.String,
+  proposedModel: Schema.optional(Schema.Unknown),
+  proposedEffort: Schema.optional(Schema.Unknown),
+  forkTurns: Schema.optional(Schema.String),
+});
 const StatusRequest = Schema.Struct({ ...Identity.fields, error: Schema.String });
 const decodeIdentity = Schema.decodeUnknownSync(Identity);
 const decodeSpawn = Schema.decodeUnknownSync(SpawnRequest);
@@ -129,18 +135,31 @@ export async function createJevSubagentBroker(options: {
         respond(400, {});
         return;
       }
-      // The desktop UI registers the allowlist; hook callers cannot expand it.
-      // A parent's failed approach is context, not a capability floor for an unrelated child.
-      const { failure: _parentFailure, ...parentContext } = policy.context ?? {
-        existingSession: false,
-        hasAttachments: false,
-        interactionMode: "subagent",
-      };
+      // Explicit arguments have no trusted provenance; never rewrite a possible user choice.
+      if (
+        "proposedModel" in body ||
+        "proposedEffort" in body ||
+        (body.forkTurns !== undefined &&
+          body.forkTurns !== "none" &&
+          !/^[1-9][0-9]*$/.test(body.forkTurns))
+      ) {
+        respond(200, { model: null });
+        return;
+      }
+      // The registered parent snapshot is not the child's inherited transcript. In particular,
+      // parent failures and the parent's selected model cannot establish a child capability floor.
+      const inheritedContext = body.forkTurns === "none" ? "none" : "bounded";
       const childContext = sanitizeJevContext({
-        ...parentContext,
         existingSession: false,
         hasAttachments: false,
         interactionMode: "subagent",
+        originalTask: body.taskPrompt,
+        target: { kind: "independent_child", inheritedContext },
+        selectionSource: "agent_default",
+        historyCompleteness: inheritedContext === "none" ? "complete" : "missing",
+        ...(inheritedContext === "bounded"
+          ? { missingContext: ["The child's inherited transcript is unavailable to the router."] }
+          : {}),
       });
       const candidates = policy.candidates.map((candidate, index) => ({
         ...candidate,
@@ -193,7 +212,15 @@ export async function createJevSubagentBroker(options: {
           !cancelled && samePool(current, policy) && index >= 0
             ? policy.candidates[index]
             : undefined;
-        const allowed = selected && isJevCandidateAllowed(selected, childContext);
+        const mayRoute =
+          (result.policyOutcome === undefined || result.policyOutcome === "route") &&
+          typeof result.confidence === "number" &&
+          Number.isFinite(result.confidence) &&
+          result.confidence >= 0.5 &&
+          result.error === null &&
+          (result.admissibleCandidateKeys === undefined ||
+            (result.choice !== null && result.admissibleCandidateKeys.includes(result.choice)));
+        const allowed = selected && mayRoute && isJevCandidateAllowed(selected, childContext);
         const effectiveResult =
           cancelled || !samePool(current, policy)
             ? {
@@ -201,20 +228,25 @@ export async function createJevSubagentBroker(options: {
                 choice: null,
                 error: "Subagent routing cancelled or disabled; Codex retained its original model.",
               }
-            : result.choice !== null && !allowed
-              ? {
-                  ...result,
-                  choice: null,
-                  error:
-                    "Unsupported subagent model and effort pair; Codex retained its original model.",
-                }
-              : result;
+            : !mayRoute
+              ? { ...result, choice: null }
+              : result.choice !== null && !allowed
+                ? {
+                    ...result,
+                    choice: null,
+                    error:
+                      "Unsupported subagent model and effort pair; Codex retained its original model.",
+                  }
+                : result;
         options.onDecision({ ...identity, request, result: effectiveResult });
         respond(
           200,
           selected && allowed
             ? {
                 model: selected.model ?? selected.key,
+                ...(result.policyOutcome !== undefined
+                  ? { policyOutcome: result.policyOutcome }
+                  : {}),
                 ...(selected.effort !== undefined ? { effort: selected.effort } : {}),
               }
             : { model: null },

@@ -24,7 +24,7 @@ type Case = {
   split?: string;
   prompt: string;
   context: JevRoutingContext;
-  expected: { preferred: Pair; acceptable: Pair[]; rationale: string };
+  expected: { preferred: Pair; acceptable: Pair[]; rationale: string; decision?: string };
 };
 const args = process.argv.slice(2);
 const arg = (name: string, fallback: string) => {
@@ -36,6 +36,7 @@ const output = NodePath.resolve(arg("--output", "JEV_ROUTING_RESULTS.json"));
 const limit = Number(arg("--max-calls", "56"));
 const budget = Number(arg("--budget-usd", "0.25"));
 const dry = args.includes("--dry-run");
+const baseline = args.includes("--baseline-v3");
 if (
   !Number.isInteger(limit) ||
   limit < 1 ||
@@ -61,7 +62,8 @@ const requests = cases.map((entry) => {
   if (typeof entry.prompt !== "string" || !entry.context || typeof entry.id !== "string")
     throw new Error("Invalid evaluation case.");
   return {
-    requestId: NodeCrypto.randomUUID(),
+    requestId: `jev-eval-${NodeCrypto.randomUUID()}`,
+    ...(baseline ? { evaluationPolicy: "baseline-v3" as const } : {}),
     prompt: entry.prompt,
     context: entry.context,
     candidates: allCandidates.filter((candidate) =>
@@ -77,7 +79,7 @@ if (dry) {
       maxPayloadChars: Math.max(
         ...requests.map((request) => JSON.stringify(buildJevDecisionBody(request)).length),
       ),
-      policy: JEV_POLICY_VERSION,
+      policy: baseline ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
       candidateCounts: [...new Set(requests.map((r) => r.candidates.length))],
       expectedLabelsSent: false,
     }),
@@ -99,7 +101,7 @@ let unknown = 0;
 const start = NodePerfHooks.performance.now();
 const same = (a: Pair | null, b: Pair) => a?.model === b.model && a.effort === b.effort;
 const meta = () => ({
-  policy: JEV_POLICY_VERSION,
+  policy: baseline ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
   evaluatedAt: new Date().toISOString(),
   corpus: corpusPath,
   maximumCalls: limit,
@@ -131,9 +133,11 @@ for (const [index, entry] of cases.entries()) {
   const automatic = request.candidates.find((candidate) => candidate.key === result?.choice);
   const autoPair = automatic
     ? { model: automatic.model, effort: automatic.effort }
-    : entry.context.currentModel && entry.context.currentEffort
-      ? { model: entry.context.currentModel, effort: entry.context.currentEffort }
-      : null;
+    : result?.policyOutcome
+      ? null
+      : entry.context.currentModel && entry.context.currentEffort
+        ? { model: entry.context.currentModel, effort: entry.context.currentEffort }
+        : null;
   rows.push({
     id: entry.id,
     category: entry.category,
@@ -143,7 +147,17 @@ for (const [index, entry] of cases.entries()) {
     recommended: pair,
     automaticSelection: autoPair,
     matchesPreferred: same(pair, entry.expected.preferred),
-    matchesAcceptable: entry.expected.acceptable.some((expected) => same(pair, expected)),
+    matchesAcceptable:
+      entry.expected.decision === "needs_context"
+        ? null
+        : entry.expected.acceptable.some((expected) => same(pair, expected)),
+    matchesDecision: entry.expected.decision
+      ? (result?.policyOutcome ?? (result?.choice ? "route" : "fallback")) ===
+        entry.expected.decision
+      : null,
+    context: request.context,
+    candidates: request.candidates,
+    arm: baseline ? "baseline-v3" : "current",
     candidateCount: request.candidates.length,
     result,
   });

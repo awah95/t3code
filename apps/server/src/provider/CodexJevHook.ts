@@ -93,6 +93,9 @@ export async function runCodexJevHook(
     !args.message.trim() ||
     args.message.length > 120_000 ||
     "resume" in args ||
+    // The hook cannot distinguish a user choice from an agent default. Preserve either.
+    "model" in args ||
+    "reasoning_effort" in args ||
     context.candidates.length === 0
   )
     return {};
@@ -120,6 +123,8 @@ export async function runCodexJevHook(
         toolUseId: "tool_use_id" in input ? input.tool_use_id : undefined,
         taskPrompt: args.message,
         proposedModel: args.model,
+        proposedEffort: args.reasoning_effort,
+        forkTurns: args.fork_turns,
         candidates: context.candidates,
       }),
     });
@@ -128,6 +133,11 @@ export async function runCodexJevHook(
     if (
       typeof result !== "object" ||
       result === null ||
+      ("policyOutcome" in result && result.policyOutcome !== "route") ||
+      ("confidence" in result &&
+        (typeof result.confidence !== "number" ||
+          !Number.isFinite(result.confidence) ||
+          result.confidence < 0.5)) ||
       !("model" in result) ||
       typeof result.model !== "string" ||
       !context.candidates.some((candidate) =>

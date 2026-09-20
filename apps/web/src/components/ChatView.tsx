@@ -121,6 +121,7 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
 import {
   decideWithJev,
+  jevPriorAttempts,
   registerJevSubagentPolicy,
   sanitizeJevPrompt,
   useJevStore,
@@ -2937,6 +2938,7 @@ export default function ChatView(props: ChatViewProps) {
       providerInstanceId: provider.instanceId,
       enabled: candidates.length > 0,
       context: buildJevContext({
+        priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
         messages: activeThread.messages.filter((message) => !message.streaming),
         prompt: "",
         current: activeThread.modelSelection,
@@ -7763,6 +7765,40 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
+    const composerImagesSnapshot = [...composerImages];
+    const composerFilesSnapshot = [...composerFiles];
+    const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
+    const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const composerPreviewAnnotationsSnapshot = structuredClone([...composerPreviewAnnotations]);
+    const composerReviewCommentsSnapshot: ReviewCommentContext[] = structuredClone([
+      ...composerReviewComments,
+    ]);
+    // Expired terminal excerpts are not sent; their chips leave the text with them.
+    const messageTextForSend = composerTerminalContexts
+      .filter((context) => !composerTerminalContextsSnapshot.includes(context))
+      .reduce(
+        (text, context) =>
+          removeInlineContextReference(text, terminalContextReference(context).contextId).prompt,
+        promptForSend,
+      )
+      .trim();
+    // Records bind attachments by the id each side knows: the local id for the optimistic
+    // row, the upload id (or local id on the data-URL path) on the wire; the server
+    // rebinds them to the persisted id.
+    const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string>) =>
+      buildMessageContext({
+        terminalContexts: composerTerminalContextsSnapshot,
+        reviewComments: composerReviewCommentsSnapshot,
+        previewAnnotations: composerPreviewAnnotationsSnapshot,
+        attachments: composerAttachmentsSnapshot.map((attachment, index) => ({
+          attachment,
+          attachmentId: attachmentIds[index] ?? attachment.id,
+        })),
+      });
+    const outgoingMessageContext = buildOutgoingMessageContext(
+      composerAttachmentsSnapshot.map((attachment) => attachment.id),
+    );
+    let jevRequestId: string | undefined;
     const jev = useJevStore.getState();
     if (isElectron && jev.enabled) {
       const environmentTarget = environmentById.get(environmentId)?.entry.target;
@@ -7785,8 +7821,11 @@ export default function ChatView(props: ChatViewProps) {
           (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
         );
         const routingContext = buildJevContext({
+          priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
           messages: activeThread.messages,
-          prompt: trimmed,
+          prompt: messageTextForSend,
+          outgoingContext: outgoingMessageContext,
+          historyCompleteness: threadHasOlderTurns(routeThreadState) ? "windowed" : "complete",
           current: ctxSelectedModelSelection,
           existingSession: activeThread.session !== null,
           hasAttachments: composerImages.length + composerFiles.length > 0,
@@ -7807,21 +7846,14 @@ export default function ChatView(props: ChatViewProps) {
           hasStartedSession: activeThread.session !== null || activeThread.messages.length > 0,
         }).filter(
           (candidate) =>
-            isJevCandidateAllowed(candidate, routingContext) &&
             !getAntigravitySendBlockReason(candidate.provider.snapshot, candidate.selection.model),
         );
-        const manual = candidates.find(
-          (candidate) =>
-            candidate.selection.instanceId === ctxSelectedModelSelection.instanceId &&
-            candidate.selection.model === ctxSelectedModel &&
-            candidate.effort === routingContext.currentEffort,
-        );
-        const fallback = manual;
         if (candidates.length === 0) {
           useJevStore.setState({
             notice:
-              "Jev Auto skipped: no supported model and effort pairs are available. Keeping your selected model.",
+              "Jev Auto skipped: no supported model and effort pairs are available. Sending paused.",
           });
+          return;
         } else {
           const revision = useJevStore.getState().revision;
           const drainGeneration = useQueuedMessageStore.getState().drainGeneration;
@@ -7829,10 +7861,11 @@ export default function ChatView(props: ChatViewProps) {
           const promptBeforeRouting = promptRef.current;
           sendInFlightRef.current = true;
           let decision;
+          jevRequestId = randomUUID();
           try {
             decision = await decideWithJev({
-              requestId: randomUUID(),
-              prompt: sanitizeJevPrompt(trimmed),
+              requestId: jevRequestId,
+              prompt: sanitizeJevPrompt(messageTextForSend),
               candidates: candidates.map(({ key, description, model, effort }) => ({
                 key,
                 model,
@@ -7862,14 +7895,55 @@ export default function ChatView(props: ChatViewProps) {
             });
             return;
           }
-          const chosen =
-            candidates.find((candidate) => candidate.key === decision?.choice) ?? fallback;
-          if (!chosen) {
+          if (!decision) {
+            if (queuedMessage && activeThreadKey)
+              useQueuedMessageStore.getState().holdAtFront(activeThreadKey, queuedMessage);
+            return;
+          }
+          const userDecision = useJevStore
+            .getState()
+            .calls.find((call) => call.id === jevRequestId)?.decision;
+          const userApprovedCurrent = userDecision === "current";
+          const userOverride = userApprovedCurrent || userDecision === "alternative";
+          const chosen = candidates.find((candidate) => candidate.key === decision.choice);
+          if (userApprovedCurrent) {
+            const liveProvider = appAtomRegistry
+              .get(environmentServerConfigsAtom)
+              .get(environmentId)
+              ?.providers?.find(
+                (provider) => provider.instanceId === ctxSelectedModelSelection.instanceId,
+              );
+            const liveModel = liveProvider?.models.find(
+              (model) => model.slug === ctxSelectedModelSelection.model,
+            );
+            const descriptor = liveModel?.capabilities?.optionDescriptors?.find(
+              (option) => option.id === "reasoningEffort",
+            );
+            if (
+              !liveProvider ||
+              !liveModel ||
+              liveProvider.status !== "ready" ||
+              liveProvider.enabled === false ||
+              liveProvider.availability === "unavailable" ||
+              getAntigravitySendBlockReason(liveProvider, ctxSelectedModelSelection.model) ||
+              (routingContext.currentEffort !== undefined &&
+                (!descriptor ||
+                  descriptor.type !== "select" ||
+                  !descriptor.options.some((option) => option.id === routingContext.currentEffort)))
+            ) {
+              setThreadError(
+                threadIdForSend,
+                "The current model or effort is no longer available. Refresh your selection before sending.",
+              );
+              return;
+            }
+            // Explicit approval retains the exact selection, including provider-default effort.
+            ctxSelectedProviderModels = liveProvider.models;
+          } else if (!chosen) {
             useJevStore.setState({
-              notice:
-                decision?.error ??
-                "Jev routing unavailable. Keeping your selected model and effort.",
+              notice: decision?.error ?? "No supported selection was approved. Sending paused.",
             });
+            return;
           } else {
             // Recheck availability after the network await, before formatting or dispatching.
             const liveProvider = appAtomRegistry
@@ -7895,7 +7969,7 @@ export default function ChatView(props: ChatViewProps) {
               !liveDescriptor ||
               liveDescriptor.type !== "select" ||
               !liveDescriptor.options.some((option) => option.id === chosen.effort) ||
-              !isJevCandidateAllowed(chosen, routingContext)
+              (!userOverride && !isJevCandidateAllowed(chosen, routingContext))
             ) {
               setThreadError(
                 threadIdForSend,
@@ -7976,8 +8050,13 @@ export default function ChatView(props: ChatViewProps) {
               providerInstanceId: provider.instanceId,
               enabled: candidates.length > 0,
               context: buildJevContext({
+                priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
                 messages: activeThread.messages,
-                prompt: trimmed,
+                prompt: messageTextForSend,
+                outgoingContext: outgoingMessageContext,
+                historyCompleteness: threadHasOlderTurns(routeThreadState)
+                  ? "windowed"
+                  : "complete",
                 current: ctxSelectedModelSelection,
                 existingSession: activeThread.session !== null,
                 interactionMode: sendInteractionMode,
@@ -8010,37 +8089,6 @@ export default function ChatView(props: ChatViewProps) {
         }
       }
     }
-    const composerImagesSnapshot = [...composerImages];
-    const composerFilesSnapshot = [...composerFiles];
-    const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
-    const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
-    const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
-    const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
-    // Expired terminal excerpts are not sent; their chips leave the text with them.
-    const messageTextForSend = composerTerminalContexts
-      .filter((context) => !composerTerminalContextsSnapshot.includes(context))
-      .reduce(
-        (text, context) =>
-          removeInlineContextReference(text, terminalContextReference(context).contextId).prompt,
-        promptForSend,
-      )
-      .trim();
-    // Records bind attachments by the id each side knows: the local id for the optimistic
-    // row, the upload id (or local id on the data-URL path) on the wire; the server
-    // rebinds them to the persisted id.
-    const buildOutgoingMessageContext = (attachmentIds: ReadonlyArray<string>) =>
-      buildMessageContext({
-        terminalContexts: composerTerminalContextsSnapshot,
-        reviewComments: composerReviewCommentsSnapshot,
-        previewAnnotations: composerPreviewAnnotationsSnapshot,
-        attachments: composerAttachmentsSnapshot.map((attachment, index) => ({
-          attachment,
-          attachmentId: attachmentIds[index] ?? attachment.id,
-        })),
-      });
-    const outgoingMessageContext = buildOutgoingMessageContext(
-      composerAttachmentsSnapshot.map((attachment) => attachment.id),
-    );
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
@@ -8778,6 +8826,16 @@ export default function ChatView(props: ChatViewProps) {
         }
       }
       const startResult = await startPromise;
+      if (jevRequestId)
+        useJevStore.getState().recordDispatch(jevRequestId, {
+          model: ctxSelectedModelSelection.model,
+          effort: ctxSelectedModelSelection.options?.find(
+            (option) => option.id === "reasoningEffort",
+          )?.value as string | undefined,
+          threadId: threadIdForSend,
+          messageId: messageIdForSend,
+          succeeded: startResult._tag !== "Failure",
+        });
       if (startResult._tag === "Failure") {
         failure = startResult;
       } else {

@@ -122,7 +122,7 @@ describe("Jev OpenRouter transport", () => {
       "gpt-6-astra",
     ]);
     expect(body.state.budgetStatus).toContain("stale");
-    expect(body.questions.model!.instructions).toContain("lowest expected total");
+    expect(body.questions.model!.instructions).toContain("Read-only access");
   });
   it("blocks an unresolved failure downgrade while retaining charged usage", async () => {
     const transport = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
@@ -169,8 +169,8 @@ describe("Jev OpenRouter transport", () => {
       new AbortController().signal,
       transport,
     );
-    expect(result).toMatchObject({ choice: null, inputTokens: 1000, costKind: "estimated" });
-    expect(result.error).toContain("downgrade");
+    expect(result).toMatchObject({ choice: "strong", inputTokens: 1000, costKind: "estimated" });
+    expect(result.reasons).toContain("proposal_adjusted_by_capability_policy");
   });
   it("does not send silently truncated oversized input", async () => {
     const transport = vi.fn<typeof fetch>();
@@ -181,7 +181,7 @@ describe("Jev OpenRouter transport", () => {
       transport,
     );
     expect(transport).not.toHaveBeenCalled();
-    expect(result.error).toContain("No task text was silently truncated");
+    expect(result.error).toContain("silently truncated");
   });
   it("uses the decision endpoint and keeps the key out of the body and result", async () => {
     const transport = vi
@@ -238,5 +238,39 @@ describe("Jev OpenRouter transport", () => {
         (await requestJevDecision(request, "key", new AbortController().signal, transport)).choice,
       ).toBeNull();
     }
+  });
+});
+
+describe("wire provenance and conservative context bounds", () => {
+  it("keeps the exact answering model revision", () => {
+    expect(parse(responseBody()).responseModel).toBe("jev-1.13.0");
+  });
+  it("freezes v3 questions for a paired controlled comparison", () => {
+    const paired: JevRouteRequest = {
+      ...request,
+      candidates: [{ key: "l", model: "gpt-5.6-luna", effort: "low", description: "" }],
+    };
+    const baseline = buildJevDecisionBody({ ...paired, evaluationPolicy: "baseline-v3" });
+    const current = buildJevDecisionBody(paired);
+    expect(baseline.questions.task_kind).toBeDefined();
+    expect(baseline.questions.context_status).toBeUndefined();
+    expect(current.questions.context_status).toBeDefined();
+    expect(current.questions.model!.instructions).toContain("Unknown evidence");
+  });
+  it("rejects an over-budget Unicode state before making a paid request", async () => {
+    const transport = vi.fn<typeof fetch>();
+    const result = await requestJevDecision(
+      { ...request, prompt: "界".repeat(11_000) },
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(transport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      policyOutcome: "needs_context",
+      costUsd: 0,
+      costKind: "estimated",
+    });
+    expect(result.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 });

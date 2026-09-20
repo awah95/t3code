@@ -40,6 +40,50 @@ export function JevControls() {
   );
 }
 
+function proposalLabel(call: JevCall) {
+  const candidate = call.request.candidates.find(
+    (entry) => entry.key === call.result?.proposedChoice,
+  );
+  return candidate ? `${candidate.model} / ${candidate.effort ?? "default effort"}` : "unavailable";
+}
+
+function callModelLabel(call: JevCall) {
+  if (call.dispatch) {
+    return `${call.dispatch.model} / ${call.dispatch.effort ?? "default"}`;
+  }
+  if (call.decision === "current") {
+    return `${call.request.context.currentModel ?? "current model"} / ${call.request.context.currentEffort ?? "default"}`;
+  }
+  const choice = call.approvedChoice ?? call.result?.recommendedChoice ?? call.result?.choice;
+  const candidate = call.request.candidates.find((entry) => entry.key === choice);
+  if (!candidate) return "No model selected";
+  const label = `${candidate.model ?? candidate.key} / ${candidate.effort ?? "default"}`;
+  return call.decision || call.status === "routed" ? label : `Suggested: ${label}`;
+}
+
+function reasonLabel(reason: string) {
+  const labels: Record<string, string> = {
+    established_procedure_and_direct_check: "The procedure and direct check are established.",
+    local_judgment: "Some local judgment is required.",
+    approach_requires_discovery: "The approach must be investigated.",
+    evidence_synthesis: "The task requires combining evidence into a coherent understanding.",
+    conflicting_evidence: "Conflicting evidence must be reconciled.",
+    local_correctness_reasoning: "Correctness requires local reasoning.",
+    interacting_correctness_invariant: "Correctness depends on interacting components or states.",
+    verification_must_be_designed: "The verification method must be designed.",
+    high_consequence: "A wrong result could have serious consequences.",
+    proposal_adjusted_by_capability_policy:
+      "The recommendation was adjusted to meet the task requirements.",
+    uncertain_task_demands: "The task demands are uncertain; review before sending.",
+    failed_attempt_model_unknown: "The model used for the failed attempt is unknown.",
+    context_omissions_require_review: "Some context is unavailable; review before sending.",
+    missing_material_context: "Essential task context is missing.",
+    no_admissible_pair: "No available pair meets the task requirements.",
+    invalid_assessment: "Jev did not return a complete valid assessment.",
+  };
+  return labels[reason] ?? reason;
+}
+
 function JevReviewCard({ call }: { call: JevCall }) {
   const [alternative, setAlternative] = useState("");
   const { resolveReview, cancelPending } = useJevStore();
@@ -62,9 +106,19 @@ function JevReviewCard({ call }: { call: JevCall }) {
           : "No valid recommendation"}
       </p>
       <p>
-        Selection confidence: {call.result?.confidence?.toFixed(2) ?? "unavailable"}. This is not
-        task success probability.
+        Model confidence: {call.result?.modelConfidence?.toFixed(2) ?? "unavailable"}; effort
+        confidence: {call.result?.effortConfidence?.toFixed(2) ?? "unavailable"}. This is not task
+        success probability.
       </p>
+      <p>Task-assessment confidence: {call.result?.confidence?.toFixed(2) ?? "unavailable"}</p>
+      <p>Policy outcome: {call.result?.policyOutcome ?? "unknown"}</p>
+      <p>Model proposal: {proposalLabel(call)}</p>
+      {call.result?.reasons?.map((reason) => (
+        <p key={reason}>{reasonLabel(reason)}</p>
+      ))}
+      {call.request.context.missingContext?.map((missing) => (
+        <p key={missing}>Missing: {missing}</p>
+      ))}
       {call.result?.explanation && <p>{call.result.explanation}</p>}
       <p>
         Current: {call.request.context.currentModel ?? "your selected model"} ·{" "}
@@ -73,7 +127,13 @@ function JevReviewCard({ call }: { call: JevCall }) {
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
-          disabled={!suggested}
+          disabled={
+            !suggested ||
+            Boolean(
+              call.result?.admissibleCandidateKeys &&
+              !call.result.admissibleCandidateKeys.includes(suggested.key),
+            )
+          }
           onClick={() => resolveReview(call.id, "suggestion")}
         >
           Use suggestion
@@ -191,11 +251,14 @@ export function JevPanel() {
         .map((call) => (
           <JevReviewCard key={call.id} call={call} />
         ))}
-      <p className="text-xs text-muted-foreground">
-        Latest 50 calls, kept in memory. Full current prompts, up to ten recent chat exchanges,
-        original task and agreed plan context are shared with OpenRouter. Common credentials are
-        redacted; review sensitive content before sending.
-      </p>
+      <details className="text-xs text-muted-foreground">
+        <summary className="cursor-pointer">Context sharing &amp; log retention</summary>
+        <p className="mt-2">
+          Latest 50 calls, kept in memory. Full current prompts, up to ten recent chat exchanges,
+          task provenance, attached textual evidence and agreed plan context are shared with
+          OpenRouter. Common credentials are redacted; review sensitive content before sending.
+        </p>
+      </details>
       <details className="text-xs">
         <summary>Routing policy · {JEV_POLICY_VERSION}</summary>
         <p>
@@ -218,15 +281,29 @@ export function JevPanel() {
       </label>
       <p className="text-xs text-muted-foreground">
         Requires Jev Auto and a local Codex thread. Enabling trusts T3's exact session-scoped
-        routing hook in Codex settings. Subagent task text and parent chat context are sent to
-        OpenRouter. Turning either toggle off stops routing calls. Full-history forks retain their
-        parent model. Child routing remains automatic with its confidence guard, even in Guided
-        mode; guided review applies to your messages. Other providers are unsupported.
+        routing hook in Codex settings. The independent child task and declared context scope are
+        sent to OpenRouter. Explicit child model or effort choices are preserved. Turning either
+        toggle off stops routing calls. Full-history forks retain their parent model. Child routing
+        remains automatic with its policy guard, even in Guided mode; guided review applies to your
+        messages. Other providers are unsupported.
       </p>
-      <p className="text-xs">
-        Session: billed ${billedUsd.toFixed(8)} · estimated ${estimatedUsd.toFixed(8)} ·{" "}
-        {unknownCostCalls} calls with unknown cost. Totals survive clearing the log.
-      </p>
+      <div className="space-y-2">
+        <dl aria-label="Jev session statistics" className="grid grid-cols-2 gap-2 text-xs">
+          <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
+            <dt className="text-muted-foreground">Billed</dt>
+            <dd className="mt-1 font-medium tabular-nums">${billedUsd.toFixed(8)}</dd>
+          </div>
+          <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
+            <dt className="text-muted-foreground">Estimated</dt>
+            <dd className="mt-1 font-medium tabular-nums">${estimatedUsd.toFixed(8)}</dd>
+          </div>
+          <div className="col-span-2 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
+            <dt className="text-muted-foreground">Calls with unknown cost</dt>
+            <dd className="font-medium tabular-nums">{unknownCostCalls}</dd>
+          </div>
+        </dl>
+        <p className="text-xs text-muted-foreground">Session totals survive clearing the log.</p>
+      </div>
       {notice && (
         <p role="status" className="text-xs">
           {notice}
@@ -259,18 +336,34 @@ export function JevPanel() {
               : call.kind === "subagent"
                 ? "subagent · "
                 : ""}
-            {call.status} {call.result && `· ${call.result.latencyMs} ms`}
+            {call.status} {call.result && `· ${call.result.latencyMs} ms · ${callModelLabel(call)}`}
           </summary>
           {call.notice && <p className="mt-2">{call.notice}</p>}
           {(call.result?.recommendedChoice ?? call.result?.choice) && (
             <p className="mt-2">
-              Jev recommendation:{" "}
+              Policy recommendation:{" "}
               {
                 call.request.candidates.find(
                   (candidate) =>
                     candidate.key === (call.result?.recommendedChoice ?? call.result?.choice),
                 )?.description
               }
+            </p>
+          )}
+          <p className="mt-2">
+            Proposal: {proposalLabel(call)} · Policy outcome:{" "}
+            {call.result?.policyOutcome ?? "unknown"}
+          </p>
+          {call.result?.reasons?.map((reason) => (
+            <p key={reason}>{reasonLabel(reason)}</p>
+          ))}
+          {call.request.context.missingContext?.map((missing) => (
+            <p key={missing}>Missing: {missing}</p>
+          ))}
+          {call.dispatch && (
+            <p>
+              Dispatched: {call.dispatch.model} / {call.dispatch.effort ?? "default"} ·{" "}
+              {call.dispatch.succeeded ? "accepted" : "failed"}
             </p>
           )}
           {call.decision && (
@@ -306,7 +399,8 @@ export function JevPanel() {
               {call.result.costKind === "unknown"
                 ? "unknown"
                 : `${call.result.costKind} $${call.result.costUsd?.toFixed(8)}`}{" "}
-              · Confidence: {call.result.confidence ?? "unknown"} (model statistic)
+              · Model confidence: {call.result.modelConfidence ?? "unknown"} · Effort confidence:{" "}
+              {call.result.effortConfidence ?? "unknown"} (selection statistics)
             </p>
           )}
           <p className="mt-2 font-medium">Sanitized request / state</p>
@@ -371,9 +465,10 @@ export function JevSettings() {
         Jev chooses a supported Codex model and reasoning effort within your selected provider
         instance. Enable it in the chat header. OpenRouter receives the full current task, up to ten
         recent user/assistant exchanges, original task, agreed plan, failure feedback, model
-        profiles and available quota snapshots. Raw tool logs, internal reasoning and attachment
-        bodies are excluded. History may be shortened with explicit omissions; current prompts are
-        never silently shortened.
+        profiles and available quota snapshots. Attached terminal excerpts, review comments and
+        preview annotations are included. Internal reasoning and file/image bodies are excluded and
+        named as missing context. History may be shortened with explicit omissions; current prompts
+        are never silently shortened.
       </p>
       <p className="text-xs">
         {hasKey ? "API key saved" : "No API key saved"} ·{" "}

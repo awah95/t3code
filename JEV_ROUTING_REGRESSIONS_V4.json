@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "createdAt": "2026-09-20",
+  "author": {
+    "model": "gpt-6-astra",
+    "effort": "high"
+  },
+  "objective": "Choose a sufficient model and effort for first-pass completion, then reduce total time and usage including rework. Expected labels are research-informed hypotheses, not execution results.",
+  "sources": [
+    {
+      "id": "OAI-MODELS",
+      "title": "OpenAI model catalog",
+      "url": "https://developers.openai.com/api/docs/models",
+      "claim": "Astra is positioned for the most demanding work; Sol is a flagship, Terra balances intelligence and cost, Luna targets cost-sensitive workloads."
+    },
+    {
+      "id": "OAI-ASTRA",
+      "title": "GPT-6 Astra model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+      "claim": "Astra supports low, medium, high, xhigh and max; standard API input/output prices are $10/$50 per million tokens."
+    },
+    {
+      "id": "OAI-SOL",
+      "title": "GPT-5.6 Sol model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "claim": "Sol is a flagship GPT-5.6 model; standard API input/output prices are $4/$20 per million tokens."
+    },
+    {
+      "id": "OAI-TERRA",
+      "title": "GPT-5.6 Terra model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+      "claim": "Terra approximately corresponds to the earlier mini tier; standard API input/output prices are $2/$12 per million tokens."
+    },
+    {
+      "id": "OAI-LUNA",
+      "title": "GPT-5.6 Luna model",
+      "url": "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+      "claim": "Luna approximately corresponds to the earlier nano tier; standard API input/output prices are $0.20/$1.20 per million tokens."
+    },
+    {
+      "id": "OAI-EFFORT",
+      "title": "Reasoning models",
+      "url": "https://developers.openai.com/api/docs/guides/reasoning",
+      "claim": "Effort guides deliberation; lower effort generally favors speed and token economy; models adapt reasoning to tasks. Effort levels are not outcome guarantees."
+    },
+    {
+      "id": "OAI-WORK",
+      "title": "Choosing between Astra, Sol, Terra and Luna",
+      "url": "https://learn.chatgpt.com/docs/models",
+      "claim": "Luna suits clear repeatable tasks, Terra everyday judgment, Sol complex open-ended work, Astra hardest end-to-end work. Use the lowest sufficient effort; levels have no exact equivalence across generations."
+    },
+    {
+      "id": "OAI-USAGE",
+      "title": "ChatGPT Work and Codex pricing",
+      "url": "https://learn.chatgpt.com/docs/pricing",
+      "claim": "Usage varies with model, task, context, reasoning, tools, retrieval and caching. Local/cloud work share allowance and weekly limits may apply. Published five-hour ranges are estimates, not fixed limits or weekly conversion factors."
+    },
+    {
+      "id": "OAI-GUIDANCE",
+      "title": "Using GPT-6 Astra",
+      "url": "https://developers.openai.com/api/docs/guides/latest-model",
+      "claim": "Astra can use fewer output tokens on some evaluations despite higher per-token pricing; a larger model is not necessarily more expensive per completed task."
+    }
+  ],
+  "cases": [
+    {
+      "id": "JEV-003",
+      "category": "review-context",
+      "split": "development",
+      "provenance": {
+        "kind": "observed-paraphrase",
+        "source": "Read-only thread Review TPO findings files (01a0bce8-824b-7f13-9fcd-21063d66d285), preview and recent user message, 2026-09-20."
+      },
+      "prompt": "Catch up on the dirty files describing the review findings and my work so far. Let me know once you are done.",
+      "context": {
+        "existingSession": false,
+        "hasAttachments": false,
+        "interactionMode": "default",
+        "originalTask": "Local review tracker documents describe completed, deferred and still-open findings. Inspect Git status and the relevant documents; summarize the current state without implementing or publishing."
+      },
+      "expected": {
+        "preferred": {
+          "model": "gpt-5.6-terra",
+          "effort": "medium"
+        },
+        "acceptable": [
+          {
+            "model": "gpt-5.6-terra",
+            "effort": "medium"
+          },
+          {
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "low"
+          },
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "medium"
+          }
+        ],
+        "rationale": "Reading several potentially inconsistent progress documents requires synthesis, but does not yet require solving every underlying code issue.",
+        "risk": "medium",
+        "confidence": "medium"
+      },
+      "tags": ["read-only", "context-synthesis"]
+    },
+    {
+      "id": "JEV-007",
+      "category": "divi-diagnosis",
+      "split": "development",
+      "provenance": {
+        "kind": "observed-paraphrase",
+        "source": "Read-only thread Verify Forminator pro field OGs (01a0a996-4397-7a52-838d-d4dacf303533), user message, read 2026-09-20."
+      },
+      "prompt": "Verify that forms with no Pro fields never show Pro field option groups.",
+      "context": {
+        "existingSession": false,
+        "hasAttachments": false,
+        "interactionMode": "default",
+        "originalTask": "Investigate the existing Forminator/Divi issue with source and permitted focused verification. Existing explanation is unproven; compare field metadata, filtering and UI visibility across relevant form types."
+      },
+      "expected": {
+        "preferred": {
+          "model": "gpt-5.6-sol",
+          "effort": "high"
+        },
+        "acceptable": [
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "high"
+          },
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "medium"
+          },
+          {
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          },
+          {
+            "model": "gpt-6-astra",
+            "effort": "high"
+          }
+        ],
+        "rationale": "Establishing a negative claim across metadata and UI states is integration diagnosis, despite the concise prompt.",
+        "risk": "medium",
+        "confidence": "medium"
+      },
+      "tags": ["divi", "negative-invariant"]
+    },
+    {
+      "id": "JEV-012",
+      "category": "git",
+      "split": "holdout",
+      "provenance": {
+        "kind": "synthetic",
+        "source": "Synthetic controlled case authored for routing evaluation; not a past user request."
+      },
+      "prompt": "What was the last commit I made here before the broken migration, across the rebased branch and detached recovery worktree?",
+      "context": {
+        "existingSession": false,
+        "hasAttachments": false,
+        "interactionMode": "default",
+        "originalTask": "Two identities, rewritten history and a detached recovery tree are present. The user wants attribution and ordering evidence, not merely HEAD. Do not modify refs."
+      },
+      "expected": {
+        "preferred": {
+          "model": "gpt-5.6-sol",
+          "effort": "medium"
+        },
+        "acceptable": [
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "medium"
+          },
+          {
+            "model": "gpt-5.6-terra",
+            "effort": "high"
+          },
+          {
+            "model": "gpt-5.6-sol",
+            "effort": "high"
+          },
+          {
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          }
+        ],
+        "rationale": "Similar wording to the simple commit question now requires reconstructing history and resolving ambiguity.",
+        "risk": "medium",
+        "confidence": "medium"
+      },
+      "tags": ["git-complex", "contrast-001"]
+    }
+  ]
+}

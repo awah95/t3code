@@ -19,6 +19,38 @@ export const JevRoutingContext = Schema.Struct({
   existingSession: Schema.Boolean,
   hasAttachments: Schema.Boolean,
   interactionMode: Schema.String,
+  objectiveProvenance: Schema.optionalKey(
+    Schema.Literals(["user_message", "accepted_plan", "first_available", "unknown"]),
+  ),
+  historyCompleteness: Schema.optionalKey(Schema.Literals(["complete", "windowed", "missing"])),
+  missingContext: Schema.optionalKey(Schema.Array(Schema.String)),
+  evidence: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        kind: Schema.String,
+        text: Schema.String,
+        sourceTurnId: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+  priorAttempts: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        turnId: Schema.String,
+        model: Schema.optionalKey(Schema.String),
+        effort: Schema.optionalKey(Schema.String),
+        outcome: Schema.String,
+      }),
+    ),
+  ),
+  target: Schema.optionalKey(
+    Schema.Struct({
+      kind: Schema.Literals(["turn", "independent_child"]),
+      inheritedContext: Schema.Literals(["none", "bounded", "full"]),
+    }),
+  ),
+  selectionSource: Schema.optionalKey(Schema.Literals(["user", "agent_default"])),
   originalTask: Schema.optionalKey(Schema.String),
   activePlan: Schema.optionalKey(Schema.String),
   currentModel: Schema.optionalKey(Schema.String),
@@ -61,6 +93,7 @@ export type JevRoutingContext = typeof JevRoutingContext.Type;
 
 export const JevRouteRequest = Schema.Struct({
   requestId: Schema.String,
+  evaluationPolicy: Schema.optionalKey(Schema.Literal("baseline-v3")),
   prompt: Schema.String,
   candidates: Schema.Array(JevCandidate),
   context: JevRoutingContext,
@@ -88,6 +121,17 @@ export const JevRouteResult = Schema.Struct({
       }),
     ),
   ),
+  policyOutcome: Schema.optionalKey(
+    Schema.Literals(["route", "review", "needs_context", "unavailable"]),
+  ),
+  reasons: Schema.optionalKey(Schema.Array(Schema.String)),
+  admissibleCandidateKeys: Schema.optionalKey(Schema.Array(Schema.String)),
+  proposedChoice: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  modelConfidence: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  effortConfidence: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  responseModel: Schema.optionalKey(Schema.String),
+  requestFingerprint: Schema.optionalKey(Schema.String),
+  evaluationPayload: Schema.optionalKey(Schema.String),
   policyVersion: Schema.optionalKey(Schema.String),
   explanation: Schema.optionalKey(Schema.String),
 });

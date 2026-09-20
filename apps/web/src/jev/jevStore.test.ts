@@ -3,6 +3,7 @@ import type { JevRouteRequest, JevRouteResult } from "@t3tools/contracts";
 vi.mock("../env", () => ({ isElectron: true }));
 import {
   decideWithJev,
+  jevPriorAttempts,
   registerJevSubagentPolicy,
   sanitizeJevPrompt,
   useJevStore,
@@ -107,6 +108,73 @@ describe("Jev desktop routing lifecycle", () => {
     expect(window.desktopBridge?.cancelJevRoute).toHaveBeenCalledWith(request.requestId);
     resolve(result);
     expect(await pending).toBeNull();
+  });
+  it("pauses automatic sending for every nonroute policy outcome even if a choice exists", async () => {
+    useJevStore.getState().setEnabled(true);
+    for (const policyOutcome of ["review", "needs_context", "unavailable"] as const) {
+      vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
+        ...result,
+        policyOutcome,
+      });
+      const awaitingReview = new Promise<void>((resolve) => {
+        const unsubscribe = useJevStore.subscribe((state) => {
+          if (
+            state.calls.some(
+              (call) => call.id === policyOutcome && call.status === "awaiting-review",
+            )
+          ) {
+            unsubscribe();
+            resolve();
+          }
+        });
+      });
+      const pending = decideWithJev({ ...request, requestId: policyOutcome });
+      await awaitingReview;
+      expect(useJevStore.getState().panelOpen).toBe(true);
+      expect(useJevStore.getState().calls[0]?.dispatch).toBeUndefined();
+      useJevStore.getState().resolveReview(policyOutcome, "current");
+      expect((await pending)?.choice).toBeNull();
+      expect(useJevStore.getState().calls[0]?.decision).toBe("current");
+    }
+  });
+  it("records routing as a proposal until executor dispatch is acknowledged", async () => {
+    useJevStore.getState().setEnabled(true);
+    await decideWithJev(request);
+    expect(useJevStore.getState().calls[0]?.status).toBe("approved");
+    useJevStore.getState().recordDispatch(request.requestId, {
+      model: "gpt-5.6-sol",
+      effort: "high",
+      threadId: "thread",
+      succeeded: false,
+    });
+    expect(useJevStore.getState().calls[0]?.status).toBe("dispatch-failed");
+    useJevStore.getState().recordDispatch(request.requestId, {
+      model: "gpt-5.6-sol",
+      effort: "high",
+      threadId: "thread",
+      succeeded: true,
+    });
+    expect(useJevStore.getState().calls[0]?.status).toBe("routed");
+  });
+  it("recovers an actual pair only from the same thread and acknowledged message turn", async () => {
+    useJevStore.getState().setEnabled(true);
+    await decideWithJev(request);
+    const dispatch = {
+      model: "gpt-5.6-terra",
+      effort: "medium",
+      threadId: "thread",
+      messageId: "sent-message",
+      succeeded: true,
+    };
+    useJevStore.getState().recordDispatch(request.requestId, dispatch);
+    expect(jevPriorAttempts("other-thread", [{ id: "sent-message", turnId: "turn" }])).toEqual([]);
+    expect(jevPriorAttempts("thread", [{ id: "other-message", turnId: "turn" }])).toEqual([]);
+    expect(jevPriorAttempts("thread", [{ id: "sent-message", turnId: null }])).toEqual([]);
+    expect(jevPriorAttempts("thread", [{ id: "sent-message", turnId: "turn" }])).toEqual([
+      { turnId: "turn", model: "gpt-5.6-terra", effort: "medium", outcome: "dispatch_accepted" },
+    ]);
+    useJevStore.getState().recordDispatch(request.requestId, { ...dispatch, succeeded: false });
+    expect(jevPriorAttempts("thread", [{ id: "sent-message", turnId: "turn" }])).toEqual([]);
   });
   it("sanitizes common credentials without truncating current prompts", () => {
     const raw =
@@ -259,6 +327,22 @@ describe("guided review", () => {
     useJevStore.getState().resolveReview("test", "current");
     expect((await pending)?.choice).toBeNull();
     expect(useJevStore.getState().calls[0]?.decision).toBe("current");
+  });
+  it("rejects inadmissible suggestions but accepts an explicit alternative override", async () => {
+    vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
+      ...result,
+      recommendedChoice: "one",
+      admissibleCandidateKeys: [],
+      policyOutcome: "review",
+    });
+    const waiting = reviewed();
+    const pending = decideWithJev(request);
+    await waiting;
+    useJevStore.getState().resolveReview("test", "suggestion");
+    expect(useJevStore.getState().calls[0]?.status).toBe("awaiting-review");
+    useJevStore.getState().resolveReview("test", "alternative", "one");
+    expect((await pending)?.choice).toBe("one");
+    expect(useJevStore.getState().calls[0]?.notice).toContain("user bypasses routing policy");
   });
   it("cancels a waiting review on mode change without dispatching", async () => {
     const waiting = reviewed();

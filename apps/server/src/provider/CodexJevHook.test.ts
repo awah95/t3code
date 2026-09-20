@@ -22,7 +22,6 @@ const input = {
     message: "Review parser",
     task_name: "review",
     fork_turns: "none",
-    model: "model-b",
   },
 };
 const metadata = {
@@ -121,7 +120,7 @@ describe("Codex Jev hook", () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
-  it("routes exact model and effort pairs, including effort-only changes", async () => {
+  it("routes exact model and effort pairs", async () => {
     const paired = {
       ...context,
       candidates: [
@@ -159,18 +158,12 @@ describe("Codex Jev hook", () => {
   });
   it("serializes paired routing without runtime imports and retains long prompts", async () => {
     const paired = [{ key: "opaque", description: "High", model: "model-b", effort: "high" }];
-    for (const [proposedModel, effort] of [
-      ["model-b", "high"],
-      ["model-a", "high"],
-      ["model-b", "xhigh"],
-    ]) {
+    for (const effort of ["high", "xhigh"]) {
       const outputs: string[] = [];
       const longInput = {
         ...input,
         tool_input: {
           ...input.tool_input,
-          model: proposedModel,
-          reasoning_effort: "low",
           message: "x".repeat(50000),
         },
       };
@@ -204,6 +197,41 @@ describe("Codex Jev hook", () => {
         });
       else expect(result).toEqual({});
       expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)).taskPrompt).toHaveLength(50000);
+    }
+  });
+  it("preserves every explicit model or effort without a routing call", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    for (const pair of [
+      { model: "gpt-6-astra", reasoning_effort: "xhigh" },
+      { model: "gpt-5.6-luna" },
+      { reasoning_effort: "high" },
+    ]) {
+      const original = { ...input, tool_input: { ...input.tool_input, ...pair } };
+      const before = JSON.stringify(original);
+      expect(await runCodexJevHook(original, context, fetcher)).toEqual({});
+      expect(JSON.stringify(original)).toBe(before);
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it("sends inherited context scope and refuses non-route or low confidence results", async () => {
+    for (const result of [
+      { model: "model-a", policyOutcome: "review" },
+      { model: "model-a", policyOutcome: "needs_context" },
+      { model: "model-a", policyOutcome: "unavailable" },
+      { model: "model-a", confidence: 0.49 },
+    ]) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json(result));
+      expect(
+        await runCodexJevHook(
+          { ...input, tool_input: { ...input.tool_input, fork_turns: "3" } },
+          context,
+          fetcher,
+        ),
+      ).toEqual({});
+      expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+        forkTurns: "3",
+        taskPrompt: input.tool_input.message,
+      });
     }
   });
   it("falls back on unavailable, invalid or failed decisions", async () => {

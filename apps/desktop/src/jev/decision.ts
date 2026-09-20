@@ -1,3 +1,8 @@
+import * as NodeCrypto from "node:crypto";
+import {
+  buildBaselineAssessmentQuestions,
+  parseBaselineAssessmentDecision,
+} from "./assessmentBaselineV3.ts";
 import { buildAssessmentQuestions, parseAssessmentDecision } from "./assessment.ts";
 import type { JevRouteRequest, JevRouteResult } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -9,6 +14,7 @@ import {
   JEV_MODEL_PROFILES,
   JEV_POLICY_VERSION,
   JEV_ROUTING_INSTRUCTIONS,
+  JEV_ROUTING_CORE,
   JEV_WORKLOAD_PROFILE,
   sanitizeJevContext,
   sanitizeJevText,
@@ -30,6 +36,8 @@ export function failedJevDecision(error: string, latencyMs = 0): JevRouteResult 
     costUsd: null,
     costKind: "unknown",
     policyVersion: JEV_POLICY_VERSION,
+    policyOutcome: "unavailable",
+    reasons: ["router_unavailable"],
   };
 }
 
@@ -51,7 +59,8 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
             ? "fresh"
             : "stale; do not assume these are current limits",
       routingPolicy: {
-        version: JEV_POLICY_VERSION,
+        version: request.evaluationPolicy ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
+        ...(request.evaluationPolicy ? {} : { coreRules: JEV_ROUTING_CORE }),
         sourcesCheckedAt: "2026-09-20",
         workload: JEV_WORKLOAD_PROFILE,
         profiles: JEV_MODEL_PROFILES.filter((profile) =>
@@ -68,7 +77,9 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
         ],
       },
     },
-    questions: buildAssessmentQuestions(request) ?? {
+    questions: (request.evaluationPolicy
+      ? buildBaselineAssessmentQuestions(request)
+      : buildAssessmentQuestions(request)) ?? {
       route: {
         type: "choice",
         instructions: JEV_ROUTING_INSTRUCTIONS,
@@ -163,20 +174,48 @@ export function parseJevDecision(
     latencyMs,
     error: uncertain ? "Jev's decision was uncertain; using the selected model." : null,
     ...accounting,
+    responseModel: raw.model,
   };
 }
 
-export async function requestJevDecision(
+async function performJevDecision(
   request: JevRouteRequest,
   key: string,
   signal: AbortSignal,
-  transport: typeof fetch = fetch,
+  transport: typeof fetch,
+  bodyForSend: ReturnType<typeof buildJevDecisionBody>,
 ): Promise<JevRouteResult> {
   const started = performance.now();
   try {
     if (signal.aborted)
       return failedJevDecision("Jev request cancelled; using the selected model.");
-    const payload = JSON.stringify(buildJevDecisionBody(request));
+    const payload = JSON.stringify(bodyForSend);
+    const requestFingerprint = NodeCrypto.createHash("sha256").update(payload).digest("hex");
+    // Conservative byte bounds: no tokenizer is provided by the endpoint. Refuse, never
+    // truncate, when the UTF-8 upper estimate plus protocol reserve exceeds either budget.
+    const stateBytes = new TextEncoder().encode(JSON.stringify(bodyForSend.state)).length;
+    const longestQuestionBytes = Math.max(
+      ...Object.values(bodyForSend.questions).map(
+        (q) => new TextEncoder().encode(JSON.stringify(q)).length,
+      ),
+    );
+    if (
+      new TextEncoder().encode(payload).length + 1024 > 64_000 ||
+      stateBytes + longestQuestionBytes + 1024 > 32_000
+    ) {
+      return {
+        ...failedJevDecision(
+          "Routing context exceeds the conservative token budget. Review or narrow the relevant context; no text was silently truncated.",
+        ),
+        policyOutcome: "needs_context",
+        reasons: ["context_budget_exceeded"],
+        requestFingerprint,
+        costKind: "estimated",
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      };
+    }
     if (payload.length > JEV_MAX_REQUEST_CHARS)
       return failedJevDecision(
         "Routing context exceeds the request limit. No task text was silently truncated; using the selected model.",
@@ -201,7 +240,12 @@ export async function requestJevDecision(
     const raw: unknown = JSON.parse(body);
     const latency = Math.round(performance.now() - started);
     const result = buildAssessmentQuestions(request)
-      ? parseAssessmentDecision(raw, request, latency, parseJevDecision)
+      ? (request.evaluationPolicy ? parseBaselineAssessmentDecision : parseAssessmentDecision)(
+          raw,
+          request,
+          latency,
+          parseJevDecision,
+        )
       : parseJevDecision(
           raw,
           request.candidates.map((candidate) => candidate.key),
@@ -216,13 +260,19 @@ export async function requestJevDecision(
         policyVersion: JEV_POLICY_VERSION,
         choice: null,
         recommendedChoice: null,
+        policyOutcome: "review",
+        reasons: ["unsupported_or_failed_attempt_downgrade"],
         error:
           "Jev selected an unsupported pair or a downgrade during unresolved failure; retaining the selected model and effort.",
       };
     const profile = selected?.model ? getJevModelProfile(selected.model) : undefined;
     return {
       ...result,
-      policyVersion: JEV_POLICY_VERSION,
+      policyVersion: request.evaluationPolicy
+        ? "2026-09-20.guided-assessment.v3"
+        : JEV_POLICY_VERSION,
+      requestFingerprint,
+      ...(request.requestId.startsWith("jev-eval-") ? { evaluationPayload: payload } : {}),
       ...(!result.explanation && selected?.model
         ? {
             explanation: `Selected ${selected.model} / ${selected.effort}. Profile guidance: ${profile?.summary ?? "Unknown"}${request.context.failure?.unresolved ? " Unresolved user feedback supplied; no-downgrade guard applied." : ""} This is policy context, not a measured success prediction or a free-form rationale from Jev.`,
@@ -237,4 +287,30 @@ export async function requestJevDecision(
       Math.round(performance.now() - started),
     );
   }
+}
+
+/** Attach provenance on every outcome, including refusals and transport failures. */
+export async function requestJevDecision(
+  request: JevRouteRequest,
+  key: string,
+  signal: AbortSignal,
+  transport: typeof fetch = fetch,
+): Promise<JevRouteResult> {
+  const body = buildJevDecisionBody(request);
+  const payload = JSON.stringify(body);
+  const result = await performJevDecision(request, key, signal, transport, body);
+  const metadata = {
+    policyVersion: request.evaluationPolicy
+      ? "2026-09-20.guided-assessment.v3"
+      : JEV_POLICY_VERSION,
+    requestFingerprint: NodeCrypto.createHash("sha256").update(payload).digest("hex"),
+    ...(request.requestId.startsWith("jev-eval-") ? { evaluationPayload: payload } : {}),
+  };
+  if (request.evaluationPolicy) {
+    // The committed baseline retained the current pair on non-routes; do not give
+    // comparison records v4's pause semantics merely because transport is shared.
+    const { policyOutcome: _outcome, reasons: _reasons, ...baseline } = result;
+    return { ...baseline, ...metadata };
+  }
+  return { ...result, ...metadata };
 }

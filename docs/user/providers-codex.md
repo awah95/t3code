@@ -9,14 +9,15 @@ and custom binaries or environment variables.
 Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then turn
 on **Jev Auto** in the chat header. Jev chooses a supported Codex model and reasoning effort in your
 selected provider instance; existing conversations stay in that instance. Selecting
-a model manually turns Auto off. Routing failures retain a valid selected model.
+a model manually turns Auto off. Uncertain decisions, missing context and routing failures pause for review rather than silently sending with the current model.
 
 Open **Jev calls** to inspect routing requests, decisions, latency and session cost.
 Guided mode reviews each user-message recommendation before dispatch. In **Jev calls**,
 choose **Guided** or **Automatic**. Guided offers the recommendation, your current selection,
 or another compatible model/effort pair; **Cancel send** keeps the message unsent. No
-review is accepted automatically. Model selection and effort are assessed separately;
-confidence describes their selection certainty, not the probability of task success.
+review is accepted automatically. Task demands constrain which recommendations are allowed.
+The panel separates task-assessment, model-proposal and effort confidence; none is a measured
+probability of task success. Explicit current/alternative choices remain user overrides.
 The original recommendation remains visible when you choose a different model.
 
 **Evaluate a prompt set** accepts the JSON companion to a routing corpus. It calls Jev
@@ -24,13 +25,19 @@ through your saved key, excludes expected answers from requests, and executes no
 tasks. Download the results to compare recommendations with your expected ranges. It
 runs at most 56 cases and checks a $0.25 stop budget between calls. Evaluation costs are
 separate from the chat log; a final call can take the total over the stop amount.
+The comparison option runs the committed v3 assessment and current policy on the same
+24 cases (48 calls maximum). Missing-context cases are evaluated separately from pair agreement.
+Downloads include sanitized wire payloads, fingerprints and answering-model versions.
 
 The log keeps the latest 50 calls plus active requests in memory; totals also include older calls. Estimated
 costs are separate from reported charges and exclude the coding model's own usage.
 OpenRouter receives the full current prompt, up to ten recent user/assistant exchanges,
 the original task, agreed plan, failure feedback, model profiles and available quota snapshots.
-Raw tool logs, internal reasoning and attachment bodies are excluded. History omissions
-are shown in the call log; oversized requests fall back without silently shortening the prompt.
+Textual terminal excerpts, review comments and preview annotations attached to the message
+are included with source labels. Internal reasoning and attachment bodies are excluded.
+Missing evidence and history omissions are disclosed; oversized requests pause without
+silently shortening the prompt. Historical model attribution is recovered only from exact
+acknowledged dispatch records in this session; otherwise it is explicitly unknown.
 Routing favors capability and expected completion quality before quota. Profile guidance is
 not a measured success rate or speed benchmark. Common credential
 patterns are redacted, but this is not a guarantee that all sensitive text is removed.
@@ -38,7 +45,9 @@ patterns are redacted, but this is not a guarantee that all sensitive text is re
 The separate **Codex subagent routing** control opts into a T3 session hook. Enabling
 it trusts the exact generated hook through Codex's configuration API. Other hooks and
 account settings remain intact. Full-history forks retain their parent's model;
-independent subtasks can use Jev's selected model and effort. Child routing remains automatic
+independent subtasks without an explicit model or effort can use Jev's selected pair.
+Explicit spawn choices are preserved. Missing inherited child context prevents automatic rewriting.
+Child routing remains automatic
 with its confidence guard, including when user-message routing is Guided. Turning routing off stops further
 Jev decisions; a previously written hook trust entry may remain in Codex settings.
 

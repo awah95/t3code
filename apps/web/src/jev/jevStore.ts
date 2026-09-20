@@ -1,5 +1,10 @@
 import { sanitizeJevText } from "@t3tools/shared/jevRouting";
-import type { JevRouteRequest, JevRouteResult, JevSubagentPolicy } from "@t3tools/contracts";
+import type {
+  JevRouteRequest,
+  JevRouteResult,
+  JevRoutingContext,
+  JevSubagentPolicy,
+} from "@t3tools/contracts";
 import { create } from "zustand";
 import { isElectron } from "../env";
 
@@ -8,11 +13,27 @@ export interface JevCall {
   createdAt: string;
   request: JevRouteRequest;
   result: JevRouteResult | null;
-  status: "pending" | "awaiting-review" | "routed" | "fallback" | "cancelled" | "skipped";
+  status:
+    | "pending"
+    | "awaiting-review"
+    | "approved"
+    | "blocked"
+    | "dispatch-failed"
+    | "routed"
+    | "fallback"
+    | "cancelled"
+    | "skipped";
   decision?: "suggestion" | "current" | "alternative";
   approvedChoice?: string | null;
   notice: string | null;
   kind?: "turn" | "subagent";
+  dispatch?: {
+    model: string;
+    effort?: string | undefined;
+    threadId: string;
+    messageId?: string;
+    succeeded: boolean;
+  };
 }
 
 type SubagentPolicy = JevSubagentPolicy;
@@ -141,6 +162,7 @@ export const useJevStore = create<{
   pinManual: () => void;
   addCall: (call: JevCall) => void;
   finishCall: (id: string, result: JevRouteResult, cancelled?: boolean) => void;
+  recordDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => void;
   clearCalls: () => void;
   cancelPending: () => void;
 }>((set, get) => ({
@@ -153,7 +175,7 @@ export const useJevStore = create<{
       notice:
         mode === "guided"
           ? "Guided mode: review each recommendation before sending."
-          : "Automatic routing enabled; low confidence retains your current selection.",
+          : "Automatic routing enabled; uncertain or unavailable decisions pause sending.",
     });
   },
   resolveReview: (id, action, choice) => {
@@ -169,6 +191,13 @@ export const useJevStore = create<{
     if (
       action !== "current" &&
       (!selected || !call.request.candidates.some((candidate) => candidate.key === selected))
+    )
+      return;
+    if (
+      action === "suggestion" &&
+      selected &&
+      call.result?.admissibleCandidateKeys &&
+      !call.result.admissibleCandidateKeys.includes(selected)
     )
       return;
     pendingReviews.delete(id);
@@ -227,12 +256,27 @@ export const useJevStore = create<{
           ? {
               ...call,
               result,
-              status: cancelled ? "cancelled" : result.choice ? "routed" : "fallback",
+              status: cancelled ? "cancelled" : result.choice ? "approved" : "blocked",
               notice: cancelled ? "Routing cancelled. Message was not sent." : result.error,
             }
           : call,
       ),
       notice: cancelled ? "Routing cancelled. Message was not sent." : result.error,
+    }),
+  recordDispatch: (id, dispatch) =>
+    set({
+      calls: get().calls.map((call) =>
+        call.id === id
+          ? {
+              ...call,
+              dispatch,
+              status: dispatch.succeeded ? "routed" : "dispatch-failed",
+              notice: dispatch.succeeded
+                ? "Executor dispatch accepted."
+                : "Executor dispatch failed.",
+            }
+          : call,
+      ),
     }),
   clearCalls: () =>
     set({
@@ -257,6 +301,28 @@ export const useJevStore = create<{
     set({ revision: get().revision + 1 });
   },
 }));
+
+/** Attribute only acknowledged sends whose durable user message has an actual turn id. */
+export function jevPriorAttempts(
+  threadId: string,
+  messages: readonly { id: string; turnId: string | null }[],
+): NonNullable<JevRoutingContext["priorAttempts"]> {
+  return useJevStore.getState().calls.flatMap((call) => {
+    const dispatch = call.dispatch;
+    if (!dispatch?.succeeded || dispatch.threadId !== threadId || !dispatch.messageId) return [];
+    const turnId = messages.find((message) => message.id === dispatch.messageId)?.turnId;
+    return turnId
+      ? [
+          {
+            turnId,
+            model: dispatch.model,
+            ...(dispatch.effort ? { effort: dispatch.effort } : {}),
+            outcome: "dispatch_accepted",
+          },
+        ]
+      : [];
+  });
+}
 
 /** Redact common credentials without shortening the current request. */
 export const sanitizeJevPrompt = sanitizeJevText;
@@ -284,7 +350,8 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
       confidence: null,
       probabilities: {},
       latencyMs: 0,
-      error: "Jev is unavailable; using the selected model.",
+      error: "Jev is unavailable. Sending paused.",
+      policyOutcome: "unavailable",
       inputTokens: null,
       outputTokens: null,
       costUsd: null,
@@ -296,7 +363,12 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
   const cancelled = useJevStore.getState().revision !== revision;
   useJevStore.getState().finishCall(request.requestId, result, cancelled);
   if (cancelled) return null;
-  if (store.mode !== "guided") return result;
+  const automaticChoiceAllowed =
+    result.choice !== null &&
+    (!result.policyOutcome || result.policyOutcome === "route") &&
+    request.candidates.some((candidate) => candidate.key === result.choice) &&
+    (!result.admissibleCandidateKeys || result.admissibleCandidateKeys.includes(result.choice));
+  if (store.mode !== "guided" && automaticChoiceAllowed) return result;
   const resolution = await new Promise<ReviewResolution | null>((resolve) => {
     pendingReviews.set(request.requestId, resolve);
     useJevStore.setState((state) => ({
@@ -313,12 +385,14 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
       call.id === request.requestId
         ? {
             ...call,
-            status: resolution.choice ? "routed" : "fallback",
+            status: "approved",
             decision: resolution.action,
             approvedChoice: resolution.choice,
             notice: resolution.choice
-              ? "Selection approved for sending."
-              : "Current model selected for sending.",
+              ? resolution.action === "alternative"
+                ? "Alternative explicitly approved; user bypasses routing policy."
+                : "Policy recommendation approved for sending."
+              : "Current model explicitly approved; user bypasses routing policy.",
           }
         : call,
     ),

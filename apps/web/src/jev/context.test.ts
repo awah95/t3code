@@ -9,6 +9,7 @@ const base = {
     options: [{ id: "reasoningEffort", value: "high" }],
   },
   existingSession: true,
+  historyCompleteness: "complete" as const,
   interactionMode: "default",
   prompt: "continue",
 };
@@ -101,6 +102,84 @@ describe("Jev context", () => {
     expect(
       buildJevContext({ ...base, messages, prompt: "different task: update a label" }).originalTask,
     ).toBe("different task: update a label");
+  });
+  it("keeps a windowed objective provisional and never attributes failure to the current model", () => {
+    const context = buildJevContext({
+      ...base,
+      historyCompleteness: "windowed",
+      messages: [
+        { role: "user", text: "continue the migration" },
+        { role: "assistant", text: "fixed" },
+      ],
+      prompt: "the recurrence bug is still there; permission denied running another check",
+    });
+    expect(context.objectiveProvenance).toBe("first_available");
+    expect(context.historyCompleteness).toBe("windowed");
+    expect(context.failure).toMatchObject({ unresolved: true });
+    expect(context.failure?.model).toBeUndefined();
+  });
+  it("uses a matched historical dispatch instead of the changed current selection", () => {
+    const context = buildJevContext({
+      ...base,
+      messages: [
+        { role: "user", text: "fix parser", turnId: "failed-turn" },
+        { role: "assistant", text: "fixed", turnId: "failed-turn" },
+      ],
+      priorAttempts: [
+        {
+          turnId: "failed-turn",
+          model: "gpt-5.6-terra",
+          effort: "medium",
+          outcome: "dispatch_accepted",
+        },
+      ],
+      prompt: "still broken",
+    });
+    expect(context.failure).toMatchObject({
+      model: "gpt-5.6-terra",
+      effort: "medium",
+      unresolved: true,
+    });
+    expect(context.currentModel).toBe("gpt-5.6-sol");
+  });
+  it("does not resolve a behavioral failure merely because tests pass", () => {
+    const context = buildJevContext({
+      ...base,
+      messages: [
+        { role: "user", text: "fix duplicate handlers" },
+        { role: "assistant", text: "fixed" },
+        { role: "user", text: "still broken" },
+      ],
+      prompt: "Tests pass, but the event handler is still duplicated",
+    });
+    expect(context.failure?.unresolved).toBe(true);
+  });
+  it("shares outgoing terminal evidence and explicitly names unavailable attachment bodies", () => {
+    const context = buildJevContext({
+      ...base,
+      messages: [],
+      hasAttachments: true,
+      outgoingContext: {
+        version: 1,
+        records: [
+          {
+            version: 1,
+            kind: "terminal",
+            contextId: "terminal-one" as import("@t3tools/contracts").ComposerContextId,
+            label: "Failure",
+            terminalId: "one",
+            terminalLabel: "Tests",
+            lineStart: 1,
+            lineEnd: 1,
+            text: "Assertion failed: expected one handler, received two",
+          },
+        ],
+      },
+    });
+    expect(context.evidence).toHaveLength(1);
+    expect(context.evidence?.[0]).toMatchObject({ id: "terminal-one", kind: "terminal" });
+    expect(context.evidence?.[0]?.text).toContain("expected one handler");
+    expect(context.missingContext).toEqual(["Attachment contents unavailable to routing."]);
   });
   it("includes timestamped remaining usage only when a snapshot exists", () => {
     expect(buildJevContext({ ...base, messages: [] }).budget).toBeUndefined();

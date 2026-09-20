@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { randomUUID } from "../lib/utils";
 import { create } from "zustand";
 import * as Schema from "effect/Schema";
@@ -8,6 +9,8 @@ import {
   JEV_POLICY_VERSION,
   describeJevCandidate,
   isJevCandidateAllowed,
+  sanitizeJevContext,
+  sanitizeJevText,
 } from "@t3tools/shared/jevRouting";
 import { Button } from "../components/ui/button";
 
@@ -16,12 +19,20 @@ type EvaluationCase = {
   id: string;
   prompt: string;
   context: JevRoutingContext;
-  expected: { preferred: Pair; acceptable: readonly Pair[] };
+  expected: {
+    preferred: Pair;
+    acceptable: readonly Pair[];
+    decision?: string;
+    minimumCapabilityRank?: number;
+  };
   category?: string;
   split?: string;
 };
 type Row = {
   id: string;
+  arm: "baseline-v3" | "current";
+  context: JevRoutingContext;
+  candidates: readonly { key: string; model: string; effort: string; description: string }[];
   category?: string;
   split?: string;
   prompt: string;
@@ -29,7 +40,8 @@ type Row = {
   recommended: Pair | null;
   automaticSelection: Pair | null;
   matchesPreferred: boolean;
-  matchesAcceptable: boolean;
+  matchesAcceptable: boolean | null;
+  matchesDecision: boolean | null;
   result: JevRouteResult;
 };
 const pair = Schema.Struct({ model: Schema.String, effort: Schema.String });
@@ -39,7 +51,12 @@ const corpusSchema = Schema.Struct({
       id: Schema.String,
       prompt: Schema.String,
       context: JevRoutingContext,
-      expected: Schema.Struct({ preferred: pair, acceptable: Schema.Array(pair) }),
+      expected: Schema.Struct({
+        preferred: pair,
+        acceptable: Schema.Array(pair),
+        decision: Schema.optionalKey(Schema.String),
+        minimumCapabilityRank: Schema.optionalKey(Schema.Number),
+      }),
       category: Schema.optionalKey(Schema.String),
       split: Schema.optionalKey(Schema.String),
     }),
@@ -57,6 +74,7 @@ const useEvaluation = create<{
 let active: string | null = null;
 let stopped = false;
 export function JevEvaluation() {
+  const [comparison, setComparison] = useState(false);
   const { cases, rows, running, message } = useEvaluation();
   const setCases = (cases: readonly EvaluationCase[]) => useEvaluation.setState({ cases });
   const setRows = (rows: Row[]) => useEvaluation.setState({ rows });
@@ -69,6 +87,8 @@ export function JevEvaluation() {
   const download = () => {
     const report = {
       policy: JEV_POLICY_VERSION,
+      baselineCommit: "ffacb6f782dc7b9772a4c31e924a303a4b2181d9",
+      comparison: rows.some((row) => row.arm === "baseline-v3"),
       evaluatedAt: new Date().toISOString(),
       rows,
       billedUsd: rows
@@ -85,7 +105,7 @@ export function JevEvaluation() {
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = "JEV_ROUTING_RESULTS.json";
+    link.download = comparison ? "JEV_ROUTING_COMPARISON_V4.json" : "JEV_ROUTING_RESULTS_V4.json";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -106,9 +126,16 @@ export function JevEvaluation() {
       })),
     );
     try {
-      for (const item of cases.slice(0, 56)) {
+      const jobs = cases
+        .slice(0, comparison ? 24 : 56)
+        .flatMap((item) =>
+          (comparison ? (["baseline-v3", "current"] as const) : (["current"] as const)).map(
+            (arm) => ({ item, arm }),
+          ),
+        );
+      for (const { item, arm } of jobs) {
         if (stopped || cost >= 0.25) break;
-        const requestId = randomUUID();
+        const requestId = `jev-eval-${randomUUID()}`;
         active = requestId;
         // Deliberately construct the payload, never spread corpus fields (which contain expected labels).
         const allowed = candidates.filter((candidate) =>
@@ -116,8 +143,9 @@ export function JevEvaluation() {
         );
         const result = await window.desktopBridge.decideJevRoute({
           requestId,
-          prompt: item.prompt,
-          context: item.context,
+          prompt: sanitizeJevText(item.prompt),
+          context: sanitizeJevContext(item.context),
+          ...(arm === "baseline-v3" ? { evaluationPolicy: "baseline-v3" as const } : {}),
           candidates: allowed,
         });
         const chosen = allowed.find(
@@ -127,11 +155,16 @@ export function JevEvaluation() {
         const recommended = chosen ? { model: chosen.model, effort: chosen.effort } : null;
         const automaticSelection = automatic
           ? { model: automatic.model, effort: automatic.effort }
-          : item.context.currentModel && item.context.currentEffort
-            ? { model: item.context.currentModel, effort: item.context.currentEffort }
-            : null;
+          : result.policyOutcome
+            ? null
+            : item.context.currentModel && item.context.currentEffort
+              ? { model: item.context.currentModel, effort: item.context.currentEffort }
+              : null;
         completed.push({
           id: item.id,
+          arm,
+          context: sanitizeJevContext(item.context),
+          candidates: allowed,
           ...(item.category ? { category: item.category } : {}),
           ...(item.split ? { split: item.split } : {}),
           prompt: item.prompt,
@@ -139,7 +172,14 @@ export function JevEvaluation() {
           recommended,
           automaticSelection,
           matchesPreferred: same(recommended, item.expected.preferred),
-          matchesAcceptable: item.expected.acceptable.some((entry) => same(recommended, entry)),
+          matchesAcceptable:
+            item.expected.decision === "needs_context"
+              ? null
+              : item.expected.acceptable.some((entry) => same(recommended, entry)),
+          matchesDecision: item.expected.decision
+            ? (result.policyOutcome ?? (result.choice ? "route" : "fallback")) ===
+              item.expected.decision
+            : null,
           result,
         });
         cost += result.costUsd ?? 0;
@@ -176,6 +216,15 @@ export function JevEvaluation() {
         the last call can exceed that amount. Evaluation costs are tracked here separately from the
         chat log.
       </p>
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={comparison}
+          disabled={running}
+          onChange={(event) => setComparison(event.target.checked)}
+        />
+        Compare committed v3 baseline with current policy (24 cases, 48 calls maximum)
+      </label>
       <input
         aria-label="Evaluation prompt file"
         type="file"
@@ -229,8 +278,10 @@ export function JevEvaluation() {
         </Button>
       </div>
       <p role="status">
-        {message} {rows.length}/{Math.min(cases.length, 56)} evaluated · ${costs.toFixed(6)}{" "}
-        billed/estimated · {rows.filter((r) => r.matchesAcceptable).length} within expected range.
+        {message} {rows.length}/
+        {Math.min(cases.length, comparison ? 24 : 56) * (comparison ? 2 : 1)} evaluated · $
+        {costs.toFixed(6)} billed/estimated · {rows.filter((r) => r.matchesAcceptable).length}{" "}
+        within expected pair range (missing-context cases excluded).
       </p>
     </details>
   );

@@ -1,11 +1,20 @@
 import type {
   JevRoutingContext,
   ModelSelection,
+  OrchestrationMessageContext,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { JEV_HISTORY_CHAR_BUDGET, sanitizeJevText } from "@t3tools/shared/jevRouting";
 
-type Message = { role: string; text: string; model?: string; effort?: string; createdAt?: string };
+type Message = {
+  role: string;
+  text: string;
+  model?: string;
+  effort?: string;
+  createdAt?: string;
+  turnId?: string | null;
+  context?: OrchestrationMessageContext | undefined;
+};
 const newTask = /^(?:please\s+)?(?:new task|different task|start over)\b/i;
 function directFeedback(text: string): string {
   return text
@@ -22,16 +31,18 @@ function directFeedback(text: string): string {
     .replace(/"[^"\n]*"|“[^”\n]*”/g, "")
     .trim();
 }
-const reset =
-  /\b(?:that worked|it works now|tests? (?:now )?pass|fixed now|new task|different task|start over)\b/i;
+const reset = /\b(?:that worked|it works now|fixed now|new task|different task|start over)\b/i;
 const environmentFailure =
   /\b(?:permission denied|rate limit|quota exhausted|network (?:error|unavailable)|connection refused|missing (?:dependency|credentials)|not installed|authentication failed)\b/i;
+const specificFailure =
+  /\b(?:still (?:not fixed|broken|failing|wrong|duplicated)|(?:bug|issue|problem) is still there)\b/i;
 const failure =
   /\b(?:still (?:not fixed|broken|failing|wrong|doesn['’]t work)|(?:this|that) (?:didn['’]t fix it|didn['’]t work|is wrong)|you (?:missed|failed to)|your (?:fix|solution|implementation|answer) (?:fails|is wrong|doesn['’]t work)|tests? (?:still )?fail(?:ing)? (?:after|with) (?:your|the) (?:fix|change))\b/i;
 
-/** Uses only visible chat text. Tool payloads, reasoning and attachment bodies never enter context. */
+/** Uses the outgoing send snapshot and visible history, with explicit evidence omissions. */
 export function buildJevContext(input: {
   messages: readonly Message[];
+  priorAttempts?: JevRoutingContext["priorAttempts"];
   prompt: string;
   current: ModelSelection;
   existingSession: boolean;
@@ -39,10 +50,21 @@ export function buildJevContext(input: {
   interactionMode: string;
   plans?: readonly { planMarkdown: string; implementedAt: string | null }[];
   usageLimits?: ServerProviderUsageLimits;
+  outgoingContext?: OrchestrationMessageContext | undefined;
+  historyCompleteness?: JevRoutingContext["historyCompleteness"];
 }): JevRoutingContext {
-  const visibleMessages = input.messages.filter(
-    (message) => message.role === "user" || message.role === "assistant",
-  );
+  const visibleMessages = input.messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => {
+      const attempt = input.priorAttempts?.find((entry) => entry.turnId === message.turnId);
+      return attempt
+        ? {
+            ...message,
+            ...(attempt.model ? { model: attempt.model } : {}),
+            ...(attempt.effort ? { effort: attempt.effort } : {}),
+          }
+        : message;
+    });
   const latestTaskIndex = visibleMessages.findLastIndex(
     (message) => message.role === "user" && newTask.test(directFeedback(message.text)),
   );
@@ -58,6 +80,50 @@ export function buildJevContext(input: {
     exchanges[exchanges.length - 1]!.push(message);
   }
   const omissions: string[] = [];
+  const missingContext: string[] = [];
+  const historyCompleteness =
+    input.historyCompleteness ?? (input.existingSession ? "windowed" : "complete");
+  if (historyCompleteness !== "complete" && !changedTask)
+    omissions.push(
+      "Earlier history may be unavailable; the first available message is not a verified original task.",
+    );
+  const evidence: NonNullable<JevRoutingContext["evidence"]>[number][] = [];
+  let evidenceBudget = 40_000;
+  const appendEvidence = (
+    context: OrchestrationMessageContext | undefined,
+    sourceTurnId?: string | null,
+  ) => {
+    for (const record of context?.records ?? []) {
+      if (record.kind === "image" || record.kind === "file") {
+        missingContext.push(
+          `${record.kind} ${record.contextId}: attachment contents unavailable to routing.`,
+        );
+        continue;
+      }
+      const text = sanitizeJevText(JSON.stringify(record));
+      if (text.length > evidenceBudget) {
+        missingContext.push(
+          `${record.kind} ${record.contextId}: evidence omitted to fit routing budget.`,
+        );
+        continue;
+      }
+      evidenceBudget -= text.length;
+      evidence.push({
+        id: record.contextId,
+        kind: record.kind,
+        text,
+        ...(sourceTurnId ? { sourceTurnId } : {}),
+      });
+    }
+  };
+  appendEvidence(input.outgoingContext);
+  for (const message of messages.slice(-30).toReversed())
+    appendEvidence(message.context, message.turnId);
+  if (
+    input.hasAttachments &&
+    !missingContext.some((entry) => entry.includes("attachment contents"))
+  )
+    missingContext.push("Attachment contents unavailable to routing.");
   if (changedTask) omissions.push("Context before the explicit new task was excluded.");
   if (exchanges.length > 10)
     omissions.push(
@@ -91,8 +157,12 @@ export function buildJevContext(input: {
       continue;
     }
     const feedback = directFeedback(message.text);
-    if (reset.test(feedback)) unresolved = undefined;
-    if (failure.test(feedback) && !environmentFailure.test(feedback))
+    const solutionFailed =
+      specificFailure.test(feedback) ||
+      (failure.test(feedback) && !environmentFailure.test(feedback));
+    if (reset.test(feedback) && !solutionFailed && !/\b(?:but|still|however)\b/i.test(feedback))
+      unresolved = undefined;
+    if (solutionFailed)
       unresolved = {
         unresolved: true,
         signals: [sanitizeJevText(message.text)],
@@ -100,16 +170,10 @@ export function buildJevContext(input: {
         ...(previousAssistant?.effort ? { effort: previousAssistant.effort } : {}),
       };
   }
-  if (unresolved && !unresolved.model) {
-    unresolved = {
-      ...unresolved,
-      model: input.current.model,
-      ...(currentEffort ? { effort: currentEffort } : {}),
-    };
+  if (unresolved && !unresolved.model)
     omissions.push(
-      "Historical model attribution unavailable; unresolved failure floor uses current model and effort.",
+      "Historical model attribution unavailable; failed attempt model and effort are unknown.",
     );
-  }
   const plan = input.plans?.findLast(
     (entry) =>
       entry.implementedAt !== null &&
@@ -128,6 +192,13 @@ export function buildJevContext(input: {
       messages.find((message) => message.role === "user")?.text ?? input.prompt,
     ),
     ...(plan ? { activePlan: sanitizeJevText(plan.planMarkdown) } : {}),
+    objectiveProvenance:
+      changedTask || historyCompleteness === "complete" ? "user_message" : "first_available",
+    historyCompleteness,
+    evidence,
+    ...(input.priorAttempts ? { priorAttempts: input.priorAttempts } : {}),
+    missingContext,
+    target: { kind: "turn", inheritedContext: input.existingSession ? "bounded" : "none" },
     history,
     historyExchangeCount: recent.filter((exchange) =>
       exchange.some((message) => message.role === "user"),
