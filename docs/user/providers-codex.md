@@ -25,8 +25,8 @@ through your saved key, excludes expected answers from requests, and executes no
 tasks. Download the results to compare recommendations with your expected ranges. It
 runs at most 56 cases and checks a $0.25 stop budget between calls. Evaluation costs are
 separate from the chat log; a final call can take the total over the stop amount.
-The comparison option runs the committed v3 assessment and current policy on the same
-24 cases (48 calls maximum). Missing-context cases are evaluated separately from pair agreement.
+The comparison option runs a frozen committed assessment and the current policy on the same
+24 cases (48 calls maximum). Choose v4.1 to compare against the latest checkpoint, or v3 for the earlier policy. Missing-context cases are evaluated separately from pair agreement.
 Downloads include sanitized wire payloads, fingerprints and answering-model versions.
 
 The log keeps the latest 50 calls plus active requests in memory; totals also include older calls. Estimated
@@ -38,7 +38,7 @@ are included with source labels. Internal reasoning and attachment bodies are ex
 Missing evidence and history omissions are disclosed; oversized requests pause without
 silently shortening the prompt. Historical model attribution is recovered only from exact
 acknowledged dispatch records in this session; otherwise it is explicitly unknown.
-Routing favors capability and expected completion quality before quota. Profile guidance is
+Routing favors sufficient capability before quota. The recommendation uses the least provisioned compatible model meeting the assessed requirements, with at least that model's proposed effort; this is a provisional preference, not measured optimal cost. A low task-classifier confidence can still route when the checked competing interpretations fit that pair. Material uncertainty or substantial disagreement with Jev's raw proposal pauses for review. Profile guidance is
 not a measured success rate or speed benchmark. Common credential
 patterns are redacted, but this is not a guarantee that all sensitive text is removed.
 
@@ -48,7 +48,7 @@ account settings remain intact. Full-history forks retain their parent's model;
 independent subtasks without an explicit model or effort can use Jev's selected pair.
 Explicit spawn choices are preserved. Missing inherited child context prevents automatic rewriting.
 Child routing remains automatic
-with its confidence guard, including when user-message routing is Guided. Turning routing off stops further
+with its task-demand guard, including when user-message routing is Guided. Turning routing off stops further
 Jev decisions; a previously written hook trust entry may remain in Codex settings.
 
 This MVP supports local desktop environments. Provider commands, plan follow-ups and

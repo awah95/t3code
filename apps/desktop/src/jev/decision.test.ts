@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { JevRouteRequest } from "@t3tools/contracts";
 import {
@@ -272,5 +273,92 @@ describe("wire provenance and conservative context bounds", () => {
       costKind: "estimated",
     });
     expect(result.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+});
+
+describe("frozen committed v4.1 comparison", () => {
+  const frozen: JevRouteRequest = {
+    requestId: "jev-eval-frozen-v41",
+    evaluationPolicy: "baseline-v4.1",
+    prompt: "Reconcile the conflicting accounts",
+    context: { existingSession: false, hasAttachments: false, interactionMode: "default" },
+    candidates: [
+      { key: "luna-low", model: "gpt-5.6-luna", effort: "low", description: "Luna low" },
+      { key: "sol-medium", model: "gpt-5.6-sol", effort: "medium", description: "Sol medium" },
+    ],
+  };
+  const answer = (overrides: Record<string, string> = {}) => ({
+    model: "jev-1.13.0",
+    usage: { input_tokens: 1000, cost: 0.000042 },
+    answers: Object.fromEntries(
+      Object.entries(buildJevDecisionBody(frozen, 0).questions).map(([key, question]) => {
+        const keys = Object.keys(question.criteria);
+        const choice = overrides[key] ?? keys[0]!;
+        return [
+          key,
+          {
+            type: "choice",
+            choice,
+            confidence: 0.9,
+            probabilities: Object.fromEntries(
+              keys.map((entry) => [entry, entry === choice ? 1 : 0]),
+            ),
+          },
+        ];
+      }),
+    ),
+  });
+  it("retains the exact body produced by commit 3cee8857375a88260ad08435324663395770ed4c", () => {
+    // Independently calculated using decision.ts from that commit and its frozen shared inputs.
+    expect(
+      NodeCrypto.createHash("sha256")
+        .update(JSON.stringify(buildJevDecisionBody(frozen, 0)))
+        .digest("hex"),
+    ).toBe("b6794106228a8a8b5c2a37eef213a7ab6d6e15811e21db87ef450f2c83b65c1b");
+  });
+  it("preserves proposal and v4.1 capability-floor adjustment", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify(answer({ procedure: "discovery", evidence_work: "reconciliation" })),
+        ),
+      );
+    const result = await requestJevDecision(frozen, "key", new AbortController().signal, transport);
+    expect(result).toMatchObject({
+      proposedChoice: "luna-low",
+      recommendedChoice: "sol-medium",
+      choice: "sol-medium",
+      policyOutcome: "route",
+      policyVersion: "2026-09-20.capability-gates.v4.1",
+      responseModel: "jev-1.13.0",
+    });
+    expect(result.reasons).toContain("proposal_adjusted_by_capability_policy");
+    expect(result.evaluationPayload).toBe(transport.mock.calls[0]?.[1]?.body);
+  });
+  it("preserves abstention semantics and v4.1 metadata on unavailable results", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(answer({ context_status: "missing" }))))
+      .mockRejectedValueOnce(new Error("offline"));
+    const missing = await requestJevDecision(
+      frozen,
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(missing).toMatchObject({
+      choice: null,
+      policyOutcome: "needs_context",
+      policyVersion: "2026-09-20.capability-gates.v4.1",
+    });
+    const failed = await requestJevDecision(frozen, "key", new AbortController().signal, transport);
+    expect(failed).toMatchObject({
+      choice: null,
+      policyOutcome: "unavailable",
+      policyVersion: "2026-09-20.capability-gates.v4.1",
+    });
+    expect(failed.requestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(failed.evaluationPayload).toBeDefined();
   });
 });

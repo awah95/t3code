@@ -216,7 +216,9 @@ export async function createJevSubagentBroker(options: {
           (result.policyOutcome === undefined || result.policyOutcome === "route") &&
           typeof result.confidence === "number" &&
           Number.isFinite(result.confidence) &&
-          result.confidence >= 0.5 &&
+          (result.decisionStable === undefined
+            ? result.confidence >= 0.5
+            : result.decisionStable && result.policyOutcome === "route") &&
           result.error === null &&
           (result.admissibleCandidateKeys === undefined ||
             (result.choice !== null && result.admissibleCandidateKeys.includes(result.choice)));

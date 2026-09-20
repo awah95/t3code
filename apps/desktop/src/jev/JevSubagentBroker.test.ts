@@ -279,6 +279,8 @@ describe("desktop Codex subagent routing broker", () => {
       { policyOutcome: "needs_context" },
       { policyOutcome: "unavailable" },
       { confidence: 0.49 },
+      { confidence: 0.9, decisionStable: false },
+      { confidence: 0.01, decisionStable: true, policyOutcome: undefined },
       { admissibleCandidateKeys: ["c0"] },
       { error: "Incomplete response" },
     ]) {
@@ -300,6 +302,28 @@ describe("desktop Codex subagent routing broker", () => {
         costUsd: success.costUsd,
       });
     }
+  });
+  it("uses a stable route despite low nonbinding classifier confidence", async () => {
+    const { broker, post } = await setup(
+      vi.fn().mockResolvedValue({
+        ...success,
+        policyOutcome: "route",
+        confidence: 0.31,
+        decisionStable: true,
+      }),
+    );
+    broker.setPolicy(policy);
+    expect(
+      await (
+        await post({
+          threadId: "thread",
+          providerInstanceId: "codex-local",
+          taskPrompt: "Known edit",
+        })
+      ).json(),
+    ).toMatchObject({
+      model: "gpt-strong",
+    });
   });
   it("reports opt-in state without making Jev calls", async () => {
     const { broker, post, decide } = await setup();

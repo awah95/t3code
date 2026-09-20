@@ -58,12 +58,13 @@ describe("independent Jev task assessment", () => {
     });
     expect(result.assessments?.model?.choice).toBe("gpt-5.6-luna");
   });
-  it("preserves a low-confidence valid recommendation for guided review", () => {
+  it("keeps raw classifier confidence while routing when its checked interpretation does not change the pair", () => {
     const raw = response();
     raw.answers.procedure!.confidence = 0.37;
     expect(parseAssessmentDecision(raw, request, 100, parseJevDecision)).toMatchObject({
-      choice: null,
+      choice: "luna_low",
       recommendedChoice: "luna_low",
+      decisionStable: true,
       confidence: 0.37,
       costUsd: 0.001,
     });
@@ -109,7 +110,11 @@ describe("capability policy controls execution", () => {
       { key: "astra_high", model: "gpt-6-astra", effort: "high", description: "" },
     ],
   };
-  function assess(overrides: Record<string, string>, input = pool) {
+  function assess(
+    overrides: Record<string, string>,
+    input = pool,
+    uncertain: Record<string, { confidence: number; probabilities: Record<string, number> }> = {},
+  ) {
     const questions = buildAssessmentQuestions(input)!;
     const raw = {
       model: "jev-1.13.0",
@@ -125,6 +130,7 @@ describe("capability policy controls execution", () => {
               choice: chosen,
               confidence: 0.9,
               probabilities: Object.fromEntries(choices.map((c) => [c, c === chosen ? 1 : 0])),
+              ...uncertain[key],
             },
           ];
         }),
@@ -178,15 +184,137 @@ describe("capability policy controls execution", () => {
       ),
     ).toMatchObject({ choice: null, policyOutcome: "review" });
   });
-  it("keeps a valid stronger proposal instead of forcibly using the smallest default", () => {
+  it("retains a strong raw proposal for review while recommending the least provisioned admissible pair", () => {
     expect(assess({ model: "model_2" })).toMatchObject({
-      choice: "sol_medium",
+      choice: null,
+      recommendedChoice: "luna_low",
+      policyOutcome: "review",
       proposedChoice: "sol_medium",
     });
   });
   it("candidate ordering does not change the required capability floor", () => {
     const reversed = { ...pool, candidates: pool.candidates.toReversed() };
-    const result = assess({ model: "model_3", evidence_work: "reconciliation" }, reversed);
+    const result = assess(
+      { model: "model_3", evidence_work: "reconciliation", effort_model_1: "medium" },
+      reversed,
+    );
     expect(result.choice).toBe("sol_medium");
+  });
+  it("does not pause over minor versus material consequence when both fit the same pair", () => {
+    const result = assess({}, pool, {
+      consequence: { confidence: 0.31, probabilities: { minor: 0.55, material: 0.45, high: 0 } },
+    });
+    expect(result).toMatchObject({
+      choice: "luna_low",
+      confidence: 0.31,
+      decisionStable: true,
+      policyOutcome: "route",
+    });
+    expect(result.uncertaintyAlternatives).toEqual({ consequence: ["minor", "material"] });
+  });
+  it("pauses if an uncertain interpretation requires more capability", () => {
+    const result = assess({}, pool, {
+      procedure: {
+        confidence: 0.2,
+        probabilities: { established: 0.55, local_choices: 0.45, discovery: 0 },
+      },
+    });
+    expect(result).toMatchObject({
+      choice: null,
+      recommendedChoice: "luna_low",
+      decisionStable: false,
+      policyOutcome: "review",
+    });
+  });
+  it("can route when competing interpretations only relax the selected requirements", () => {
+    expect(
+      assess({ evidence_work: "synthesis" }, pool, {
+        evidence_work: {
+          confidence: 0.3,
+          probabilities: { extraction: 0.45, synthesis: 0.55, reconciliation: 0 },
+        },
+      }),
+    ).toMatchObject({ choice: "terra_medium", confidence: 0.3, decisionStable: true });
+  });
+  it("checks combinations that require Astra even though each alternative alone fits Sol", () => {
+    const input = {
+      ...pool,
+      candidates: pool.candidates.filter((c) => ["sol_high", "astra_high"].includes(c.key)),
+    };
+    expect(
+      assess({ correctness: "local_reasoning", consequence: "material" }, input, {
+        correctness: {
+          confidence: 0.3,
+          probabilities: { direct_check: 0, local_reasoning: 0.55, interacting_invariant: 0.45 },
+        },
+        consequence: { confidence: 0.3, probabilities: { minor: 0, material: 0.55, high: 0.45 } },
+      }),
+    ).toMatchObject({ choice: null, recommendedChoice: "sol_high", decisionStable: false });
+  });
+  it("does not discard even a small missing-context alternative in an uncertain context assessment", () => {
+    expect(
+      assess({}, pool, {
+        context_status: { confidence: 0.4, probabilities: { sufficient: 0.81, missing: 0.19 } },
+      }),
+    ).toMatchObject({ choice: null, decisionStable: false });
+  });
+  it("reduces an unnecessary Astra proposal to Sol when conflicting evidence requires Sol", () => {
+    expect(assess({ model: "model_3", evidence_work: "reconciliation" })).toMatchObject({
+      choice: "sol_medium",
+      proposedChoice: "astra_high",
+      decisionStable: true,
+    });
+  });
+  it("keeps high-consequence interacting invariants at Astra immediately", () => {
+    expect(assess({ correctness: "interacting_invariant", consequence: "high" })).toMatchObject({
+      choice: "astra_high",
+    });
+  });
+  it("never economizes below the attributed unresolved failure floor", () => {
+    expect(
+      assess(
+        {},
+        {
+          ...pool,
+          context: {
+            ...pool.context,
+            failure: {
+              unresolved: true,
+              model: "gpt-5.6-sol",
+              effort: "high",
+              signals: ["The same defect remains"],
+            },
+          },
+        },
+      ),
+    ).toMatchObject({ choice: "sol_high" });
+  });
+  it("honors the economical model's own effort assessment and identifies its confidence separately", () => {
+    const result = assess(
+      { model: "model_3", evidence_work: "reconciliation", effort_model_2: "high" },
+      pool,
+      {
+        effort_model_2: { confidence: 0.35, probabilities: { medium: 0.45, high: 0.55 } },
+      },
+    );
+    expect(result).toMatchObject({
+      choice: "sol_high",
+      proposedChoice: "astra_high",
+      effortConfidence: 0.9,
+      conditionalEffort: { model: "gpt-5.6-sol", effort: "high", confidence: 0.35 },
+      decisionStable: true,
+    });
+  });
+  it("pauses when the selected model may need a higher effort despite confident task classifiers", () => {
+    const result = assess({ evidence_work: "reconciliation" }, pool, {
+      effort_model_2: { confidence: 0.35, probabilities: { medium: 0.55, high: 0.45 } },
+    });
+    expect(result).toMatchObject({
+      choice: null,
+      recommendedChoice: "sol_medium",
+      decisionStable: false,
+      confidence: 0.9,
+    });
+    expect(result.uncertaintyAlternatives).toEqual({ effort_model_2: ["medium", "high"] });
   });
 });

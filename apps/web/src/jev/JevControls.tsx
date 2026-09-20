@@ -73,7 +73,13 @@ function reasonLabel(reason: string) {
     verification_must_be_designed: "The verification method must be designed.",
     high_consequence: "A wrong result could have serious consequences.",
     proposal_adjusted_by_capability_policy:
-      "The recommendation was adjusted to meet the task requirements.",
+      "The model and effort were adjusted using the assessed requirements and the selected model's effort proposal.",
+    uncertainty_changes_required_capability:
+      "Uncertainty could require a stronger pair or more context; review before sending.",
+    uncertainty_within_selected_capability:
+      "The checked uncertain interpretations fit the selected pair.",
+    model_demand_disagreement:
+      "Jev's raw proposal and the assessed requirements disagree substantially; review before sending.",
     uncertain_task_demands: "The task demands are uncertain; review before sending.",
     failed_attempt_model_unknown: "The model used for the failed attempt is unknown.",
     context_omissions_require_review: "Some context is unavailable; review before sending.",
@@ -106,11 +112,19 @@ function JevReviewCard({ call }: { call: JevCall }) {
           : "No valid recommendation"}
       </p>
       <p>
-        Model confidence: {call.result?.modelConfidence?.toFixed(2) ?? "unavailable"}; effort
-        confidence: {call.result?.effortConfidence?.toFixed(2) ?? "unavailable"}. This is not task
-        success probability.
+        Raw model-proposal confidence: {call.result?.modelConfidence?.toFixed(2) ?? "unavailable"};
+        raw effort-proposal confidence: {call.result?.effortConfidence?.toFixed(2) ?? "unavailable"}
+        . This is not task success probability.
       </p>
       <p>Task-assessment confidence: {call.result?.confidence?.toFixed(2) ?? "unavailable"}</p>
+      {call.result?.conditionalEffort && (
+        <p>
+          For {call.result.conditionalEffort.model}, Jev proposed{" "}
+          {call.result.conditionalEffort.effort} effort (confidence{" "}
+          {call.result.conditionalEffort.confidence.toFixed(2)}). The policy can raise this to meet
+          the task requirements.
+        </p>
+      )}
       <p>Policy outcome: {call.result?.policyOutcome ?? "unknown"}</p>
       <p>Model proposal: {proposalLabel(call)}</p>
       {call.result?.reasons?.map((reason) => (
@@ -399,8 +413,16 @@ export function JevPanel() {
               {call.result.costKind === "unknown"
                 ? "unknown"
                 : `${call.result.costKind} $${call.result.costUsd?.toFixed(8)}`}{" "}
-              · Model confidence: {call.result.modelConfidence ?? "unknown"} · Effort confidence:{" "}
-              {call.result.effortConfidence ?? "unknown"} (selection statistics)
+              · Raw model-proposal confidence: {call.result.modelConfidence ?? "unknown"} · Raw
+              effort-proposal confidence: {call.result.effortConfidence ?? "unknown"} (not task
+              success probabilities)
+            </p>
+          )}
+          {call.result?.conditionalEffort && (
+            <p>
+              For {call.result.conditionalEffort.model}, Jev proposed{" "}
+              {call.result.conditionalEffort.effort} effort (confidence{" "}
+              {call.result.conditionalEffort.confidence.toFixed(2)}).
             </p>
           )}
           <p className="mt-2 font-medium">Sanitized request / state</p>

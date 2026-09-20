@@ -1,3 +1,4 @@
+import * as baselineV41 from "./assessmentBaselineV41.ts";
 import * as NodeCrypto from "node:crypto";
 import {
   buildBaselineAssessmentQuestions,
@@ -24,6 +25,13 @@ export const JEV_MODEL = "typesafe/jev-1.13";
 export const JEV_INPUT_USD_PER_MILLION = 0.042;
 export const JEV_TIMEOUT_MS = 12_000;
 
+export const jevEvaluationPolicyVersion = (request: JevRouteRequest): string =>
+  request.evaluationPolicy === "baseline-v3"
+    ? "2026-09-20.guided-assessment.v3"
+    : request.evaluationPolicy === "baseline-v4.1"
+      ? baselineV41.JEV_POLICY_VERSION
+      : JEV_POLICY_VERSION;
+
 export function failedJevDecision(error: string, latencyMs = 0): JevRouteResult {
   return {
     choice: null,
@@ -43,7 +51,10 @@ export function failedJevDecision(error: string, latencyMs = 0): JevRouteResult 
 
 // @effect-diagnostics-next-line globalDate:off -- Payload construction is a plain async transport boundary; tests supply the clock.
 export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now()) {
-  const context = sanitizeJevContext(request.context);
+  const baseline41 = request.evaluationPolicy === "baseline-v4.1";
+  const context = (baseline41 ? baselineV41.sanitizeJevContext : sanitizeJevContext)(
+    request.context,
+  );
   const budgetTime = context.budget ? Date.parse(context.budget.checkedAt) : Number.NaN;
   const budgetFresh =
     Number.isFinite(budgetTime) && now >= budgetTime && now - budgetTime <= 300_000;
@@ -59,14 +70,16 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
             ? "fresh"
             : "stale; do not assume these are current limits",
       routingPolicy: {
-        version: request.evaluationPolicy ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
-        ...(request.evaluationPolicy ? {} : { coreRules: JEV_ROUTING_CORE }),
+        version: jevEvaluationPolicyVersion(request),
+        ...(request.evaluationPolicy === "baseline-v3"
+          ? {}
+          : { coreRules: baseline41 ? baselineV41.JEV_V41_ROUTING_CORE : JEV_ROUTING_CORE }),
         sourcesCheckedAt: "2026-09-20",
-        workload: JEV_WORKLOAD_PROFILE,
-        profiles: JEV_MODEL_PROFILES.filter((profile) =>
-          request.candidates.some((candidate) => candidate.model === profile.model),
+        workload: baseline41 ? baselineV41.JEV_WORKLOAD_PROFILE : JEV_WORKLOAD_PROFILE,
+        profiles: (baseline41 ? baselineV41.JEV_MODEL_PROFILES : JEV_MODEL_PROFILES).filter(
+          (profile) => request.candidates.some((candidate) => candidate.model === profile.model),
         ),
-        effortGuidance: JEV_EFFORT_GUIDANCE,
+        effortGuidance: baseline41 ? baselineV41.JEV_EFFORT_GUIDANCE : JEV_EFFORT_GUIDANCE,
         calibration:
           "Not yet measured: first-attempt success, task completion latency, tokens per second, and actual allowance use by task. Do not invent these numbers.",
         priceBasis:
@@ -77,12 +90,14 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
         ],
       },
     },
-    questions: (request.evaluationPolicy
+    questions: (request.evaluationPolicy === "baseline-v3"
       ? buildBaselineAssessmentQuestions(request)
-      : buildAssessmentQuestions(request)) ?? {
+      : baseline41
+        ? baselineV41.buildAssessmentQuestions(request)
+        : buildAssessmentQuestions(request)) ?? {
       route: {
         type: "choice",
-        instructions: JEV_ROUTING_INSTRUCTIONS,
+        instructions: baseline41 ? baselineV41.JEV_ROUTING_INSTRUCTIONS : JEV_ROUTING_INSTRUCTIONS,
         criteria: Object.fromEntries(
           request.candidates.map(({ key, description }) => [key, sanitizeJevText(description)]),
         ),
@@ -240,12 +255,11 @@ async function performJevDecision(
     const raw: unknown = JSON.parse(body);
     const latency = Math.round(performance.now() - started);
     const result = buildAssessmentQuestions(request)
-      ? (request.evaluationPolicy ? parseBaselineAssessmentDecision : parseAssessmentDecision)(
-          raw,
-          request,
-          latency,
-          parseJevDecision,
-        )
+      ? (request.evaluationPolicy === "baseline-v3"
+          ? parseBaselineAssessmentDecision
+          : request.evaluationPolicy === "baseline-v4.1"
+            ? baselineV41.parseAssessmentDecision
+            : parseAssessmentDecision)(raw, request, latency, parseJevDecision)
       : parseJevDecision(
           raw,
           request.candidates.map((candidate) => candidate.key),
@@ -254,7 +268,14 @@ async function performJevDecision(
     const selected = request.candidates.find(
       (candidate) => candidate.key === (result.recommendedChoice ?? result.choice),
     );
-    if (selected && !isJevCandidateAllowed(selected, request.context))
+    if (
+      selected &&
+      !(
+        request.evaluationPolicy === "baseline-v4.1"
+          ? baselineV41.isJevCandidateAllowed
+          : isJevCandidateAllowed
+      )(selected, request.context)
+    )
       return {
         ...result,
         policyVersion: JEV_POLICY_VERSION,
@@ -268,9 +289,7 @@ async function performJevDecision(
     const profile = selected?.model ? getJevModelProfile(selected.model) : undefined;
     return {
       ...result,
-      policyVersion: request.evaluationPolicy
-        ? "2026-09-20.guided-assessment.v3"
-        : JEV_POLICY_VERSION,
+      policyVersion: jevEvaluationPolicyVersion(request),
       requestFingerprint,
       ...(request.requestId.startsWith("jev-eval-") ? { evaluationPayload: payload } : {}),
       ...(!result.explanation && selected?.model
@@ -300,13 +319,11 @@ export async function requestJevDecision(
   const payload = JSON.stringify(body);
   const result = await performJevDecision(request, key, signal, transport, body);
   const metadata = {
-    policyVersion: request.evaluationPolicy
-      ? "2026-09-20.guided-assessment.v3"
-      : JEV_POLICY_VERSION,
+    policyVersion: jevEvaluationPolicyVersion(request),
     requestFingerprint: NodeCrypto.createHash("sha256").update(payload).digest("hex"),
     ...(request.requestId.startsWith("jev-eval-") ? { evaluationPayload: payload } : {}),
   };
-  if (request.evaluationPolicy) {
+  if (request.evaluationPolicy === "baseline-v3") {
     // The committed baseline retained the current pair on non-routes; do not give
     // comparison records v4's pause semantics merely because transport is shared.
     const { policyOutcome: _outcome, reasons: _reasons, ...baseline } = result;

@@ -30,7 +30,7 @@ type EvaluationCase = {
 };
 type Row = {
   id: string;
-  arm: "baseline-v3" | "current";
+  arm: "baseline-v3" | "baseline-v4.1" | "current";
   context: JevRoutingContext;
   candidates: readonly { key: string; model: string; effort: string; description: string }[];
   category?: string;
@@ -75,6 +75,7 @@ let active: string | null = null;
 let stopped = false;
 export function JevEvaluation() {
   const [comparison, setComparison] = useState(false);
+  const [baselineArm, setBaselineArm] = useState<"baseline-v3" | "baseline-v4.1">("baseline-v4.1");
   const { cases, rows, running, message } = useEvaluation();
   const setCases = (cases: readonly EvaluationCase[]) => useEvaluation.setState({ cases });
   const setRows = (rows: Row[]) => useEvaluation.setState({ rows });
@@ -87,8 +88,13 @@ export function JevEvaluation() {
   const download = () => {
     const report = {
       policy: JEV_POLICY_VERSION,
-      baselineCommit: "ffacb6f782dc7b9772a4c31e924a303a4b2181d9",
-      comparison: rows.some((row) => row.arm === "baseline-v3"),
+      baselineCommit: rows.some((row) => row.arm === "baseline-v4.1")
+        ? "3cee8857375a88260ad08435324663395770ed4c"
+        : rows.some((row) => row.arm === "baseline-v3")
+          ? "ffacb6f782dc7b9772a4c31e924a303a4b2181d9"
+          : null,
+      baselinePolicy: rows.find((row) => row.arm !== "current")?.result.policyVersion ?? null,
+      comparison: rows.some((row) => row.arm !== "current"),
       evaluatedAt: new Date().toISOString(),
       rows,
       billedUsd: rows
@@ -105,7 +111,9 @@ export function JevEvaluation() {
     );
     const link = document.createElement("a");
     link.href = url;
-    link.download = comparison ? "JEV_ROUTING_COMPARISON_V4.json" : "JEV_ROUTING_RESULTS_V4.json";
+    link.download = rows.some((row) => row.arm !== "current")
+      ? "JEV_ROUTING_COMPARISON_V5.json"
+      : "JEV_ROUTING_RESULTS_V5.json";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
@@ -129,7 +137,7 @@ export function JevEvaluation() {
       const jobs = cases
         .slice(0, comparison ? 24 : 56)
         .flatMap((item) =>
-          (comparison ? (["baseline-v3", "current"] as const) : (["current"] as const)).map(
+          (comparison ? ([baselineArm, "current"] as const) : (["current"] as const)).map(
             (arm) => ({ item, arm }),
           ),
         );
@@ -145,7 +153,7 @@ export function JevEvaluation() {
           requestId,
           prompt: sanitizeJevText(item.prompt),
           context: sanitizeJevContext(item.context),
-          ...(arm === "baseline-v3" ? { evaluationPolicy: "baseline-v3" as const } : {}),
+          ...(arm !== "current" ? { evaluationPolicy: arm } : {}),
           candidates: allowed,
         });
         const chosen = allowed.find(
@@ -223,7 +231,20 @@ export function JevEvaluation() {
           disabled={running}
           onChange={(event) => setComparison(event.target.checked)}
         />
-        Compare committed v3 baseline with current policy (24 cases, 48 calls maximum)
+        Compare committed baseline with current policy (24 cases, 48 calls maximum)
+      </label>
+      <label className="flex items-center gap-2">
+        Comparison baseline
+        <select
+          value={baselineArm}
+          disabled={running}
+          onChange={(event) =>
+            setBaselineArm(event.target.value as "baseline-v3" | "baseline-v4.1")
+          }
+        >
+          <option value="baseline-v4.1">v4.1 · 3cee88573</option>
+          <option value="baseline-v3">v3 · ffacb6f78</option>
+        </select>
       </label>
       <input
         aria-label="Evaluation prompt file"

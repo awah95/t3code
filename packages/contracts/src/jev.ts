@@ -93,7 +93,7 @@ export type JevRoutingContext = typeof JevRoutingContext.Type;
 
 export const JevRouteRequest = Schema.Struct({
   requestId: Schema.String,
-  evaluationPolicy: Schema.optionalKey(Schema.Literal("baseline-v3")),
+  evaluationPolicy: Schema.optionalKey(Schema.Literals(["baseline-v3", "baseline-v4.1"])),
   prompt: Schema.String,
   candidates: Schema.Array(JevCandidate),
   context: JevRoutingContext,
@@ -133,6 +133,17 @@ export const JevRouteResult = Schema.Struct({
   requestFingerprint: Schema.optionalKey(Schema.String),
   evaluationPayload: Schema.optionalKey(Schema.String),
   policyVersion: Schema.optionalKey(Schema.String),
+  conditionalEffort: Schema.optionalKey(
+    Schema.Struct({
+      model: Schema.String,
+      effort: JevEffort,
+      confidence: Schema.Number,
+    }),
+  ),
+  decisionStable: Schema.optionalKey(Schema.Boolean),
+  uncertaintyAlternatives: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Array(Schema.String)),
+  ),
   explanation: Schema.optionalKey(Schema.String),
 });
 export type JevRouteResult = typeof JevRouteResult.Type;

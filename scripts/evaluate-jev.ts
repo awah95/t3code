@@ -7,7 +7,6 @@ import type { JevRoutingContext } from "@t3tools/contracts";
 import {
   JEV_MODEL_PROFILES,
   JEV_EFFORTS,
-  JEV_POLICY_VERSION,
   describeJevCandidate,
   isJevCandidateAllowed,
 } from "../packages/shared/src/jevRouting.ts";
@@ -15,6 +14,7 @@ import {
   requestJevDecision,
   buildJevDecisionBody,
   JEV_TIMEOUT_MS,
+  jevEvaluationPolicyVersion,
 } from "../apps/desktop/src/jev/decision.ts";
 
 type Pair = { model: string; effort: string };
@@ -32,11 +32,31 @@ const arg = (name: string, fallback: string) => {
   return i < 0 ? fallback : (args[i + 1] ?? fallback);
 };
 const corpusPath = NodePath.resolve(arg("--cases", "JEV_ROUTING_EVALUATION.json"));
-const output = NodePath.resolve(arg("--output", "JEV_ROUTING_RESULTS.json"));
+const baselineV3 = args.includes("--baseline-v3");
+const baselineV41 = args.includes("--baseline-v4.1");
+if (baselineV3 && baselineV41)
+  throw new Error("Choose only one baseline: --baseline-v3 or --baseline-v4.1.");
+const evaluationPolicy = baselineV3
+  ? ("baseline-v3" as const)
+  : baselineV41
+    ? ("baseline-v4.1" as const)
+    : undefined;
+const baselineCommit = baselineV41
+  ? "3cee8857375a88260ad08435324663395770ed4c"
+  : baselineV3
+    ? "ffacb6f782dc7b9772a4c31e924a303a4b2181d9"
+    : null;
+const output = NodePath.resolve(
+  arg(
+    "--output",
+    evaluationPolicy
+      ? `JEV_ROUTING_RESULTS_V5_${evaluationPolicy}.json`
+      : "JEV_ROUTING_RESULTS_V5.json",
+  ),
+);
 const limit = Number(arg("--max-calls", "56"));
 const budget = Number(arg("--budget-usd", "0.25"));
 const dry = args.includes("--dry-run");
-const baseline = args.includes("--baseline-v3");
 if (
   !Number.isInteger(limit) ||
   limit < 1 ||
@@ -63,7 +83,7 @@ const requests = cases.map((entry) => {
     throw new Error("Invalid evaluation case.");
   return {
     requestId: `jev-eval-${NodeCrypto.randomUUID()}`,
-    ...(baseline ? { evaluationPolicy: "baseline-v3" as const } : {}),
+    ...(evaluationPolicy ? { evaluationPolicy } : {}),
     prompt: entry.prompt,
     context: entry.context,
     candidates: allCandidates.filter((candidate) =>
@@ -79,7 +99,8 @@ if (dry) {
       maxPayloadChars: Math.max(
         ...requests.map((request) => JSON.stringify(buildJevDecisionBody(request)).length),
       ),
-      policy: baseline ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
+      policy: jevEvaluationPolicyVersion(requests[0]!),
+      baselineCommit,
       candidateCounts: [...new Set(requests.map((r) => r.candidates.length))],
       expectedLabelsSent: false,
     }),
@@ -101,7 +122,8 @@ let unknown = 0;
 const start = NodePerfHooks.performance.now();
 const same = (a: Pair | null, b: Pair) => a?.model === b.model && a.effort === b.effort;
 const meta = () => ({
-  policy: baseline ? "2026-09-20.guided-assessment.v3" : JEV_POLICY_VERSION,
+  policy: jevEvaluationPolicyVersion(requests[0]!),
+  baselineCommit,
   evaluatedAt: new Date().toISOString(),
   corpus: corpusPath,
   maximumCalls: limit,
@@ -157,7 +179,7 @@ for (const [index, entry] of cases.entries()) {
       : null,
     context: request.context,
     candidates: request.candidates,
-    arm: baseline ? "baseline-v3" : "current",
+    arm: evaluationPolicy ?? "current",
     candidateCount: request.candidates.length,
     result,
   });

@@ -43,7 +43,7 @@ export function buildAssessmentQuestions(
       },
     ),
     procedure: question(
-      "Is the method for completing the entire action already established by the supplied evidence? A familiar tool alone does not establish the method. Reconstructing a disputed history or diagnosing an unproven cause requires discovery.",
+      "Is the method for completing the entire action already established by the supplied evidence? Classify the method for the current deliverable, not for solving every issue mentioned in its sources. Reading reports and noting their disagreements is a known procedure when no independent adjudication or fix is requested. A familiar tool alone does not establish the method. Reconstructing a disputed history or diagnosing an unproven cause requires discovery.",
       {
         established:
           "Explicit procedure/solution or conventional direct lookup with unambiguous source and check.",
@@ -54,7 +54,7 @@ export function buildAssessmentQuestions(
       },
     ),
     evidence_work: question(
-      "What must be done with the evidence to complete the requested action? Classify necessary reasoning, not merely the fact that documents will be read.",
+      "What must be done with the evidence to complete the requested action? Classify necessary reasoning, not merely the fact that documents will be read. Reading one supplied coherent note and acknowledging it is extraction, even if that note discusses a difficult investigation. Reporting that accounts disagree without deciding which is true is synthesis; independently establishing the truth is reconciliation.",
       {
         extraction:
           "Retrieve, copy, transform or summarize directly stated facts without integrating a work state or resolving competing accounts.",
@@ -65,7 +65,7 @@ export function buildAssessmentQuestions(
       },
     ),
     correctness: question(
-      "What kind of reasoning is needed to justify the requested conclusion or change? A claim that behavior never occurs may require multiple interacting states even if read-only. A fully supplied test matrix is a bounded check; designing coverage for an unproven invariant is different.",
+      "What kind of reasoning is needed to justify the requested conclusion or change? An interacting invariant is a property of actual system behavior that must hold across components or transitions; accurate ordering or factual reconciliation alone is not such an invariant. Assessing which existing findings remain open does not require proving the underlying software correct. A claim that behavior never occurs may require multiple interacting states even if read-only. A fully supplied test matrix is a bounded check; designing coverage for an unproven invariant is different.",
       {
         direct_check:
           "Correctness follows from a direct observable result or complete supplied checklist, without discovering interacting cases.",
@@ -76,7 +76,7 @@ export function buildAssessmentQuestions(
       },
     ),
     verification: question(
-      "Is a sufficient way to verify the result already known for this particular request? A customary Git status query or exact text replacement has a direct check. Verifying an unproven cross-layer behavior requires designing evidence/coverage.",
+      "Is a sufficient way to verify the result already known for this particular request? A summary or acknowledgement is checked against its source material, not by reproducing every reported defect. A customary Git status query or exact text replacement has a direct check. Verifying an unproven cross-layer behavior requires designing evidence/coverage.",
       {
         available:
           "A known direct observable check or sufficient supplied acceptance procedure exists.",
@@ -109,7 +109,7 @@ export function buildAssessmentQuestions(
   };
   for (const { key, model, efforts } of models) {
     questions[`effort_${key}`] = question(
-      `Assume ${model} executes the full action. Choose a sufficient effort from the available options. Low fits established procedures with direct checks; synthesis/local judgment often needs medium; interacting invariants or difficult causal diagnosis may need high. Additional effort cannot repair insufficient model capability. Do not inherit the parent's effort for an independent child.`,
+      `Assume ${model} executes the full action. Choose the lowest sufficient effort from the available options. Low fits established procedures with direct checks; synthesis/local judgment often needs medium; interacting invariants or difficult causal diagnosis may need high. Additional effort cannot repair insufficient model capability. Do not inherit the parent's effort for an independent child.`,
       Object.fromEntries(efforts.map((effort) => [effort, JEV_EFFORT_GUIDANCE[effort]])),
     );
   }
@@ -124,6 +124,40 @@ const demandKeys = [
   "verification",
   "consequence",
 ] as const;
+
+type DemandKey = (typeof demandKeys)[number];
+type Demand = Record<DemandKey, string>;
+
+// Provisional requirements, not measured success rates or subscription costs.
+function requirements(values: Demand) {
+  const demand = (key: DemandKey) => values[key];
+  let rank = 1;
+  let effort: JevEffort = "low";
+  const reasons: string[] = [];
+  const require = (nextRank: number, nextEffort: JevEffort, reason: string) => {
+    rank = Math.max(rank, nextRank);
+    if (JEV_EFFORTS.indexOf(nextEffort) > JEV_EFFORTS.indexOf(effort)) effort = nextEffort;
+    reasons.push(reason);
+  };
+  if (demand("procedure") === "local_choices") require(2, "medium", "local_judgment");
+  if (demand("procedure") === "discovery") require(3, "medium", "approach_requires_discovery");
+  if (demand("evidence_work") === "synthesis") require(2, "medium", "evidence_synthesis");
+  if (demand("evidence_work") === "reconciliation") require(3, "medium", "conflicting_evidence");
+  if (demand("correctness") === "local_reasoning")
+    require(2, "medium", "local_correctness_reasoning");
+  if (demand("correctness") === "interacting_invariant")
+    require(3, "high", "interacting_correctness_invariant");
+  if (demand("verification") === "must_design")
+    require(2, "medium", "verification_must_be_designed");
+  if (demand("consequence") === "high")
+    require(demand("correctness") === "interacting_invariant" ? 4 : 3, "high", "high_consequence");
+  if (reasons.length === 0) reasons.push("established_procedure_and_direct_check");
+  return { rank, effort, reasons };
+}
+
+// Jev's scores are uncalibrated. This defines the alternatives checked by the pilot,
+// not a probability of task success. Missing context remains conservative.
+const ALTERNATIVE_SCORE_FLOOR = 0.2;
 
 export function parseAssessmentDecision(
   raw: unknown,
@@ -213,28 +247,8 @@ export function parseAssessmentDecision(
         "Jev could not identify enough of the requested task to recommend a worker. No automatic model selection was made.",
     };
   }
-  // Provisional capability floors, not empirical claims of task-success probabilities.
-  let rank = 1;
-  let effort: JevEffort = "low";
-  const reasons: string[] = [];
-  const require = (nextRank: number, nextEffort: JevEffort, reason: string) => {
-    rank = Math.max(rank, nextRank);
-    if (JEV_EFFORTS.indexOf(nextEffort) > JEV_EFFORTS.indexOf(effort)) effort = nextEffort;
-    reasons.push(reason);
-  };
-  if (demand("procedure") === "local_choices") require(2, "medium", "local_judgment");
-  if (demand("procedure") === "discovery") require(3, "medium", "approach_requires_discovery");
-  if (demand("evidence_work") === "synthesis") require(2, "medium", "evidence_synthesis");
-  if (demand("evidence_work") === "reconciliation") require(3, "medium", "conflicting_evidence");
-  if (demand("correctness") === "local_reasoning")
-    require(2, "medium", "local_correctness_reasoning");
-  if (demand("correctness") === "interacting_invariant")
-    require(3, "high", "interacting_correctness_invariant");
-  if (demand("verification") === "must_design")
-    require(2, "medium", "verification_must_be_designed");
-  if (demand("consequence") === "high")
-    require(demand("correctness") === "interacting_invariant" ? 4 : 3, "high", "high_consequence");
-  if (reasons.length === 0) reasons.push("established_procedure_and_direct_check");
+  const values = Object.fromEntries(demandKeys.map((key) => [key, demand(key)])) as Demand;
+  const { rank, effort, reasons } = requirements(values);
   const allowed = request.candidates.filter(
     (candidate) =>
       isJevCandidateAllowed(candidate, request.context) &&
@@ -250,10 +264,29 @@ export function parseAssessmentDecision(
       JEV_EFFORTS.indexOf(a.effort!) - JEV_EFFORTS.indexOf(b.effort!) ||
       a.key.localeCompare(b.key),
   );
-  const selected =
-    allowed.find((candidate) => candidate.key === proposal.key) ??
-    sorted.find((candidate) => candidate.model === proposedModel?.model) ??
-    sorted[0];
+  // A raw stronger proposal is not evidence that its extra capacity is necessary.
+  // Keep it visible and review large disagreements instead of silently overspending.
+  const minimum = sorted[0];
+  const selectedModel = models.find((model) => model.model === minimum?.model);
+  const effortAssessment = selectedModel ? decoded[`effort_${selectedModel.key}`] : undefined;
+  const conditionalEffort =
+    selectedModel && effortAssessment
+      ? {
+          model: selectedModel.model,
+          effort: effortAssessment.recommendedChoice as JevEffort,
+          confidence: effortAssessment.confidence!,
+        }
+      : undefined;
+  // Model-specific effort judgments carry information beyond the coarse task floors.
+  // Economize model capability without discarding the effort needed by that model.
+  const minimumEffort = Math.max(
+    JEV_EFFORTS.indexOf(minimum?.effort ?? "low"),
+    JEV_EFFORTS.indexOf(conditionalEffort?.effort ?? "low"),
+  );
+  const selected = sorted.find(
+    (candidate) =>
+      candidate.model === minimum?.model && JEV_EFFORTS.indexOf(candidate.effort!) >= minimumEffort,
+  );
   if (!selected)
     return {
       ...common,
@@ -263,14 +296,60 @@ export function parseAssessmentDecision(
       error: "No available pair meets the task requirements. Choose explicitly before sending.",
     };
   if (selected.key !== proposal.key) reasons.push("proposal_adjusted_by_capability_policy");
-  const selectedModel = models.find((m) => m.model === selected.model)!;
-  const effortAssessment = decoded[`effort_${selectedModel.key}`]!;
   const demandConfidence = Math.min(...demandKeys.map((key) => decoded[key]!.confidence ?? 0));
+  const uncertaintyAlternatives: Record<string, string[]> = {};
+  let scenarios: Demand[] = [values];
+  for (const key of demandKeys) {
+    const assessment = assessments[key]!;
+    if (assessment.confidence >= 0.5) continue;
+    const alternatives = Object.entries(assessment.probabilities)
+      .filter(
+        ([label, score]) =>
+          label === assessment.choice ||
+          score >= ALTERNATIVE_SCORE_FLOOR ||
+          (key === "context_status" && label === "missing" && score > 0),
+      )
+      .map(([label]) => label);
+    uncertaintyAlternatives[key] = alternatives;
+    // Check combined alternatives too: e.g. high consequence plus an invariant.
+    scenarios = scenarios.flatMap((scenario) =>
+      alternatives.map((label) => ({ ...scenario, [key]: label })),
+    );
+  }
+  const selectedRank = getJevModelProfile(selected.model!)!.capabilityRank;
+  const selectedEffort = JEV_EFFORTS.indexOf(selected.effort!);
+  const demandsStable = scenarios.every((scenario) => {
+    if (scenario.context_status === "missing") return false;
+    const alternative = requirements(scenario);
+    return (
+      selectedRank >= alternative.rank && selectedEffort >= JEV_EFFORTS.indexOf(alternative.effort)
+    );
+  });
+  const effortAlternatives =
+    effortAssessment!.confidence! < 0.5
+      ? Object.entries(effortAssessment!.probabilities)
+          .filter(
+            ([label, score]) =>
+              label === conditionalEffort!.effort || score >= ALTERNATIVE_SCORE_FLOOR,
+          )
+          .map(([label]) => label)
+      : [conditionalEffort!.effort];
+  if (effortAssessment!.confidence! < 0.5)
+    uncertaintyAlternatives[`effort_${selectedModel!.key}`] = effortAlternatives;
+  const effortStable = effortAlternatives.every(
+    (alternative) => selectedEffort >= JEV_EFFORTS.indexOf(alternative as JevEffort),
+  );
+  const decisionStable = demandsStable && effortStable;
+  const proposalRank = getJevModelProfile(proposal.model!)?.capabilityRank ?? 0;
+  const substantialDisagreement = base.confidence! >= 0.5 && proposalRank >= selectedRank + 2;
   const unresolvedAttribution =
     request.context.failure?.unresolved && !request.context.failure.model;
   const incompleteEvidence = (request.context.missingContext?.length ?? 0) > 0;
-  const needsReview = demandConfidence < 0.5 || unresolvedAttribution || incompleteEvidence;
-  if (demandConfidence < 0.5) reasons.push("uncertain_task_demands");
+  const needsReview =
+    !decisionStable || substantialDisagreement || unresolvedAttribution || incompleteEvidence;
+  if (!decisionStable) reasons.push("uncertainty_changes_required_capability");
+  else if (demandConfidence < 0.5) reasons.push("uncertainty_within_selected_capability");
+  if (substantialDisagreement) reasons.push("model_demand_disagreement");
   if (unresolvedAttribution) reasons.push("failed_attempt_model_unknown");
   if (incompleteEvidence) reasons.push("context_omissions_require_review");
   return {
@@ -278,11 +357,14 @@ export function parseAssessmentDecision(
     choice: needsReview ? null : selected.key,
     recommendedChoice: selected.key,
     confidence: demandConfidence,
-    effortConfidence: effortAssessment.confidence,
+    decisionStable,
+    uncertaintyAlternatives,
+    effortConfidence: proposedEffort!.confidence,
+    ...(conditionalEffort ? { conditionalEffort } : {}),
     policyOutcome: needsReview ? "review" : "route",
     reasons,
     admissibleCandidateKeys: allowed.map((candidate) => candidate.key),
     error: needsReview ? "Review the task assessment and recommended pair before sending." : null,
-    explanation: `Capability policy requires tier ${rank} or higher and ${effort} effort or higher: ${reasons.join(", ")}. The recommendation is a provisional policy default, not a measured success prediction. Demand confidence is reported separately from Jev's model and effort proposals.`,
+    explanation: `Capability policy requires tier ${rank} or higher and ${effort} effort or higher: ${reasons.join(", ")}. This uses the least provisioned compatible model meeting those requirements, with at least its proposed effort and the policy effort floor; it is not measured expected cost or success. Low-confidence alternatives scoring at least 0.20 (and any scored missing-context alternative) were checked jointly; stability means only that they fit this pair. Raw assessment confidence is unchanged.`,
   };
 }
