@@ -1,4 +1,5 @@
 import { ArrowUpIcon, ClockIcon } from "lucide-react";
+import { CodexTurnUsage } from "./CodexTurnUsage";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
@@ -282,6 +283,7 @@ interface TimelineRowSharedState {
   workspaceRoot: string | undefined;
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
+  showCodexTurnUsage: boolean;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -437,6 +439,7 @@ interface MessagesTimelineProps {
   onFileOpen?: (attachment: ChatFileAttachment) => void;
   onFileDownload?: (attachment: ChatFileAttachment) => void;
   activeThreadEnvironmentId: EnvironmentId;
+  showCodexTurnUsage?: boolean;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
@@ -506,6 +509,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onFileOpen = NOOP_OPEN_ATTACHMENT,
   onFileDownload = NOOP_OPEN_ATTACHMENT,
   activeThreadEnvironmentId,
+  showCodexTurnUsage = false,
   markdownCwd,
   resolvedTheme,
   timestampFormat,
@@ -1143,6 +1147,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      showCodexTurnUsage,
       onRevertToTurnCount,
       onUseArtifactTemplate,
       onImageExpand,
@@ -1178,6 +1183,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       workspaceRoot,
       skills,
       activeThreadEnvironmentId,
+      showCodexTurnUsage,
       onRevertToTurnCount,
       onUseArtifactTemplate,
       onImageExpand,
@@ -1933,6 +1939,7 @@ function MessageAuthorHeading({ children }: { children: string }) {
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const { onImageExpand, onFileOpen } = ctx;
   const resources = useMemo(
     () => selectMessageImageResources(row.message.attachments),
@@ -2202,6 +2209,15 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           />
         </div>
       </div>
+      {ctx.showCodexTurnUsage && ctx.threadRef && row.message.turnId ? (
+        <CodexTurnUsage
+          environmentId={ctx.activeThreadEnvironmentId}
+          threadId={ctx.threadRef.threadId}
+          turnId={row.message.turnId}
+          isLatestTurn={activity.latestTurnId === row.message.turnId}
+          isUnsettled={activity.unsettledTurnId === row.message.turnId}
+        />
+      ) : null}
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip>
@@ -2334,6 +2350,7 @@ function TimelineRowTimestamp({
 
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
 
   return (
@@ -2348,6 +2365,15 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         <span>{row.label}</span>
         <Icon className="size-3.5" />
       </button>
+      {ctx.showCodexTurnUsage && ctx.threadRef ? (
+        <CodexTurnUsage
+          environmentId={ctx.activeThreadEnvironmentId}
+          threadId={ctx.threadRef.threadId}
+          turnId={row.turnId}
+          isLatestTurn={activity.latestTurnId === row.turnId}
+          isUnsettled={activity.unsettledTurnId === row.turnId}
+        />
+      ) : null}
       <TimelineRowTimestamp
         createdAt={row.createdAt}
         timestampFormat={ctx.timestampFormat}

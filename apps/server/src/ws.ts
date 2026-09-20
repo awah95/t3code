@@ -154,6 +154,7 @@ import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import * as CodexLedgerService from "./usage/CodexLedgerService.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { listLinkedPullRequestThreads } from "./pullRequest/linkedThreads.ts";
@@ -664,6 +665,7 @@ const makeWsRpcLayer = (
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
+      const codexLedger = yield* CodexLedgerService.CodexLedgerService;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -2604,6 +2606,60 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.serverRefreshUsageRates, usage.refreshRates, {
             "rpc.aggregate": "server",
           }),
+        [WS_METHODS.serverGetCodexLedgerSummary]: (_input) =>
+          observeRpcEffect(WS_METHODS.serverGetCodexLedgerSummary, codexLedger.getSummary()),
+        [WS_METHODS.serverListCodexLedgerTurns]: (input) =>
+          observeRpcEffect(WS_METHODS.serverListCodexLedgerTurns, codexLedger.listTurns(input)),
+        [WS_METHODS.serverGetCodexLedgerTurn]: (input) =>
+          observeRpcEffect(WS_METHODS.serverGetCodexLedgerTurn, codexLedger.getTurn(input)),
+        [WS_METHODS.serverListCodexLedgerFamily]: (input) =>
+          observeRpcEffect(WS_METHODS.serverListCodexLedgerFamily, codexLedger.listFamily(input)),
+        [WS_METHODS.serverSetCodexLedgerCapture]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSetCodexLedgerCapture,
+            codexLedger.setCapture(input.active),
+          ),
+        [WS_METHODS.serverExportCodexLedger]: (input) =>
+          observeRpcEffect(WS_METHODS.serverExportCodexLedger, codexLedger.exportJsonl(input)),
+        [WS_METHODS.serverUpsertCodexLedgerExperiment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverUpsertCodexLedgerExperiment,
+            codexLedger.upsertExperiment(input),
+          ),
+        [WS_METHODS.serverGetCodexLedgerExperiment]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetCodexLedgerExperiment,
+            codexLedger.getExperiment(input.experimentId),
+          ),
+        [WS_METHODS.serverListCodexLedgerExperiments]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListCodexLedgerExperiments,
+            codexLedger.listExperiments(),
+          ),
+        [WS_METHODS.serverListCodexLedgerRateSnapshots]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.serverListCodexLedgerRateSnapshots,
+            codexLedger.listRateSnapshots(),
+          ),
+        [WS_METHODS.serverCreateCodexLedgerRateSnapshot]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverCreateCodexLedgerRateSnapshot,
+            codexLedger.createRateSnapshot(input),
+          ),
+        [WS_METHODS.serverSelectCodexLedgerRateSnapshot]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverSelectCodexLedgerRateSnapshot,
+            codexLedger.selectRateSnapshot(input.snapshotId),
+          ),
+        [WS_METHODS.serverUpsertCodexLedgerRun]: (input) =>
+          observeRpcEffect(WS_METHODS.serverUpsertCodexLedgerRun, codexLedger.upsertRun(input)),
+        [WS_METHODS.serverRecordCodexLedgerJevReceipt]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverRecordCodexLedgerJevReceipt,
+            codexLedger.recordJevReceipt(input),
+          ),
+        [WS_METHODS.serverListCodexLedgerQuota]: (input) =>
+          observeRpcEffect(WS_METHODS.serverListCodexLedgerQuota, codexLedger.listQuota(input)),
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) =>
           observeRpcEffect(WS_METHODS.serverRetryResourceTelemetry, resourceTelemetry.retry, {
             "rpc.aggregate": "server",

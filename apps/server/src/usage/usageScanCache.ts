@@ -23,7 +23,8 @@ import type { CodexScanState, UsageRecord } from "./usageTranscripts.ts";
 // entries would keep serving double-counted records forever.
 // v3: entries carry the parse position and reducer state so a grown file
 // re-parses only its appended bytes instead of starting over.
-const USAGE_SCAN_CACHE_VERSION = 3 as const;
+// v4: Codex exact-response precedence and cumulative fallback state.
+const USAGE_SCAN_CACHE_VERSION = 4 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -58,6 +59,9 @@ type SerializedRecord = readonly [
   reasoningTokens: number,
   dedupeKey: string | null,
   reportedCostUsd: number | null,
+  codexSource: "exact" | "compacted" | "legacy" | null,
+  codexTurnId: string | null,
+  codexTurnCheckpoint: readonly [number, number, number, number, number] | null,
 ];
 
 interface SerializedFile {
@@ -109,6 +113,17 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
     record.totals.reasoningTokens,
     record.dedupeKey,
     record.reportedCostUsd,
+    record.codexSource ?? null,
+    record.codexTurnId ?? null,
+    record.codexTurnCheckpoint
+      ? [
+          record.codexTurnCheckpoint.uncachedInputTokens,
+          record.codexTurnCheckpoint.cachedInputTokens,
+          record.codexTurnCheckpoint.cacheCreationTokens,
+          record.codexTurnCheckpoint.outputTokens,
+          record.codexTurnCheckpoint.reasoningTokens,
+        ]
+      : null,
   ];
 
   const files: Record<string, SerializedFile> = {};
@@ -165,7 +180,7 @@ export function decodeScanCache(document: unknown): ScanCache {
   ): UsageRecord[] | null => {
     const records: UsageRecord[] = [];
     for (const row of rows) {
-      if (!isRecordArray(row) || row.length < 10) return null;
+      if (!isRecordArray(row) || row.length !== 13) return null;
       const [
         timestampMs,
         modelIndex,
@@ -177,6 +192,9 @@ export function decodeScanCache(document: unknown): ScanCache {
         reasoning,
         dedupeKey,
         reportedCostUsd,
+        codexSource,
+        codexTurnId,
+        codexTurnCheckpoint,
       ] = row as SerializedRecord;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
@@ -188,7 +206,18 @@ export function decodeScanCache(document: unknown): ScanCache {
         !Number.isFinite(cached) ||
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
-        !Number.isFinite(reasoning)
+        !Number.isFinite(reasoning) ||
+        (codexSource !== null &&
+          codexSource !== "exact" &&
+          codexSource !== "compacted" &&
+          codexSource !== "legacy") ||
+        (codexTurnId !== null && typeof codexTurnId !== "string") ||
+        (codexTurnCheckpoint !== null &&
+          (!isRecordArray(codexTurnCheckpoint) ||
+            codexTurnCheckpoint.length !== 5 ||
+            !codexTurnCheckpoint.every(
+              (value) => typeof value === "number" && Number.isFinite(value),
+            )))
       ) {
         return null;
       }
@@ -207,6 +236,19 @@ export function decodeScanCache(document: unknown): ScanCache {
         },
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
+        ...(codexSource === null ? {} : { codexSource }),
+        ...(codexTurnId === null ? {} : { codexTurnId }),
+        ...(codexTurnCheckpoint === null
+          ? {}
+          : {
+              codexTurnCheckpoint: {
+                uncachedInputTokens: codexTurnCheckpoint[0],
+                cachedInputTokens: codexTurnCheckpoint[1],
+                cacheCreationTokens: codexTurnCheckpoint[2],
+                outputTokens: codexTurnCheckpoint[3],
+                reasoningTokens: codexTurnCheckpoint[4],
+              },
+            }),
       });
     }
     return records;
@@ -271,6 +313,7 @@ function decodeCodexState(value: unknown): CodexScanState | null | undefined {
   if (value === null) return null;
   if (typeof value !== "object") return undefined;
   const state = value as Partial<CodexScanState>;
+  const ledger = state.ledgerState;
   if (
     typeof state.model !== "string" ||
     typeof state.sessionId !== "string" ||
@@ -278,7 +321,27 @@ function decodeCodexState(value: unknown): CodexScanState | null | undefined {
     typeof state.sawSessionMeta !== "boolean" ||
     typeof state.suppressingForkCopies !== "boolean" ||
     typeof state.forkCopyAnchorMs !== "number" ||
-    !Number.isFinite(state.forkCopyAnchorMs)
+    !Number.isFinite(state.forkCopyAnchorMs) ||
+    typeof state.sawExactResponse !== "boolean" ||
+    typeof state.legacyTurnOrdinal !== "number" ||
+    !Number.isSafeInteger(state.legacyTurnOrdinal) ||
+    (state.activeLegacyTurnId !== null && typeof state.activeLegacyTurnId !== "string") ||
+    typeof state.incompleteReceiptCount !== "number" ||
+    !Number.isSafeInteger(state.incompleteReceiptCount) ||
+    state.incompleteReceiptCount < 0 ||
+    typeof ledger !== "object" ||
+    ledger === null ||
+    typeof ledger.ownMetaSeen !== "boolean" ||
+    (ledger.sessionId !== null && typeof ledger.sessionId !== "string") ||
+    (ledger.threadId !== null && typeof ledger.threadId !== "string") ||
+    (ledger.activeTurnId !== null && typeof ledger.activeTurnId !== "string") ||
+    typeof ledger.modelByTurn !== "object" ||
+    ledger.modelByTurn === null ||
+    Array.isArray(ledger.modelByTurn) ||
+    (ledger.lastCumulativeSignature !== null &&
+      typeof ledger.lastCumulativeSignature !== "string") ||
+    (ledger.previousCumulative !== null &&
+      (typeof ledger.previousCumulative !== "object" || Array.isArray(ledger.previousCumulative)))
   ) {
     return undefined;
   }
@@ -289,6 +352,11 @@ function decodeCodexState(value: unknown): CodexScanState | null | undefined {
     sawSessionMeta: state.sawSessionMeta,
     suppressingForkCopies: state.suppressingForkCopies,
     forkCopyAnchorMs: state.forkCopyAnchorMs,
+    ledgerState: ledger,
+    sawExactResponse: state.sawExactResponse,
+    legacyTurnOrdinal: state.legacyTurnOrdinal,
+    activeLegacyTurnId: state.activeLegacyTurnId,
+    incompleteReceiptCount: state.incompleteReceiptCount,
   };
 }
 
@@ -316,12 +384,99 @@ export function dedupeWithinFile(
   seen: Set<string> = new Set(),
 ): readonly UsageRecord[] {
   const kept: UsageRecord[] = [];
+  const byKey = new Map<string, number>();
   for (const record of records) {
     if (record.dedupeKey !== null) {
-      if (seen.has(record.dedupeKey)) continue;
+      if (seen.has(record.dedupeKey)) {
+        const index = byKey.get(record.dedupeKey);
+        const previous = index === undefined ? undefined : kept[index];
+        if (previous && codexRecordsConflict(previous, record)) {
+          // Keep both observations so the source-level pass can quarantine them.
+          kept.push(record);
+          continue;
+        }
+        // Enrich unknown model evidence and prefer an explicit receipt.
+        if (
+          index !== undefined &&
+          previous &&
+          record.provider === "codex" &&
+          ((previous.model.length === 0 && record.model.length > 0) ||
+            (previous.codexSource === "compacted" && record.codexSource === "exact"))
+        )
+          kept[index] = record;
+        continue;
+      }
       seen.add(record.dedupeKey);
+      byKey.set(record.dedupeKey, kept.length);
     }
     kept.push(record);
   }
   return kept;
+}
+
+const codexRecordsConflict = (a: UsageRecord, b: UsageRecord): boolean =>
+  a.provider === "codex" &&
+  b.provider === "codex" &&
+  !!a.dedupeKey &&
+  a.dedupeKey === b.dedupeKey &&
+  ((a.model.length > 0 && b.model.length > 0 && a.model !== b.model) ||
+    (!!a.codexTurnId && !!b.codexTurnId && a.codexTurnId !== b.codexTurnId) ||
+    a.sessionId !== b.sessionId ||
+    a.totals.uncachedInputTokens !== b.totals.uncachedInputTokens ||
+    a.totals.cachedInputTokens !== b.totals.cachedInputTokens ||
+    a.totals.cacheCreationTokens !== b.totals.cacheCreationTokens ||
+    a.totals.outputTokens !== b.totals.outputTokens ||
+    a.totals.reasoningTokens !== b.totals.reasoningTokens);
+
+/** Same-ID disagreements are excluded from trusted aggregate totals. */
+export function conflictingCodexResponseKeys(records: readonly UsageRecord[]): ReadonlySet<string> {
+  const firstByKey = new Map<string, UsageRecord>();
+  const conflicts = new Set<string>();
+  for (const record of records) {
+    if (record.provider !== "codex" || !record.dedupeKey?.startsWith("codex-response:")) continue;
+    const first = firstByKey.get(record.dedupeKey);
+    if (!first) firstByKey.set(record.dedupeKey, record);
+    else if (codexRecordsConflict(first, record)) conflicts.add(record.dedupeKey);
+  }
+  return conflicts;
+}
+
+/** Remove legacy estimates only when exact checkpoints prove they cover the whole turn. */
+export function reconcileCodexAggregateRecords(
+  records: readonly UsageRecord[],
+): readonly UsageRecord[] {
+  const exactRunning = new Map<string, UsageRecord["totals"]>();
+  const coveredTurns = new Set<string>();
+  const keys = [
+    "uncachedInputTokens",
+    "cachedInputTokens",
+    "cacheCreationTokens",
+    "outputTokens",
+    "reasoningTokens",
+  ] as const;
+  for (const record of records) {
+    if (
+      record.provider !== "codex" ||
+      (record.codexSource !== "exact" && record.codexSource !== "compacted") ||
+      !record.codexTurnId
+    )
+      continue;
+    const key = `${record.sessionId}\u0000${record.codexTurnId}`;
+    const prior = exactRunning.get(key);
+    const total = Object.fromEntries(
+      keys.map((field) => [field, (prior?.[field] ?? 0) + record.totals[field]]),
+    ) as unknown as UsageRecord["totals"];
+    exactRunning.set(key, total);
+    if (
+      record.codexTurnCheckpoint &&
+      keys.every((field) => record.codexTurnCheckpoint?.[field] === total[field])
+    )
+      coveredTurns.add(key);
+  }
+  return records.filter(
+    (record) =>
+      record.codexSource !== "legacy" ||
+      !record.codexTurnId ||
+      !coveredTurns.has(`${record.sessionId}\u0000${record.codexTurnId}`),
+  );
 }

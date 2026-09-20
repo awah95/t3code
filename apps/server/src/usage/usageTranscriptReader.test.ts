@@ -8,6 +8,7 @@ import * as NodePath from "node:path";
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
 
 import { readTranscriptRecords } from "./usageTranscriptReader.ts";
+import { dedupeWithinFile } from "./usageScanCache.ts";
 
 let dir: string;
 
@@ -98,6 +99,51 @@ describe("readTranscriptRecords resume", () => {
     assert.strictEqual(second.records.length, 1);
     assert.strictEqual(second.records[0]?.model, "gpt-5.2-codex");
     assert.strictEqual(second.records[0]?.sessionId, "codex-session-1");
+  });
+
+  it("resumes modern Codex receipts and de-duplicates a later compaction embedding", async () => {
+    const path = NodePath.join(dir, "modern-rollout.jsonl");
+    const usage = {
+      input_tokens: 100,
+      cached_input_tokens: 40,
+      cache_write_input_tokens: 10,
+      output_tokens: 5,
+      reasoning_output_tokens: 2,
+      total_tokens: 105,
+    };
+    const payload = {
+      response_id: "resp-1",
+      thread_id: "codex-session-1",
+      turn_id: "turn",
+      usage,
+      turn_token_usage: usage,
+    };
+    const exact = `${JSON.stringify({ type: "token_usage_record", timestamp: "2026-08-01T10:00:05Z", payload })}\n`;
+    const embedded = `${JSON.stringify({
+      type: "compacted",
+      timestamp: "2026-08-01T10:00:06Z",
+      payload: { latest_token_usage_record: payload },
+    })}\n`;
+    await NodeFSP.writeFile(
+      path,
+      codexMetaLine() +
+        JSON.stringify({
+          type: "turn_context",
+          payload: { turn_id: "turn", model: "gpt-5.6-sol" },
+        }) +
+        "\n" +
+        exact,
+    );
+    const first = await readTranscriptRecords(path, "codex");
+    assert.isNotNull(first);
+    assert.strictEqual(first.records.length, 1);
+    await NodeFSP.appendFile(path, embedded);
+    const next = await readTranscriptRecords(path, "codex", first.position);
+    assert.isNotNull(next);
+    assert.isTrue(next.resumed);
+    assert.strictEqual(next.records.length, 1);
+    assert.strictEqual(dedupeWithinFile([...first.records, ...next.records]).length, 1);
+    assert.strictEqual(first.records[0]?.totals.uncachedInputTokens, 50);
   });
 
   it("suppresses a Codex duplicate usage event that straddles the boundary", async () => {

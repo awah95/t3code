@@ -18,6 +18,7 @@ const input = {
   hook_event_name: "PreToolUse",
   tool_name: "spawn_agent",
   tool_use_id: "tool",
+  turn_id: "parent-provider-turn",
   tool_input: {
     message: "Review parser",
     task_name: "review",
@@ -65,6 +66,10 @@ describe("Codex Jev hook", () => {
         permissionDecision: "allow",
         updatedInput: { ...input.tool_input, model: "model-a" },
       },
+    });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      toolUseId: "tool",
+      parentProviderTurnId: "parent-provider-turn",
     });
   });
   it("does not route full-history forks, resumes, invalid inputs or remote brokers", async () => {

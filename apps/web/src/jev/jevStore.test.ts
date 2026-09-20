@@ -76,6 +76,88 @@ describe("Jev desktop routing lifecycle", () => {
     expect(useJevStore.getState().calls[0]?.status).toBe("cancelled");
     expect(useJevStore.getState().estimatedUsd).toBe(result.costUsd);
   });
+  it("persists a billed route once without prompt text", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storage.size;
+      },
+      key: (index: number) => [...storage.keys()][index] ?? null,
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    useJevStore.getState().setEnabled(true);
+    vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
+      ...result,
+      costKind: "billed",
+      evaluationPayload: "private evaluation",
+    });
+    await decideWithJev(
+      { ...request, prompt: "secret task" },
+      { environmentId: "env", projectId: "project", threadId: "thread" },
+    );
+    expect(window.desktopBridge?.decideJevRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "test" }),
+      { environmentId: "env", projectId: "project", threadId: "thread", sourceScope: "turn" },
+    );
+    useJevStore.getState().finishCall(request.requestId, { ...result, costKind: "billed" });
+    expect(useJevStore.getState().billedUsd).toBe(result.costUsd);
+    const persisted = [...storage.values()].join("");
+    expect(persisted).toContain('"reportedCostUsd":"0.000001"');
+    expect(persisted).not.toContain("secret task");
+    expect(persisted).not.toContain("private evaluation");
+  });
+  it("retains the exact message identity before sending and records the later dispatch outcome", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storage.size;
+      },
+      key: (index: number) => [...storage.keys()][index] ?? null,
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    useJevStore.getState().setEnabled(true);
+    await decideWithJev(
+      { ...request, prompt: "private message" },
+      { environmentId: "env", projectId: "project", threadId: "thread" },
+    );
+    expect(
+      useJevStore.getState().recordPreparedDispatch(request.requestId, {
+        model: "gpt-5.6-sol",
+        threadId: "thread",
+        messageId: "message-before-send",
+        environmentId: "env",
+        projectId: "project",
+        succeeded: null,
+      }),
+    ).toBe(true);
+    const prepared = JSON.parse([...storage.values()][0]!) as {
+      input: { messageId: string; status: string; dispatchJson: string };
+    };
+    expect(prepared.input).toMatchObject({ messageId: "message-before-send", status: "completed" });
+    expect(JSON.parse(prepared.input.dispatchJson)).toMatchObject({ accepted: null });
+    expect(JSON.stringify(prepared)).not.toContain("private message");
+
+    useJevStore.getState().recordDispatch(request.requestId, {
+      model: "gpt-5.6-sol",
+      threadId: "thread",
+      messageId: "message-before-send",
+      environmentId: "env",
+      projectId: "project",
+      succeeded: true,
+    });
+    const dispatched = JSON.parse([...storage.values()][0]!) as {
+      input: { messageId: string; status: string; dispatchJson: string };
+    };
+    expect(dispatched.input).toMatchObject({
+      messageId: "message-before-send",
+      status: "dispatched",
+    });
+    expect(JSON.parse(dispatched.input.dispatchJson)).toMatchObject({ accepted: true });
+  });
   it("bounds logs while retaining session totals", async () => {
     useJevStore.getState().setEnabled(true);
     for (let i = 0; i < 55; i++) await decideWithJev({ ...request, requestId: String(i) });
@@ -242,6 +324,114 @@ describe("Jev desktop routing lifecycle", () => {
     resolveStartup();
     await registration;
     expect(calls).toEqual(["clear", "set"]);
+  });
+  it("replays a desktop subagent receipt after restart without a live thread policy", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storage.size;
+      },
+      key: (index: number) => [...storage.keys()][index] ?? null,
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    vi.resetModules();
+    const isolated = await import("./jevStore");
+    window.desktopBridge!.clearJevSubagentPolicies = vi.fn().mockResolvedValue(undefined);
+    window.desktopBridge!.onJevSubagentDecision = vi.fn();
+    window.desktopBridge!.listJevSubagentReceipts = vi.fn().mockResolvedValue([
+      {
+        threadId: "closed-thread",
+        providerInstanceId: "codex",
+        toolUseId: "tool-42",
+        attemptId: "tool-42",
+        ledgerContext: {
+          environmentId: "env",
+          projectId: "project",
+          threadId: "closed-thread",
+          sourceScope: "subagent",
+        },
+        request: { ...request, requestId: "replayed", prompt: "" },
+        result: { ...result, costKind: "billed" },
+      },
+    ]);
+    isolated.listenForJevSubagents();
+    await vi.waitFor(() => expect(storage.size).toBe(1));
+    const persisted = JSON.parse([...storage.values()][0]!) as {
+      input: { threadId: string; toolUseId: string; reportedCostUsd: string };
+    };
+    expect(persisted.input).toMatchObject({
+      threadId: "closed-thread",
+      toolUseId: "tool-42",
+      reportedCostUsd: "0.000001",
+    });
+    expect(isolated.useJevStore.getState().enabled).toBe(false);
+  });
+  it("queues a closed thread storage gap with unknown cost and no invented route", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storage.size;
+      },
+      key: (index: number) => [...storage.keys()][index] ?? null,
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    vi.resetModules();
+    const isolated = await import("./jevStore");
+    window.desktopBridge!.clearJevSubagentPolicies = vi.fn().mockResolvedValue(undefined);
+    window.desktopBridge!.onJevSubagentDecision = vi.fn();
+    window.desktopBridge!.listJevSubagentReceipts = vi.fn().mockResolvedValue([
+      {
+        threadId: "closed-thread",
+        providerInstanceId: "codex",
+        receiptStorageError: true,
+        ledgerContext: {
+          environmentId: "env",
+          projectId: "project",
+          threadId: "closed-thread",
+          sourceScope: "subagent",
+        },
+        request: { ...request, requestId: "jev-storage-gap:unique", prompt: "" },
+        result: null,
+      },
+    ]);
+    isolated.listenForJevSubagents();
+    await vi.waitFor(() => expect(storage.size).toBe(1));
+    const queued = JSON.parse([...storage.values()][0]!) as {
+      input: {
+        requestId: string;
+        attemptId: string;
+        environmentId: string;
+        projectId: string;
+        threadId: string;
+        status: string;
+        receiptStorageError: boolean;
+        decisionJson: string;
+        reportedCostUsd: string | null;
+        estimatedCostUsd: string | null;
+      };
+    };
+    expect(queued.input).toMatchObject({
+      requestId: "jev-storage-gap:unique",
+      attemptId: "jev-storage-gap:unique",
+      environmentId: "env",
+      projectId: "project",
+      threadId: "closed-thread",
+      status: "proposed",
+      receiptStorageError: true,
+      reportedCostUsd: null,
+      estimatedCostUsd: null,
+    });
+    expect(JSON.parse(queued.input.decisionJson)).toMatchObject({
+      appliedChoice: null,
+      costKind: "unknown",
+    });
+    expect(isolated.useJevStore.getState().calls).toEqual([]);
+    isolated.listenForJevSubagents();
+    expect(storage.size).toBe(1);
   });
 });
 

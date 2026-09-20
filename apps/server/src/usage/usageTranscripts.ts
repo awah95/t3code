@@ -7,6 +7,12 @@
  * @module usageTranscripts
  */
 import type { UsageProviderKind, UsageTokenTotals } from "@t3tools/contracts";
+import {
+  createCodexLedgerScanState,
+  ingestCodexLedgerRecord,
+  type CodexLedgerScanState,
+  type CodexUsageEvidence,
+} from "./codexLedgerAccounting.ts";
 
 export interface UsageRecord {
   readonly provider: UsageProviderKind;
@@ -20,6 +26,10 @@ export interface UsageRecord {
    * unique and needs no dedup.
    */
   readonly dedupeKey: string | null;
+  /** Codex-only provenance used to reconcile legacy notifications with exact receipts. */
+  readonly codexSource?: "exact" | "compacted" | "legacy";
+  readonly codexTurnId?: string | null;
+  readonly codexTurnCheckpoint?: UsageTokenTotals | null;
 }
 
 const EMPTY_TOTALS: UsageTokenTotals = {
@@ -70,7 +80,11 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
-  return line.includes('"token_count"');
+  return (
+    line.includes('"token_count"') ||
+    line.includes('"token_usage_record"') ||
+    line.includes('"compacted"')
+  );
 }
 
 /**
@@ -168,6 +182,11 @@ export interface CodexScanState {
   /** While true, leading usage events are re-stamped copies of parent history. */
   suppressingForkCopies: boolean;
   forkCopyAnchorMs: number;
+  ledgerState: CodexLedgerScanState;
+  sawExactResponse: boolean;
+  legacyTurnOrdinal: number;
+  activeLegacyTurnId: string | null;
+  incompleteReceiptCount: number;
 }
 
 export function initialCodexScanState(): CodexScanState {
@@ -178,6 +197,11 @@ export function initialCodexScanState(): CodexScanState {
     sawSessionMeta: false,
     suppressingForkCopies: false,
     forkCopyAnchorMs: 0,
+    ledgerState: createCodexLedgerScanState(),
+    sawExactResponse: false,
+    legacyTurnOrdinal: 0,
+    activeLegacyTurnId: null,
+    incompleteReceiptCount: 0,
   };
 }
 
@@ -218,17 +242,15 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     return null;
   }
   if (typeof parsed !== "object" || parsed === null) return null;
-
   const record = parsed as Record<string, unknown>;
   const payload = record["payload"];
   if (typeof payload !== "object" || payload === null) return null;
   const payloadRecord = payload as Record<string, unknown>;
-  const payloadType = payloadRecord["type"];
-
+  const events = ingestCodexLedgerRecord(state.ledgerState, record, {
+    sourceId: state.sessionId,
+    observationId: "aggregate",
+  });
   if (record["type"] === "session_meta") {
-    // Only the first meta describes this file's own session. A forked rollout
-    // repeats the ancestors' metas right after it; letting those through would
-    // reassign every subsequent record to an ancestor session.
     if (state.sawSessionMeta) return null;
     state.sawSessionMeta = true;
     const id = payloadRecord["id"] ?? payloadRecord["session_id"];
@@ -240,37 +262,77 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     }
     return null;
   }
-
   if (record["type"] === "turn_context") {
     if (typeof payloadRecord["model"] === "string") state.model = payloadRecord["model"];
+    state.legacyTurnOrdinal += 1;
+    state.activeLegacyTurnId =
+      typeof payloadRecord["turn_id"] === "string"
+        ? payloadRecord["turn_id"]
+        : `context:${state.legacyTurnOrdinal}`;
     return null;
   }
-
-  if (payloadType !== "token_count") return null;
-
+  const timestampMs = parseTimestampMs(record["timestamp"]);
+  const exact = events.find((event) => event.kind === "response");
+  if (exact?.kind === "response") {
+    state.sawExactResponse = true;
+    const totals = codexEvidenceTotals(exact.usage, true);
+    if (totals === null) state.incompleteReceiptCount += 1;
+    if (totals === null || timestampMs === null) return null;
+    return {
+      provider: "codex",
+      timestampMs,
+      model: exact.model ?? (exact.turnId ? "" : state.model),
+      sessionId: exact.threadId ?? state.sessionId,
+      totals,
+      reportedCostUsd: null,
+      dedupeKey: `codex-response:${exact.responseId}`,
+      codexSource: exact.origin === "compacted" ? "compacted" : "exact",
+      codexTurnId: exact.turnId ?? state.activeLegacyTurnId,
+      codexTurnCheckpoint: exact.turnCheckpoint
+        ? codexEvidenceTotals(exact.turnCheckpoint, true)
+        : null,
+    };
+  }
+  if (payloadRecord["type"] !== "token_count" || state.sawExactResponse || timestampMs === null)
+    return null;
   const info = payloadRecord["info"];
   if (typeof info !== "object" || info === null) return null;
-  const last = (info as Record<string, unknown>)["last_token_usage"];
+  const infoRecord = info as Record<string, unknown>;
+  const last = infoRecord["last_token_usage"];
   if (typeof last !== "object" || last === null) return null;
   const lastRecord = last as Record<string, unknown>;
-
-  // Only an event that is otherwise eligible may consume the duplicate
-  // signature. A token_count arriving before its turn_context (no model yet)
-  // must not poison it, or the re-emitted copy after the model is known would
-  // be skipped as a duplicate and those tokens never counted.
-  const timestampMs = parseTimestampMs(record["timestamp"]);
-  if (timestampMs === null) return null;
+  let evidence = events.find((event) => event.kind === "provisional");
+  if (evidence?.kind !== "provisional") {
+    if (infoRecord["total_token_usage"] !== undefined) return null;
+    // Old notifications have no cumulative counter. Equal consecutive vectors
+    // are ambiguous here; only newer cumulative data can prove distinct calls.
+    const signature = JSON.stringify(lastRecord);
+    if (signature === state.lastUsageSignature) return null;
+    evidence = {
+      kind: "provisional",
+      sourceId: state.sessionId,
+      observationId: "aggregate",
+      threadId: state.sessionId,
+      turnId: state.activeLegacyTurnId,
+      model: state.model || null,
+      usage: {
+        counters: {
+          input_tokens: int(lastRecord["input_tokens"]),
+          cached_input_tokens: int(lastRecord["cached_input_tokens"]),
+          cache_write_input_tokens: int(lastRecord["cache_write_input_tokens"]),
+          output_tokens: int(lastRecord["output_tokens"]),
+          reasoning_output_tokens: int(lastRecord["reasoning_output_tokens"]),
+          total_tokens: null,
+        },
+        invalid: [],
+        invalidRaw: {},
+      },
+      reset: false,
+      timestampMs,
+    };
+  }
   if (state.model.length === 0) return null;
-
-  // Codex re-emits an unchanged token_count on some stream boundaries. Summing
-  // those would double count, so identical consecutive payloads are skipped.
-  const signature = JSON.stringify(lastRecord);
-  if (signature === state.lastUsageSignature) return null;
-  state.lastUsageSignature = signature;
-
-  // In a forked rollout the copied parent history was already counted from the
-  // parent's own file. Drop the leading burst; the first usage event separated
-  // from its predecessor by a real turn's worth of time ends it for good.
+  state.lastUsageSignature = JSON.stringify(lastRecord);
   if (state.suppressingForkCopies) {
     if (timestampMs - state.forkCopyAnchorMs < FORK_COPY_MAX_GAP_MS) {
       state.forkCopyAnchorMs = timestampMs;
@@ -278,35 +340,39 @@ export function parseCodexLine(line: string, state: CodexScanState): UsageRecord
     }
     state.suppressingForkCopies = false;
   }
-
-  const inputTokens = int(lastRecord["input_tokens"]);
-  const cachedInputTokens = int(lastRecord["cached_input_tokens"]);
-  const cacheCreationTokens = int(lastRecord["cache_write_input_tokens"]);
-  const outputTokens = int(lastRecord["output_tokens"]);
-
-  const totals: UsageTokenTotals = {
-    // Codex reports `input_tokens` inclusive of the cached portion.
-    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
-    cachedInputTokens,
-    cacheCreationTokens,
-    outputTokens,
-    // Reported inside output_tokens, surfaced separately for the token mix.
-    reasoningTokens: Math.min(outputTokens, int(lastRecord["reasoning_output_tokens"])),
-  };
-
-  if (totalTokens(totals) === 0) return null;
-
+  const totals = codexEvidenceTotals(evidence.usage, false);
+  if (totals === null || totalTokens(totals) === 0) return null;
   return {
     provider: "codex",
     timestampMs,
     model: state.model,
     sessionId: state.sessionId,
     totals,
-    // Codex does not report cost in the rollout.
     reportedCostUsd: null,
-    // Events surviving the fork-copy suppression above are unique to this
-    // rollout, so they need no global dedup.
     dedupeKey: null,
+    codexSource: "legacy",
+    codexTurnId: state.activeLegacyTurnId,
+  };
+}
+
+function codexEvidenceTotals(
+  evidence: CodexUsageEvidence,
+  strict: boolean,
+): UsageTokenTotals | null {
+  if (evidence.invalid.length) return null;
+  const values = evidence.counters;
+  const input = values.input_tokens;
+  const output = values.output_tokens;
+  if (input === null || output === null) return null;
+  const cached = values.cached_input_tokens ?? (strict ? null : 0);
+  const write = values.cache_write_input_tokens ?? (strict ? null : 0);
+  if (cached === null || write === null || cached + write > input) return null;
+  return {
+    uncachedInputTokens: input - cached - write,
+    cachedInputTokens: cached,
+    cacheCreationTokens: write,
+    outputTokens: output,
+    reasoningTokens: values.reasoning_output_tokens ?? 0,
   };
 }
 

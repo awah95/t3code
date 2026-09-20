@@ -145,6 +145,7 @@ export const JevRouteResult = Schema.Struct({
     Schema.Record(Schema.String, Schema.Array(Schema.String)),
   ),
   explanation: Schema.optionalKey(Schema.String),
+  receiptStorageError: Schema.optional(Schema.Boolean),
 });
 export type JevRouteResult = typeof JevRouteResult.Type;
 
@@ -154,6 +155,14 @@ export const JevSubagentPolicy = Schema.Struct({
   enabled: Schema.Boolean,
   candidates: Schema.Array(JevCandidate),
   context: Schema.optionalKey(JevRoutingContext),
+  ledgerContext: Schema.optional(
+    Schema.Struct({
+      environmentId: Schema.String,
+      projectId: Schema.NullOr(Schema.String),
+      threadId: Schema.String,
+      sourceScope: Schema.Literal("subagent"),
+    }),
+  ),
 });
 export type JevSubagentPolicy = typeof JevSubagentPolicy.Type;
 
@@ -162,5 +171,19 @@ export const JevSubagentDecision = Schema.Struct({
   providerInstanceId: Schema.String,
   request: JevRouteRequest,
   result: Schema.NullOr(JevRouteResult),
+  toolUseId: Schema.optional(Schema.String),
+  attemptId: Schema.optional(Schema.String),
+  dispatchModel: Schema.optional(Schema.String),
+  dispatchEffort: Schema.optional(Schema.String),
+  parentProviderTurnId: Schema.optional(Schema.String),
+  receiptStorageError: Schema.optional(Schema.Boolean),
+  ledgerContext: Schema.optional(
+    Schema.Struct({
+      environmentId: Schema.String,
+      projectId: Schema.NullOr(Schema.String),
+      threadId: Schema.String,
+      sourceScope: Schema.Literals(["turn", "subagent"]),
+    }),
+  ),
 });
 export type JevSubagentDecision = typeof JevSubagentDecision.Type;

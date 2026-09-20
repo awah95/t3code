@@ -37,11 +37,13 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { SymbolView } from "../../components/AppSymbol";
 import type { UsageChartMetric } from "./usageChartData";
 import { PROVIDER_LABEL, useProviderColors } from "./usageProviders";
+import { CodexLedgerSection } from "./CodexLedgerSection";
 
-type UsageTab = "usage" | "limits";
+type UsageTab = "usage" | "limits" | "ledger";
 const TAB_OPTIONS = [
   { value: "usage", label: "Usage" },
   { value: "limits", label: "Limits" },
+  { value: "ledger", label: "Codex" },
 ] as const satisfies readonly { value: UsageTab; label: string }[];
 
 // Labels are abbreviated to share a row with the metric toggle; screen
@@ -72,12 +74,21 @@ export function UsageRouteScreen() {
   // Preserve the Limits default while honoring explicit widget/navigation links.
   const [selection, setSelection] = useState(() => ({
     params: route.params,
-    tab: (route.params?.tab === "usage" ? "usage" : "limits") as UsageTab,
+    tab: (route.params?.tab === "usage"
+      ? "usage"
+      : route.params?.tab === "ledger"
+        ? "ledger"
+        : "limits") as UsageTab,
   }));
   if (selection.params !== route.params) {
     setSelection({
       params: route.params,
-      tab: route.params?.tab === "usage" ? "usage" : "limits",
+      tab:
+        route.params?.tab === "usage"
+          ? "usage"
+          : route.params?.tab === "ledger"
+            ? "ledger"
+            : "limits",
     });
   }
   const { tab } = selection;
@@ -257,7 +268,9 @@ export function UsageRouteScreen() {
           entering={FadeIn.duration(160).reduceMotion(ReduceMotion.System)}
           className="gap-6"
         >
-          {showingLimits ? (
+          {tab === "ledger" ? (
+            <CodexLedgerSection environments={selectedEnvironments} />
+          ) : showingLimits ? (
             <UsageLimitsSection
               now={limits.now}
               failedLabels={limits.failedLabels}

@@ -1048,6 +1048,46 @@ export function createServerEnvironmentAtoms<R, E>(
       staleTimeMs: 60_000,
       refreshTrigger: ({ environmentId }) => usagePricesAtom(environmentId),
     }),
+    codexLedgerSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-summary",
+      tag: WS_METHODS.serverGetCodexLedgerSummary,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerTurns: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-turns",
+      tag: WS_METHODS.serverListCodexLedgerTurns,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerTurn: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-turn",
+      tag: WS_METHODS.serverGetCodexLedgerTurn,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerFamily: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-family",
+      tag: WS_METHODS.serverListCodexLedgerFamily,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerQuota: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-quota",
+      tag: WS_METHODS.serverListCodexLedgerQuota,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerExperiment: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-experiment",
+      tag: WS_METHODS.serverGetCodexLedgerExperiment,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerExperiments: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-experiments",
+      tag: WS_METHODS.serverListCodexLedgerExperiments,
+      staleTimeMs: 10_000,
+    }),
+    codexLedgerRateSnapshots: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:codex-ledger-rates",
+      tag: WS_METHODS.serverListCodexLedgerRateSnapshots,
+      staleTimeMs: 10_000,
+    }),
     configProjection,
     welcome,
     consumeResetCredit: createEnvironmentRpcCommand(runtime, {
@@ -1109,6 +1149,34 @@ export function createServerEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId }) => environmentId,
       },
+    }),
+    setCodexLedgerCapture: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-capture",
+      tag: WS_METHODS.serverSetCodexLedgerCapture,
+    }),
+    exportCodexLedger: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-export",
+      tag: WS_METHODS.serverExportCodexLedger,
+    }),
+    upsertCodexLedgerExperiment: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-experiment-upsert",
+      tag: WS_METHODS.serverUpsertCodexLedgerExperiment,
+    }),
+    upsertCodexLedgerRun: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-run-upsert",
+      tag: WS_METHODS.serverUpsertCodexLedgerRun,
+    }),
+    createCodexLedgerRateSnapshot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-rate-create",
+      tag: WS_METHODS.serverCreateCodexLedgerRateSnapshot,
+    }),
+    selectCodexLedgerRateSnapshot: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-rate-select",
+      tag: WS_METHODS.serverSelectCodexLedgerRateSnapshot,
+    }),
+    recordCodexLedgerJevReceipt: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:server:codex-ledger-jev-receipt",
+      tag: WS_METHODS.serverRecordCodexLedgerJevReceipt,
     }),
     retryResourceTelemetry: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:retry-resource-telemetry",

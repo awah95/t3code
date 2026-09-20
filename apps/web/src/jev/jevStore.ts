@@ -4,9 +4,14 @@ import type {
   JevRouteResult,
   JevRoutingContext,
   JevSubagentPolicy,
+  CodexLedgerJevReceiptInput,
 } from "@t3tools/contracts";
 import { create } from "zustand";
 import { isElectron } from "../env";
+import { jevUsdDecimal, queueJevLedgerReceipt } from "./jevLedgerReceipts";
+
+type ReceiptContext = { environmentId: string; projectId: string | null; threadId: string };
+const subagentReceiptContexts = new Map<string, ReceiptContext>();
 
 export interface JevCall {
   id: string;
@@ -19,6 +24,7 @@ export interface JevCall {
     | "approved"
     | "blocked"
     | "dispatch-failed"
+    | "prepared"
     | "routed"
     | "fallback"
     | "cancelled"
@@ -27,12 +33,21 @@ export interface JevCall {
   approvedChoice?: string | null;
   notice: string | null;
   kind?: "turn" | "subagent";
+  receiptContext?: ReceiptContext | undefined;
+  toolUseId?: string | undefined;
+  attemptId?: string | undefined;
+  parentProviderTurnId?: string | undefined;
+  receiptStorageError?: boolean | undefined;
   dispatch?: {
     model: string;
     effort?: string | undefined;
     threadId: string;
     messageId?: string;
-    succeeded: boolean;
+    environmentId?: string;
+    projectId?: string | null;
+    turnId?: string | null;
+    dispatchId?: string | null;
+    succeeded: boolean | null;
   };
 }
 
@@ -58,11 +73,21 @@ function initializeSubagentPolicies(): Promise<void> {
   return policyInitialization;
 }
 
-export async function registerJevSubagentPolicy(policy: SubagentPolicy): Promise<void> {
+export async function registerJevSubagentPolicy(
+  policy: SubagentPolicy,
+  receiptContext?: ReceiptContext,
+): Promise<void> {
   if (!isElectron || !window.desktopBridge?.setJevSubagentPolicy) return;
+  if (receiptContext) subagentReceiptContexts.set(policy.threadId, receiptContext);
+  const persistedPolicy: SubagentPolicy = receiptContext
+    ? { ...policy, ledgerContext: { ...receiptContext, sourceScope: "subagent" } }
+    : policy;
   const initialized = initializeSubagentPolicies();
-  if (JSON.stringify(subagentPolicies.get(policy.threadId)) === JSON.stringify(policy)) return;
-  subagentPolicies.set(policy.threadId, policy);
+  if (JSON.stringify(subagentPolicies.get(policy.threadId)) === JSON.stringify(persistedPolicy)) {
+    void replayJevSubagentReceipts();
+    return;
+  }
+  subagentPolicies.set(policy.threadId, persistedPolicy);
   try {
     await queuePolicyOperation(async () => {
       await initialized;
@@ -71,11 +96,25 @@ export async function registerJevSubagentPolicy(policy: SubagentPolicy): Promise
         !(useJevStore.getState().enabled && useJevStore.getState().subagentsEnabled)
       )
         return;
-      await window.desktopBridge?.setJevSubagentPolicy?.(policy);
+      await window.desktopBridge?.setJevSubagentPolicy?.(persistedPolicy);
     });
   } catch (error) {
-    if (subagentPolicies.get(policy.threadId) === policy) subagentPolicies.delete(policy.threadId);
+    if (subagentPolicies.get(policy.threadId) === persistedPolicy)
+      subagentPolicies.delete(policy.threadId);
     throw error;
+  }
+  void replayJevSubagentReceipts();
+}
+
+async function replayJevSubagentReceipts(): Promise<void> {
+  try {
+    for (const event of (await window.desktopBridge?.listJevSubagentReceipts?.()) ?? []) {
+      if (event.ledgerContext || subagentReceiptContexts.has(event.threadId))
+        handleSubagentDecision(event);
+      else useJevStore.setState({ notice: "A legacy Jev receipt awaits its thread context." });
+    }
+  } catch {
+    useJevStore.setState({ notice: "Could not replay pending Jev accounting receipts." });
   }
 }
 
@@ -110,10 +149,52 @@ export function listenForJevSubagents() {
     );
   if (listeningForSubagents || !isElectron || !window.desktopBridge?.onJevSubagentDecision) return;
   listeningForSubagents = true;
-  window.desktopBridge.onJevSubagentDecision((event) => {
-    const request = { ...event.request, prompt: sanitizeJevPrompt(event.request.prompt) };
-    const store = useJevStore.getState();
-    if (event.result === null)
+  window.desktopBridge.onJevSubagentDecision(handleSubagentDecision);
+  void replayJevSubagentReceipts();
+}
+
+function handleSubagentDecision(event: import("@t3tools/contracts").JevSubagentDecision) {
+  if (event.receiptStorageError)
+    useJevStore.setState({ notice: "Desktop could not retain a Jev accounting receipt." });
+  const request = { ...event.request, prompt: sanitizeJevPrompt(event.request.prompt) };
+  const mainTurn = event.ledgerContext?.sourceScope === "turn";
+  const receiptContext = mainTurn
+    ? event.ledgerContext
+    : (event.ledgerContext ?? subagentReceiptContexts.get(event.threadId));
+  if (event.receiptStorageError && event.result === null) {
+    // A desktop outbox gap has no routing result or known charge, but must reach the ledger.
+    recordJevReceipt({
+      id: request.requestId,
+      createdAt: new Date().toISOString(),
+      request,
+      result: null,
+      status: "pending",
+      notice: null,
+      kind: mainTurn ? "turn" : "subagent",
+      receiptContext,
+      attemptId: event.attemptId,
+      receiptStorageError: true,
+    });
+    return;
+  }
+  const store = useJevStore.getState();
+  if (event.result === null)
+    store.addCall({
+      id: request.requestId,
+      createdAt: new Date().toISOString(),
+      request,
+      result: null,
+      status: "pending",
+      notice: null,
+      kind: mainTurn ? "turn" : "subagent",
+      receiptContext,
+      toolUseId: event.toolUseId,
+      attemptId: event.attemptId,
+      parentProviderTurnId: event.parentProviderTurnId,
+      receiptStorageError: event.receiptStorageError,
+    });
+  else {
+    if (!store.calls.some((call) => call.id === request.requestId))
       store.addCall({
         id: request.requestId,
         createdAt: new Date().toISOString(),
@@ -121,22 +202,85 @@ export function listenForJevSubagents() {
         result: null,
         status: "pending",
         notice: null,
-        kind: "subagent",
+        kind: mainTurn ? "turn" : "subagent",
+        receiptContext,
+        toolUseId: event.toolUseId,
+        attemptId: event.attemptId,
+        parentProviderTurnId: event.parentProviderTurnId,
+        receiptStorageError: event.receiptStorageError,
       });
-    else {
-      if (!store.calls.some((call) => call.id === request.requestId))
-        store.addCall({
-          id: request.requestId,
-          createdAt: new Date().toISOString(),
-          request,
-          result: null,
-          status: "pending",
-          notice: null,
-          kind: "subagent",
-        });
-      useJevStore.getState().finishCall(request.requestId, event.result);
-    }
-  });
+    useJevStore.getState().finishCall(request.requestId, event.result);
+    const finalCall = useJevStore.getState().calls.find((call) => call.id === request.requestId);
+    if (finalCall) recordJevReceipt(finalCall, event.dispatchModel, event.dispatchEffort);
+  }
+}
+
+function recordJevReceipt(call: JevCall, dispatchModel?: string, dispatchEffort?: string): boolean {
+  const context = call.receiptContext;
+  if (!context) return false;
+  const result = call.result;
+  const dispatch = call.dispatch;
+  const status: CodexLedgerJevReceiptInput["status"] = dispatch
+    ? dispatch.succeeded === true
+      ? "dispatched"
+      : dispatch.succeeded === false
+        ? "failed"
+        : "proposed"
+    : call.status === "cancelled"
+      ? "cancelled"
+      : result
+        ? "completed"
+        : "proposed";
+  const input: CodexLedgerJevReceiptInput = {
+    requestId: call.id,
+    attemptId: call.attemptId ?? call.id,
+    rootTurnId: dispatch?.turnId ?? null,
+    toolUseId: call.toolUseId ?? null,
+    environmentId: context.environmentId,
+    projectId: context.projectId,
+    threadId: context.threadId,
+    messageId: dispatch?.messageId ?? null,
+    turnId: dispatch?.turnId ?? null,
+    providerThreadId: null,
+    providerTurnId: null,
+    childProviderThreadId: null,
+    parentProviderTurnId: call.parentProviderTurnId ?? null,
+    dispatchId: dispatch?.dispatchId ?? null,
+    observedModel: null,
+    sourceScope: call.kind === "subagent" ? "subagent" : "turn",
+    decisionJson: JSON.stringify({
+      proposedChoice: result?.proposedChoice ?? result?.recommendedChoice ?? result?.choice ?? null,
+      appliedChoice: result?.choice ?? null,
+      approvedChoice: call.approvedChoice ?? null,
+      reviewAction: call.decision ?? null,
+      policyOutcome: result?.policyOutcome ?? null,
+      policyVersion: result?.policyVersion ?? null,
+      responseModel: result?.responseModel ?? null,
+      requestFingerprint: result?.requestFingerprint ?? null,
+      costKind: result?.costKind ?? "unknown",
+      inputTokens: result?.inputTokens ?? null,
+      outputTokens: result?.outputTokens ?? null,
+    }),
+    dispatchJson:
+      dispatch || dispatchModel
+        ? JSON.stringify({
+            model: dispatch?.model ?? dispatchModel,
+            effort: dispatch?.effort ?? dispatchEffort ?? null,
+            accepted: dispatch?.succeeded ?? null,
+            brokerSelected: dispatchModel !== undefined,
+          })
+        : null,
+    reportedCostUsd: result?.costKind === "billed" ? jevUsdDecimal(result.costUsd ?? null) : null,
+    estimatedCostUsd:
+      result?.costKind === "estimated" ? jevUsdDecimal(result.costUsd ?? null) : null,
+    status,
+    receiptStorageError: call.receiptStorageError ?? result?.receiptStorageError ?? false,
+  };
+  const persisted = queueJevLedgerReceipt({ environmentId: context.environmentId, input });
+  if (!persisted) {
+    useJevStore.setState({ notice: "Jev accounting receipt could not be saved locally." });
+  }
+  return persisted;
 }
 
 export const useJevStore = create<{
@@ -162,6 +306,7 @@ export const useJevStore = create<{
   pinManual: () => void;
   addCall: (call: JevCall) => void;
   finishCall: (id: string, result: JevRouteResult, cancelled?: boolean) => void;
+  recordPreparedDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => boolean;
   recordDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => void;
   clearCalls: () => void;
   cancelPending: () => void;
@@ -247,10 +392,27 @@ export const useJevStore = create<{
     }),
   finishCall: (id, result, cancelled = false) =>
     set({
-      billedUsd: get().billedUsd + (result.costKind === "billed" ? (result.costUsd ?? 0) : 0),
+      billedUsd:
+        get().billedUsd +
+        (get().calls.find((call) => call.id === id)?.result
+          ? 0
+          : result.costKind === "billed"
+            ? (result.costUsd ?? 0)
+            : 0),
       estimatedUsd:
-        get().estimatedUsd + (result.costKind === "estimated" ? (result.costUsd ?? 0) : 0),
-      unknownCostCalls: get().unknownCostCalls + (result.costKind === "unknown" ? 1 : 0),
+        get().estimatedUsd +
+        (get().calls.find((call) => call.id === id)?.result
+          ? 0
+          : result.costKind === "estimated"
+            ? (result.costUsd ?? 0)
+            : 0),
+      unknownCostCalls:
+        get().unknownCostCalls +
+        (get().calls.find((call) => call.id === id)?.result
+          ? 0
+          : result.costKind === "unknown"
+            ? 1
+            : 0),
       calls: get().calls.map((call) =>
         call.id === id
           ? {
@@ -263,7 +425,18 @@ export const useJevStore = create<{
       ),
       notice: cancelled ? "Routing cancelled. Message was not sent." : result.error,
     }),
-  recordDispatch: (id, dispatch) =>
+  recordPreparedDispatch: (id, dispatch) => {
+    const call = get().calls.find((entry) => entry.id === id);
+    if (!call) return false;
+    const prepared = {
+      ...call,
+      dispatch: { ...dispatch, succeeded: null },
+      status: "prepared" as const,
+    };
+    set({ calls: get().calls.map((entry) => (entry.id === id ? prepared : entry)) });
+    return recordJevReceipt(prepared);
+  },
+  recordDispatch: (id, dispatch) => {
     set({
       calls: get().calls.map((call) =>
         call.id === id
@@ -277,7 +450,10 @@ export const useJevStore = create<{
             }
           : call,
       ),
-    }),
+    });
+    const call = get().calls.find((entry) => entry.id === id);
+    if (call) recordJevReceipt(call);
+  },
   clearCalls: () =>
     set({
       calls: get().calls.filter(
@@ -327,7 +503,10 @@ export function jevPriorAttempts(
 /** Redact common credentials without shortening the current request. */
 export const sanitizeJevPrompt = sanitizeJevText;
 
-export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteResult | null> {
+export async function decideWithJev(
+  request: JevRouteRequest,
+  receiptContext?: ReceiptContext,
+): Promise<JevRouteResult | null> {
   const store = useJevStore.getState();
   if (!isElectron || !store.enabled) return null;
   const revision = store.revision;
@@ -339,11 +518,18 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
     result: null,
     status: "pending",
     notice: null,
+    receiptContext,
+    kind: "turn",
   });
   let result: JevRouteResult;
   try {
     if (!window.desktopBridge?.decideJevRoute) throw new Error("Desktop routing unavailable");
-    result = await window.desktopBridge.decideJevRoute(request);
+    result = await window.desktopBridge.decideJevRoute(
+      request,
+      receiptContext ? { ...receiptContext, sourceScope: "turn" } : undefined,
+    );
+    if (result.receiptStorageError)
+      useJevStore.setState({ notice: "Desktop could not retain a Jev accounting receipt." });
   } catch {
     result = {
       choice: null,
@@ -362,6 +548,8 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
   }
   const cancelled = useJevStore.getState().revision !== revision;
   useJevStore.getState().finishCall(request.requestId, result, cancelled);
+  const completedCall = useJevStore.getState().calls.find((call) => call.id === request.requestId);
+  if (completedCall) recordJevReceipt(completedCall);
   if (cancelled) return null;
   const automaticChoiceAllowed =
     result.choice !== null &&

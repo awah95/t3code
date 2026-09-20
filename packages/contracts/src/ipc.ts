@@ -1096,11 +1096,23 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 export interface DesktopBridge {
   getJevStatus?: () => Promise<import("./jev.ts").JevStatus>;
   setJevApiKey?: (key: string | null) => Promise<void>;
-  decideJevRoute?: (request: import("./jev.ts").JevRouteRequest) => Promise<import("./jev.ts").JevRouteResult>;
+  decideJevRoute?: (
+    request: import("./jev.ts").JevRouteRequest,
+    receiptContext?: {
+      environmentId: string;
+      projectId: string | null;
+      threadId: string;
+      sourceScope: "turn" | "subagent";
+    },
+  ) => Promise<import("./jev.ts").JevRouteResult>;
   cancelJevRoute?: (requestId: string) => Promise<void>;
   setJevSubagentPolicy?: (policy: import("./jev.ts").JevSubagentPolicy) => Promise<void>;
   clearJevSubagentPolicies?: () => Promise<void>;
-  onJevSubagentDecision?: (listener: (event: import("./jev.ts").JevSubagentDecision) => void) => () => void;
+  onJevSubagentDecision?: (
+    listener: (event: import("./jev.ts").JevSubagentDecision) => void,
+  ) => () => void;
+  listJevSubagentReceipts?: () => Promise<readonly import("./jev.ts").JevSubagentDecision[]>;
+  ackJevSubagentReceipt?: (identity: { requestId: string; attemptId: string }) => Promise<void>;
   getAppBranding: () => DesktopAppBranding | null;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;

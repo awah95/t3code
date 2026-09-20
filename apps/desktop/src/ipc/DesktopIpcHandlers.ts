@@ -5,6 +5,8 @@ import { getJevStatus, setJevApiKey, decideJevRoute, cancelJevRoute } from "./me
 import {
   setJevSubagentPolicy,
   clearJevSubagentPolicies,
+  listJevSubagentReceipts,
+  ackJevSubagentReceipt,
   installJevSubagentEvents,
 } from "./methods/jevSubagents.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
@@ -85,6 +87,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(cancelJevRoute);
   yield* ipc.handle(setJevSubagentPolicy);
   yield* ipc.handle(clearJevSubagentPolicies);
+  yield* ipc.handle(listJevSubagentReceipts);
+  yield* ipc.handle(ackJevSubagentReceipt);
   yield* installJevSubagentEvents();
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();

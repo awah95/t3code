@@ -62,6 +62,7 @@ import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
+import { CodexLedgerPanel } from "./CodexLedgerPanel";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
@@ -70,11 +71,12 @@ import {
   type UsagePagePreferences,
 } from "./usagePagePreferences";
 
-type UsageMetric = UsageChartMetric | "limits";
+type UsageMetric = UsageChartMetric | "limits" | "ledger";
 const METRIC_OPTIONS = [
   { value: "cost", label: "Cost" },
   { value: "tokens", label: "Tokens" },
   { value: "limits", label: "Limits" },
+  { value: "ledger", label: "Codex ledger" },
 ] as const satisfies readonly { value: UsageMetric; label: string }[];
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
@@ -104,6 +106,7 @@ export function UsagePage() {
   }));
   const metric = preferences.metric;
   const showingLimits = metric === "limits";
+  const showingLedger = metric === "ledger";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
@@ -280,7 +283,7 @@ export function UsagePage() {
           aria-label="Usage period"
           variant="segmented"
           value={[String(windowDays)]}
-          disabled={showingLimits}
+          disabled={showingLimits || showingLedger}
           onValueChange={(next) => {
             const value = next[0];
             if (value) selectWindow(Number(value));
@@ -330,7 +333,7 @@ export function UsagePage() {
         </Select>
         <Select
           value={String(windowDays)}
-          disabled={showingLimits}
+          disabled={showingLimits || showingLedger}
           onValueChange={(value) => selectWindow(Number(value))}
         >
           <SelectTrigger
@@ -380,6 +383,16 @@ export function UsagePage() {
                   ? `Connect an environment to see ${showingLimits ? "limits" : "usage"}.`
                   : `Select an environment to see ${showingLimits ? "limits" : "usage"}.`}
               </p>
+            ) : showingLedger ? (
+              <div className="space-y-8">
+                {selectedEnvironments.map((environment) => (
+                  <CodexLedgerPanel
+                    key={environment.environmentId}
+                    environmentId={environment.environmentId}
+                    label={environment.label}
+                  />
+                ))}
+              </div>
             ) : showingLimits ? (
               <UsageLimitsSection selectedEnvironmentIds={selectedEnvironmentIds} now={limitsNow} />
             ) : isPending ? (
@@ -401,7 +414,7 @@ export function UsagePage() {
                             ? `${formatCount(merged.sessions)} sessions · API estimate excludes ${formatPercent(
                                 merged.costQuality.unpricedShare,
                               )} unpriced records`
-                            : `${formatCount(merged.sessions)} sessions · API estimate`}
+                            : `${formatCount(merged.sessions)} sessions · legacy transcript API estimate; Codex ledger reports response-level coverage`}
                       </span>
                     </div>
 

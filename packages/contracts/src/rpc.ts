@@ -251,6 +251,31 @@ import {
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
 import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  CodexLedgerError,
+  CodexLedgerSummary,
+  CodexLedgerListTurnsInput,
+  CodexLedgerListTurnsResult,
+  CodexLedgerTurnInput,
+  CodexLedgerTurnDetail,
+  CodexLedgerFamilyInput,
+  CodexLedgerSetCaptureInput,
+  CodexLedgerExportInput,
+  CodexLedgerExportResult,
+  CodexLedgerExperiment,
+  CodexLedgerExperimentInput,
+  CodexLedgerExperimentIdInput,
+  CodexLedgerExperimentDetail,
+  CodexLedgerExperimentList,
+  CodexLedgerRateSnapshotList,
+  CodexLedgerCreateRateSnapshotInput,
+  CodexLedgerSelectRateSnapshotInput,
+  CodexLedgerRun,
+  CodexLedgerRunInput,
+  CodexLedgerJevReceiptInput,
+  CodexLedgerQuotaInput,
+  CodexLedgerQuotaResult,
+} from "./codexUsageLedger.ts";
 import { ServerSettings, ServerSettingsError, ServerSettingsPatch } from "./settings.ts";
 import {
   ProjectCloneActionInput,
@@ -382,6 +407,21 @@ export const WS_METHODS = {
   serverGetBackgroundPolicy: "server.getBackgroundPolicy",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  serverGetCodexLedgerSummary: "server.getCodexLedgerSummary",
+  serverListCodexLedgerTurns: "server.listCodexLedgerTurns",
+  serverGetCodexLedgerTurn: "server.getCodexLedgerTurn",
+  serverListCodexLedgerFamily: "server.listCodexLedgerFamily",
+  serverSetCodexLedgerCapture: "server.setCodexLedgerCapture",
+  serverExportCodexLedger: "server.exportCodexLedger",
+  serverUpsertCodexLedgerExperiment: "server.upsertCodexLedgerExperiment",
+  serverGetCodexLedgerExperiment: "server.getCodexLedgerExperiment",
+  serverListCodexLedgerExperiments: "server.listCodexLedgerExperiments",
+  serverListCodexLedgerRateSnapshots: "server.listCodexLedgerRateSnapshots",
+  serverCreateCodexLedgerRateSnapshot: "server.createCodexLedgerRateSnapshot",
+  serverSelectCodexLedgerRateSnapshot: "server.selectCodexLedgerRateSnapshot",
+  serverUpsertCodexLedgerRun: "server.upsertCodexLedgerRun",
+  serverRecordCodexLedgerJevReceipt: "server.recordCodexLedgerJevReceipt",
+  serverListCodexLedgerQuota: "server.listCodexLedgerQuota",
 
   // Cloud environment methods
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
@@ -643,6 +683,101 @@ const WsServerRefreshUsageRatesRpc = Rpc.make(WS_METHODS.serverRefreshUsageRates
   payload: Schema.Struct({}),
   success: UsagePricing,
   error: EnvironmentAuthorizationError,
+});
+
+const CodexLedgerReadError = Schema.Union([EnvironmentAuthorizationError, CodexLedgerError]);
+const WsServerGetCodexLedgerSummaryRpc = Rpc.make(WS_METHODS.serverGetCodexLedgerSummary, {
+  payload: Schema.Struct({}),
+  success: CodexLedgerSummary,
+  error: CodexLedgerReadError,
+});
+const WsServerListCodexLedgerTurnsRpc = Rpc.make(WS_METHODS.serverListCodexLedgerTurns, {
+  payload: CodexLedgerListTurnsInput,
+  success: CodexLedgerListTurnsResult,
+  error: CodexLedgerReadError,
+});
+const WsServerGetCodexLedgerTurnRpc = Rpc.make(WS_METHODS.serverGetCodexLedgerTurn, {
+  payload: CodexLedgerTurnInput,
+  success: Schema.NullOr(CodexLedgerTurnDetail),
+  error: CodexLedgerReadError,
+});
+const WsServerListCodexLedgerFamilyRpc = Rpc.make(WS_METHODS.serverListCodexLedgerFamily, {
+  payload: CodexLedgerFamilyInput,
+  success: CodexLedgerListTurnsResult,
+  error: CodexLedgerReadError,
+});
+const WsServerSetCodexLedgerCaptureRpc = Rpc.make(WS_METHODS.serverSetCodexLedgerCapture, {
+  payload: CodexLedgerSetCaptureInput,
+  success: CodexLedgerSummary,
+  error: CodexLedgerReadError,
+});
+const WsServerExportCodexLedgerRpc = Rpc.make(WS_METHODS.serverExportCodexLedger, {
+  payload: CodexLedgerExportInput,
+  success: CodexLedgerExportResult,
+  error: CodexLedgerReadError,
+});
+const WsServerUpsertCodexLedgerExperimentRpc = Rpc.make(
+  WS_METHODS.serverUpsertCodexLedgerExperiment,
+  {
+    payload: CodexLedgerExperimentInput,
+    success: CodexLedgerExperiment,
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerGetCodexLedgerExperimentRpc = Rpc.make(WS_METHODS.serverGetCodexLedgerExperiment, {
+  payload: CodexLedgerExperimentIdInput,
+  success: Schema.NullOr(CodexLedgerExperimentDetail),
+  error: CodexLedgerReadError,
+});
+const WsServerListCodexLedgerExperimentsRpc = Rpc.make(
+  WS_METHODS.serverListCodexLedgerExperiments,
+  {
+    payload: Schema.Struct({}),
+    success: CodexLedgerExperimentList,
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerListCodexLedgerRateSnapshotsRpc = Rpc.make(
+  WS_METHODS.serverListCodexLedgerRateSnapshots,
+  {
+    payload: Schema.Struct({}),
+    success: CodexLedgerRateSnapshotList,
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerCreateCodexLedgerRateSnapshotRpc = Rpc.make(
+  WS_METHODS.serverCreateCodexLedgerRateSnapshot,
+  {
+    payload: CodexLedgerCreateRateSnapshotInput,
+    success: CodexLedgerRateSnapshotList,
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerSelectCodexLedgerRateSnapshotRpc = Rpc.make(
+  WS_METHODS.serverSelectCodexLedgerRateSnapshot,
+  {
+    payload: CodexLedgerSelectRateSnapshotInput,
+    success: CodexLedgerRateSnapshotList,
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerUpsertCodexLedgerRunRpc = Rpc.make(WS_METHODS.serverUpsertCodexLedgerRun, {
+  payload: CodexLedgerRunInput,
+  success: CodexLedgerRun,
+  error: CodexLedgerReadError,
+});
+const WsServerRecordCodexLedgerJevReceiptRpc = Rpc.make(
+  WS_METHODS.serverRecordCodexLedgerJevReceipt,
+  {
+    payload: CodexLedgerJevReceiptInput,
+    success: Schema.Struct({ recorded: Schema.Boolean }),
+    error: CodexLedgerReadError,
+  },
+);
+const WsServerListCodexLedgerQuotaRpc = Rpc.make(WS_METHODS.serverListCodexLedgerQuota, {
+  payload: CodexLedgerQuotaInput,
+  success: CodexLedgerQuotaResult,
+  error: CodexLedgerReadError,
 });
 
 const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
@@ -1412,6 +1547,21 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRetryResourceTelemetryRpc,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
+  WsServerGetCodexLedgerSummaryRpc,
+  WsServerListCodexLedgerTurnsRpc,
+  WsServerGetCodexLedgerTurnRpc,
+  WsServerListCodexLedgerFamilyRpc,
+  WsServerSetCodexLedgerCaptureRpc,
+  WsServerExportCodexLedgerRpc,
+  WsServerUpsertCodexLedgerExperimentRpc,
+  WsServerGetCodexLedgerExperimentRpc,
+  WsServerListCodexLedgerExperimentsRpc,
+  WsServerListCodexLedgerRateSnapshotsRpc,
+  WsServerCreateCodexLedgerRateSnapshotRpc,
+  WsServerSelectCodexLedgerRateSnapshotRpc,
+  WsServerUpsertCodexLedgerRunRpc,
+  WsServerRecordCodexLedgerJevReceiptRpc,
+  WsServerListCodexLedgerQuotaRpc,
   WsServerSignalProcessRpc,
   WsServerReportClientActivityRpc,
   WsServerReportHostPowerStateRpc,

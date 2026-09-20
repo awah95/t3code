@@ -57,8 +57,10 @@ import {
 import {
   decodeScanCache,
   dedupeWithinFile,
+  conflictingCodexResponseKeys,
   encodeScanCache,
   pruneScanCache,
+  reconcileCodexAggregateRecords,
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
@@ -426,7 +428,10 @@ export const make = Effect.gen(function* () {
       // resumed parse dedupes exactly like a full one.
       const base = parsed.resumed && cached !== undefined ? cached.records : [];
       const seen = new Set<string>();
-      const records = dedupeWithinFile([...base, ...parsed.records], seen);
+      const records =
+        provider === "codex"
+          ? reconcileCodexAggregateRecords(dedupeWithinFile([...base, ...parsed.records], seen))
+          : dedupeWithinFile([...base, ...parsed.records], seen);
       const tailRecords = dedupeWithinFile(parsed.tailRecords, seen);
 
       fileCache.set(filePath, {
@@ -572,6 +577,20 @@ export const make = Effect.gen(function* () {
       }
       let scannedFiles = 0;
       let skippedFiles = 0;
+      const codexResponseRecords =
+        provider === "codex"
+          ? retainedFiles.flatMap((file) =>
+              file.records.filter((record) => record.dedupeKey?.startsWith("codex-response:")),
+            )
+          : [];
+      const conflictingResponses = conflictingCodexResponseKeys(codexResponseRecords);
+      const preferredResponses = new Map(
+        dedupeWithinFile(codexResponseRecords)
+          .filter(
+            (record) => record.dedupeKey !== null && !conflictingResponses.has(record.dedupeKey),
+          )
+          .map((record) => [record.dedupeKey!, record] as const),
+      );
       // Distinct per directory. Buckets carry per-cell session counts, but a
       // session spans days and models, so clients total this figure instead.
       const sessionIds = new Set<string>();
@@ -584,8 +603,18 @@ export const make = Effect.gen(function* () {
         scannedFiles += 1;
         const codexEventOccurrences = new Map<string, number>();
         for (const record of file.records) {
+          if (
+            record.dedupeKey?.startsWith("codex-response:") &&
+            (conflictingResponses.has(record.dedupeKey) ||
+              preferredResponses.get(record.dedupeKey) !== record)
+          )
+            continue;
           let usageRecord = record;
-          if (record.provider === "codex" && record.sessionId.length > 0) {
+          if (
+            record.provider === "codex" &&
+            record.sessionId.length > 0 &&
+            record.dedupeKey === null
+          ) {
             // Match moved rollout copies without collapsing repeated equal events
             // within one rollout (timestamps can have only second precision).
             const key = encodeUsageRecordKey([
@@ -607,15 +636,35 @@ export const make = Effect.gen(function* () {
         }
       }
 
+      const incompleteCodexObservations =
+        provider === "codex"
+          ? retainedFiles.reduce(
+              (count, file) =>
+                count +
+                (fileCache.get(file.path)?.position.codexState?.incompleteReceiptCount ?? 0),
+              0,
+            )
+          : 0;
+
       sources.push({
         fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
         // Clients exclude missing sources, so saved records remain an available source.
-        status: files === null && scannedFiles === 0 ? "missing" : "ok",
+        status:
+          files === null && scannedFiles === 0
+            ? "missing"
+            : incompleteCodexObservations > 0 || conflictingResponses.size > 0
+              ? "partial"
+              : "ok",
         scannedFiles,
         skippedFiles,
         malformedRecords: 0,
         distinctSessions: sessionIds.size,
-        message: files === null ? "No transcript directory on this environment." : null,
+        message:
+          files === null
+            ? "No transcript directory on this environment."
+            : incompleteCodexObservations > 0 || conflictingResponses.size > 0
+              ? `${incompleteCodexObservations} incomplete Codex receipt observations and ${conflictingResponses.size} conflicting response IDs; inspect the Codex ledger.`
+              : null,
       });
     }
 

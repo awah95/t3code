@@ -19,6 +19,12 @@ const policy: JevSubagentPolicy = {
   threadId: "thread",
   providerInstanceId: "codex-local",
   enabled: true,
+  ledgerContext: {
+    environmentId: "environment",
+    projectId: "project",
+    threadId: "thread",
+    sourceScope: "subagent",
+  },
   candidates: [
     { key: "gpt-fast", description: "Fast" },
     { key: "gpt-strong", description: "Strong" },
@@ -70,6 +76,8 @@ describe("desktop Codex subagent routing broker", () => {
           threadId: "thread",
           providerInstanceId: "codex-local",
           taskPrompt: "Review code",
+          toolUseId: "tool-use-42",
+          parentProviderTurnId: "provider-turn-7",
           candidates: [{ key: "unconfigured", description: "Injected" }],
         })
       ).json(),
@@ -80,6 +88,14 @@ describe("desktop Codex subagent routing broker", () => {
     ]);
     expect(onDecision).toHaveBeenCalledTimes(2);
     expect(onDecision.mock.calls[1]?.[0].result.costUsd).toBe(success.costUsd);
+    expect(onDecision.mock.calls[1]?.[0]).toMatchObject({
+      toolUseId: "tool-use-42",
+      attemptId: "tool-use-42",
+      parentProviderTurnId: "provider-turn-7",
+      ledgerContext: policy.ledgerContext,
+      dispatchModel: "gpt-strong",
+      result: { proposedChoice: "c1" },
+    });
   });
   it("disabling during a call cancels the selection but retains charged usage", async () => {
     let finish!: (result: JevRouteResult) => void;

@@ -23,6 +23,7 @@ import {
   type ChatFileAttachment,
   DEFAULT_MODEL,
   type EnvironmentId,
+  EnvironmentId as EnvironmentIdSchema,
   type MessageId,
   type ModelSelection,
   type ProjectScript,
@@ -126,6 +127,7 @@ import {
   sanitizeJevPrompt,
   useJevStore,
 } from "../jev/jevStore";
+import { setJevLedgerReceiptWriter } from "../jev/jevLedgerReceipts";
 import { buildJevContext } from "../jev/context";
 import { isJevCandidateAllowed } from "@t3tools/shared/jevRouting";
 import { eligibleJevModels } from "../jev/routing";
@@ -1502,6 +1504,31 @@ export default function ChatView(props: ChatViewProps) {
   const updateProjectScriptSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
+  const writeJevLedgerReceipt = useAtomCommand(serverEnvironment.recordCodexLedgerJevReceipt, {
+    reportFailure: false,
+  });
+  useEffect(() => {
+    setJevLedgerReceiptWriter(
+      async (receipt) => {
+        const result = await writeJevLedgerReceipt({
+          ...receipt,
+          environmentId: EnvironmentIdSchema.make(receipt.environmentId),
+        });
+        if (result._tag === "Success") {
+          try {
+            await window.desktopBridge?.ackJevSubagentReceipt?.({
+              requestId: receipt.input.requestId,
+              attemptId: receipt.input.attemptId,
+            });
+          } catch {
+            // The server has the receipt; desktop replay is safely idempotent.
+          }
+        }
+        return result._tag === "Success";
+      },
+      (message) => useJevStore.setState({ notice: message }),
+    );
+  }, [writeJevLedgerReceipt]);
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -2916,12 +2943,15 @@ export default function ChatView(props: ChatViewProps) {
       activeThread.session?.providerInstanceId ?? selectedProviderEntry?.instanceId;
     const provider = providerInstanceEntries.find((entry) => entry.instanceId === instanceId);
     if (!provider || provider.driverKind !== "codex") {
-      void registerJevSubagentPolicy({
-        threadId: activeThread.id,
-        providerInstanceId: instanceId ?? activeThread.modelSelection.instanceId,
-        enabled: false,
-        candidates: [],
-      }).catch(() =>
+      void registerJevSubagentPolicy(
+        {
+          threadId: activeThread.id,
+          providerInstanceId: instanceId ?? activeThread.modelSelection.instanceId,
+          enabled: false,
+          candidates: [],
+        },
+        { environmentId, projectId: activeThread.projectId, threadId: activeThread.id },
+      ).catch(() =>
         useJevStore.setState({ notice: "Could not disable subagent routing for this thread." }),
       );
       return;
@@ -2933,27 +2963,30 @@ export default function ChatView(props: ChatViewProps) {
       sessionInstanceId: activeThread.session?.providerInstanceId ?? null,
       hasStartedSession: false,
     });
-    void registerJevSubagentPolicy({
-      threadId: activeThread.id,
-      providerInstanceId: provider.instanceId,
-      enabled: candidates.length > 0,
-      context: buildJevContext({
-        priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
-        messages: activeThread.messages.filter((message) => !message.streaming),
-        prompt: "",
-        current: activeThread.modelSelection,
-        existingSession: activeThread.session !== null,
-        interactionMode: activeThread.interactionMode,
-        plans: activeThread.proposedPlans,
-        ...(provider.snapshot.usageLimits ? { usageLimits: provider.snapshot.usageLimits } : {}),
-      }),
-      candidates: candidates.map((candidate) => ({
-        key: candidate.key,
-        model: candidate.model,
-        effort: candidate.effort,
-        description: candidate.description,
-      })),
-    }).catch(() =>
+    void registerJevSubagentPolicy(
+      {
+        threadId: activeThread.id,
+        providerInstanceId: provider.instanceId,
+        enabled: candidates.length > 0,
+        context: buildJevContext({
+          priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
+          messages: activeThread.messages.filter((message) => !message.streaming),
+          prompt: "",
+          current: activeThread.modelSelection,
+          existingSession: activeThread.session !== null,
+          interactionMode: activeThread.interactionMode,
+          plans: activeThread.proposedPlans,
+          ...(provider.snapshot.usageLimits ? { usageLimits: provider.snapshot.usageLimits } : {}),
+        }),
+        candidates: candidates.map((candidate) => ({
+          key: candidate.key,
+          model: candidate.model,
+          effort: candidate.effort,
+          description: candidate.description,
+        })),
+      },
+      { environmentId, projectId: activeThread.projectId, threadId: activeThread.id },
+    ).catch(() =>
       useJevStore.setState({ notice: "Could not enable Codex subagent routing for this thread." }),
     );
   }, [
@@ -7863,17 +7896,20 @@ export default function ChatView(props: ChatViewProps) {
           let decision;
           jevRequestId = randomUUID();
           try {
-            decision = await decideWithJev({
-              requestId: jevRequestId,
-              prompt: sanitizeJevPrompt(messageTextForSend),
-              candidates: candidates.map(({ key, description, model, effort }) => ({
-                key,
-                model,
-                effort,
-                description: sanitizeJevPrompt(description),
-              })),
-              context: routingContext,
-            });
+            decision = await decideWithJev(
+              {
+                requestId: jevRequestId,
+                prompt: sanitizeJevPrompt(messageTextForSend),
+                candidates: candidates.map(({ key, description, model, effort }) => ({
+                  key,
+                  model,
+                  effort,
+                  description: sanitizeJevPrompt(description),
+                })),
+                context: routingContext,
+              },
+              { environmentId, projectId: activeProject.id, threadId: activeThread.id },
+            );
           } finally {
             sendInFlightRef.current = false;
           }
@@ -8045,33 +8081,36 @@ export default function ChatView(props: ChatViewProps) {
           const revision = useJevStore.getState().revision;
           sendInFlightRef.current = true;
           try {
-            await registerJevSubagentPolicy({
-              threadId: threadIdForSend,
-              providerInstanceId: provider.instanceId,
-              enabled: candidates.length > 0,
-              context: buildJevContext({
-                priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
-                messages: activeThread.messages,
-                prompt: messageTextForSend,
-                outgoingContext: outgoingMessageContext,
-                historyCompleteness: threadHasOlderTurns(routeThreadState)
-                  ? "windowed"
-                  : "complete",
-                current: ctxSelectedModelSelection,
-                existingSession: activeThread.session !== null,
-                interactionMode: sendInteractionMode,
-                plans: activeThread.proposedPlans,
-                ...(provider.snapshot.usageLimits
-                  ? { usageLimits: provider.snapshot.usageLimits }
-                  : {}),
-              }),
-              candidates: candidates.map((candidate) => ({
-                key: candidate.key,
-                model: candidate.model,
-                effort: candidate.effort,
-                description: candidate.description,
-              })),
-            });
+            await registerJevSubagentPolicy(
+              {
+                threadId: threadIdForSend,
+                providerInstanceId: provider.instanceId,
+                enabled: candidates.length > 0,
+                context: buildJevContext({
+                  priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
+                  messages: activeThread.messages,
+                  prompt: messageTextForSend,
+                  outgoingContext: outgoingMessageContext,
+                  historyCompleteness: threadHasOlderTurns(routeThreadState)
+                    ? "windowed"
+                    : "complete",
+                  current: ctxSelectedModelSelection,
+                  existingSession: activeThread.session !== null,
+                  interactionMode: sendInteractionMode,
+                  plans: activeThread.proposedPlans,
+                  ...(provider.snapshot.usageLimits
+                    ? { usageLimits: provider.snapshot.usageLimits }
+                    : {}),
+                }),
+                candidates: candidates.map((candidate) => ({
+                  key: candidate.key,
+                  model: candidate.model,
+                  effort: candidate.effort,
+                  description: candidate.description,
+                })),
+              },
+              { environmentId, projectId: activeProject.id, threadId: threadIdForSend },
+            );
           } catch {
             toastManager.add({
               type: "warning",
@@ -8757,6 +8796,20 @@ export default function ChatView(props: ChatViewProps) {
       if (backgroundThreadRef) {
         beginBackgroundDraftSubmissionByRef(backgroundThreadRef);
       }
+      const jevDispatch = {
+        model: ctxSelectedModelSelection.model,
+        effort: ctxSelectedModelSelection.options?.find((option) => option.id === "reasoningEffort")
+          ?.value as string | undefined,
+        threadId: threadIdForSend,
+        messageId: messageIdForSend,
+        environmentId,
+        projectId: activeProject.id,
+      };
+      if (jevRequestId)
+        useJevStore.getState().recordPreparedDispatch(jevRequestId, {
+          ...jevDispatch,
+          succeeded: null,
+        });
       const startPromise = startThreadTurn({
         environmentId,
         input: {
@@ -8828,12 +8881,7 @@ export default function ChatView(props: ChatViewProps) {
       const startResult = await startPromise;
       if (jevRequestId)
         useJevStore.getState().recordDispatch(jevRequestId, {
-          model: ctxSelectedModelSelection.model,
-          effort: ctxSelectedModelSelection.options?.find(
-            (option) => option.id === "reasoningEffort",
-          )?.value as string | undefined,
-          threadId: threadIdForSend,
-          messageId: messageIdForSend,
+          ...jevDispatch,
           succeeded: startResult._tag !== "Failure",
         });
       if (startResult._tag === "Failure") {
@@ -10299,6 +10347,15 @@ export default function ChatView(props: ChatViewProps) {
                 }
                 activeThreadEnvironmentId={
                   displayedThreadRef?.environmentId ?? activeThread.environmentId
+                }
+                showCodexTurnUsage={
+                  !paintOnlyDisplayedTimeline &&
+                  providerStatuses.find(
+                    (provider) =>
+                      provider.instanceId ===
+                      (activeThread.session?.providerInstanceId ??
+                        activeThread.modelSelection.instanceId),
+                  )?.driver === "codex"
                 }
                 routeThreadKey={displayedTimelineKey}
                 displayThreadKey={displayedTimelineKey}

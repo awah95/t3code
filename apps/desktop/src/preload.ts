@@ -64,12 +64,16 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 contextBridge.exposeInMainWorld("desktopBridge", {
   getJevStatus: () => ipcRenderer.invoke(IpcChannels.GET_JEV_STATUS_CHANNEL),
   setJevApiKey: (key) => ipcRenderer.invoke(IpcChannels.SET_JEV_API_KEY_CHANNEL, key),
-  decideJevRoute: (request) => ipcRenderer.invoke(IpcChannels.DECIDE_JEV_ROUTE_CHANNEL, request),
+  decideJevRoute: (request, receiptContext) =>
+    ipcRenderer.invoke(IpcChannels.DECIDE_JEV_ROUTE_CHANNEL, { request, receiptContext }),
   cancelJevRoute: (id) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_ROUTE_CHANNEL, id),
   setJevSubagentPolicy: (policy) =>
     ipcRenderer.invoke(IpcChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
   clearJevSubagentPolicies: () =>
     ipcRenderer.invoke(IpcChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL),
+  listJevSubagentReceipts: () => ipcRenderer.invoke(IpcChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL),
+  ackJevSubagentReceipt: (identity) =>
+    ipcRenderer.invoke(IpcChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL, identity),
   onJevSubagentDecision: (listener) => {
     const handler = (
       _event: Electron.IpcRendererEvent,

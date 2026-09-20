@@ -22,6 +22,40 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+## Review Codex work by turn
+
+Open **Usage → Codex ledger** on web, desktop, or mobile to inspect a Codex turn's reported
+input, cached reads, cache writes, output, reasoning subset, and linked child work. Select a turn
+to see its individual responses, including compaction when reported. Chat badges on web, desktop,
+and mobile show **Own turn** usage; open a turn to compare its own estimate with the task-family
+estimate including linked child work. Incomplete child linkage or active children appear beside
+the family total. A missing count or
+price reads **Unknown**; it does not mean zero.
+
+The ledger's dollar figure is a **Standard API-equivalent estimate**, not a subscription charge.
+If some responses lack a defensible price, the figure is marked **priced subtotal** and coverage
+explains what is missing. Account allowance observations appear separately, with their reported
+window and reset time. They cannot reliably assign a subscription debit to one turn while other
+work may be using the same account.
+
+Use **Export JSONL** to save the response facts, observations, tools, child links, rate snapshots,
+valuations, allowance observations, Jev receipts, and experiment records together. Set a date range
+when the export is large. **Pause capture** and **Resume capture** control new collection.
+
+Under **Rate scenario**, select an earlier snapshot to restore its estimate. To override rates,
+copy the current rules, give the copy a new ID and retrieval date, edit the USD rates per million
+tokens and source URLs, then save and select it. Earlier rate snapshots and response facts stay
+available. The chosen Standard scenario revalues historical responses; it is never a bill.
+
+In **Optimization experiments**, name a fixed task corpus, acceptance checks, and one rate snapshot
+before recording runs. Link all root turns used by each attempt, including failed work and repairs,
+then record the outcome, quality verdict, and whether Jev was enabled. The report shows Codex API
+cost and Jev billed or estimated overhead separately, then a combined scenario cost per accepted
+case only when both are known. Missing usage, prices, work links, or quality keep the comparison
+inconclusive. Paired cases are descriptive unless the study itself was randomized. The existing
+**Cost** and **Tokens** tabs still use the older combined session-history view, so their Codex
+totals may differ while ledger coverage is being reconciled.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,

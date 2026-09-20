@@ -1,4 +1,4 @@
-import { JevSubagentPolicy } from "@t3tools/contracts";
+import { JevSubagentDecision, JevSubagentPolicy } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as DesktopJevSubagent from "../../jev/DesktopJevSubagent.ts";
@@ -23,6 +23,26 @@ export const clearJevSubagentPolicies = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.jevSubagents.clearPolicies")(function* () {
     const service = yield* DesktopJevSubagent.DesktopJevSubagent;
     yield* service.clearPolicies;
+  }),
+});
+
+export const listJevSubagentReceipts = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Array(JevSubagentDecision),
+  handler: Effect.fn("desktop.ipc.jevSubagents.listReceipts")(function* () {
+    const service = yield* DesktopJevSubagent.DesktopJevSubagent;
+    return yield* service.listReceipts;
+  }),
+});
+
+export const ackJevSubagentReceipt = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL,
+  payload: Schema.Struct({ requestId: Schema.String, attemptId: Schema.String }),
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.jevSubagents.ackReceipt")(function* (identity) {
+    const service = yield* DesktopJevSubagent.DesktopJevSubagent;
+    yield* service.acknowledgeReceipt(identity);
   }),
 });
 

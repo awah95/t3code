@@ -112,6 +112,57 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("quarantines conflicting Codex response IDs after an incremental append", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const codexDir = NodePath.join(home, "codex", "sessions");
+      const transcript = NodePath.join(codexDir, "rollout.jsonl");
+      const line = (type: string, payload: object) =>
+        `${JSON.stringify({
+          type,
+          timestamp: "2026-08-01T10:00:00Z",
+          payload,
+        })}\n`;
+      const receipt = (id: string, input: number, output: number) =>
+        line("token_usage_record", {
+          response_id: id,
+          thread_id: "codex-thread",
+          turn_id: "turn",
+          usage: {
+            input_tokens: input,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: output,
+            reasoning_output_tokens: 0,
+            total_tokens: input + output,
+          },
+        });
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(codexDir, { recursive: true });
+        await NodeFSP.writeFile(
+          transcript,
+          line("session_meta", { id: "codex-thread" }) +
+            line("turn_context", { turn_id: "turn", model: "gpt-5.6-sol" }) +
+            receipt("shared", 10, 5) +
+            receipt("other", 20, 6),
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-codex-conflict-test", home, settings }),
+        ),
+      );
+      const initial = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(initial), 11);
+      yield* Effect.promise(() => NodeFSP.appendFile(transcript, receipt("shared", 11, 5)));
+      const conflicted = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(conflicted), 6);
+      const source = conflicted.sources.find((item) => item.fingerprint.provider === "codex");
+      assert.strictEqual(source?.status, "partial");
+      assert.match(source?.message ?? "", /1 conflicting response IDs/);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
@@ -260,7 +311,7 @@ describe("UsageService", () => {
           assert.strictEqual(totalOutputTokens(first), 7);
           assert.include(
             first.sources.map((source) => source.fingerprint.resolvedHomePath),
-            NodePath.join(configured, "projects"),
+            yield* Effect.promise(() => NodeFSP.realpath(NodePath.join(configured, "projects"))),
           );
           yield* settingsService.updateSettings({
             providerInstances: {
@@ -277,7 +328,9 @@ describe("UsageService", () => {
           assert.strictEqual(totalOutputTokens(second), 8);
           assert.include(
             second.sources.map((source) => source.fingerprint.resolvedHomePath),
-            NodePath.join(environmentHome, "projects"),
+            yield* Effect.promise(() =>
+              NodeFSP.realpath(NodePath.join(environmentHome, "projects")),
+            ),
           );
         }).pipe(
           Effect.provide(
@@ -505,6 +558,9 @@ describe("UsageService", () => {
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
       yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5, "example-model")));
+      const projectsPath = yield* Effect.promise(() =>
+        NodeFSP.realpath(NodePath.join(home, "claude", "projects")),
+      );
 
       yield* Effect.gen(function* () {
         const settingsService = yield* ServerSettings.ServerSettingsService;
@@ -519,7 +575,7 @@ describe("UsageService", () => {
             exists: (path) =>
               fileSystem.exists(path).pipe(
                 Effect.tap(() => {
-                  if (path !== NodePath.join(home, "claude", "projects")) return Effect.void;
+                  if (path !== projectsPath) return Effect.void;
                   homeProbes += 1;
                   return Deferred.succeed(
                     homeProbes === 1 ? firstScanStarted : secondScanStarted,

@@ -3,12 +3,15 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   decodeScanCache,
   dedupeWithinFile,
+  conflictingCodexResponseKeys,
   encodeScanCache,
   pruneScanCache,
+  reconcileCodexAggregateRecords,
   type CachedFile,
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
+import { createCodexLedgerScanState } from "./codexLedgerAccounting.ts";
 
 function record(overrides: Partial<UsageRecord> = {}): UsageRecord {
   return {
@@ -84,6 +87,11 @@ describe("scan cache round trip", () => {
           sawSessionMeta: true,
           suppressingForkCopies: false,
           forkCopyAnchorMs: 0,
+          ledgerState: createCodexLedgerScanState(),
+          sawExactResponse: false,
+          legacyTurnOrdinal: 0,
+          activeLegacyTurnId: null,
+          incompleteReceiptCount: 0,
         },
       }),
     });
@@ -95,6 +103,66 @@ describe("scan cache round trip", () => {
     expect(restored.get("/b.jsonl")).toEqual(original.get("/b.jsonl"));
     expect(restored.get("/grok.jsonl")).toEqual(original.get("/grok.jsonl"));
     expect(restored.get("/codex.jsonl")).toEqual(original.get("/codex.jsonl"));
+  });
+
+  it("replaces a compaction embedding with its later exact receipt", () => {
+    const embedded = record({
+      provider: "codex",
+      codexSource: "compacted",
+      dedupeKey: "codex-response:r",
+      model: "",
+      codexTurnId: "turn",
+    });
+    const exact = record({
+      provider: "codex",
+      codexSource: "exact",
+      dedupeKey: "codex-response:r",
+      model: "gpt-5.6-sol",
+      codexTurnId: "turn",
+    });
+    expect(dedupeWithinFile([embedded, exact])).toEqual([exact]);
+  });
+
+  it("quarantines a reused response ID with incompatible counters or model", () => {
+    const first = record({
+      provider: "codex",
+      codexSource: "exact",
+      dedupeKey: "codex-response:r",
+      sessionId: "thread",
+      codexTurnId: "turn",
+      model: "gpt-5.6-sol",
+    });
+    const changed = record({ ...first, totals: { ...first.totals, outputTokens: 51 } });
+    const modelConflict = record({ ...first, model: "gpt-5.6-luna" });
+    expect(dedupeWithinFile([first, changed])).toEqual([first, changed]);
+    expect(conflictingCodexResponseKeys([first, changed])).toEqual(new Set(["codex-response:r"]));
+    expect(conflictingCodexResponseKeys([first, modelConflict])).toEqual(
+      new Set(["codex-response:r"]),
+    );
+    const unknownModel = record({ ...first, model: "" });
+    expect(dedupeWithinFile([unknownModel, first])).toEqual([first]);
+    expect(conflictingCodexResponseKeys([unknownModel, first])).toEqual(new Set());
+  });
+
+  it("removes legacy fallback only when an exact turn checkpoint covers it", () => {
+    const legacy = record({
+      provider: "codex",
+      codexSource: "legacy",
+      dedupeKey: null,
+      sessionId: "thread",
+      codexTurnId: "turn",
+    });
+    const exact = record({
+      provider: "codex",
+      codexSource: "exact",
+      dedupeKey: "codex-response:r",
+      sessionId: "thread",
+      codexTurnId: "turn",
+      codexTurnCheckpoint: legacy.totals,
+    });
+    expect(reconcileCodexAggregateRecords([legacy, exact])).toEqual([exact]);
+    const extra = record({ ...exact, codexTurnCheckpoint: { ...exact.totals, outputTokens: 100 } });
+    expect(reconcileCodexAggregateRecords([legacy, extra])).toEqual([legacy, extra]);
   });
 
   it("drops an entry whose persisted parse state is corrupt", () => {
@@ -109,6 +177,39 @@ describe("scan cache round trip", () => {
     };
 
     expect(decodeScanCache(JSON.parse(JSON.stringify(poisoned))).has("/a.jsonl")).toBe(false);
+  });
+
+  it("drops a Codex entry with a corrupt nested cumulative cursor", () => {
+    const state = {
+      model: "gpt-5.6-sol",
+      sessionId: "thread",
+      lastUsageSignature: null,
+      sawSessionMeta: true,
+      suppressingForkCopies: false,
+      forkCopyAnchorMs: 0,
+      ledgerState: createCodexLedgerScanState(),
+      sawExactResponse: true,
+      legacyTurnOrdinal: 1,
+      activeLegacyTurnId: "turn",
+      incompleteReceiptCount: 0,
+    };
+    const cache = cacheWith([["/a.jsonl", 100, [record({ provider: "codex" })]]]);
+    cache.set("/a.jsonl", {
+      ...cache.get("/a.jsonl")!,
+      provider: "codex",
+      position: position({ codexState: state }),
+    });
+    const encoded = encodeScanCache(cache);
+    const poisoned = {
+      ...encoded,
+      files: {
+        "/a.jsonl": {
+          ...encoded.files["/a.jsonl"]!,
+          cs: { ...state, ledgerState: { ownMetaSeen: true } },
+        },
+      },
+    };
+    expect(decodeScanCache(poisoned).has("/a.jsonl")).toBe(false);
   });
 
   it("drops an entry whose guard length is outside the supported range", () => {

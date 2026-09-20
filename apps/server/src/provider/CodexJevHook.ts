@@ -120,7 +120,12 @@ export async function runCodexJevHook(
       body: JSON.stringify({
         threadId: context.threadId,
         providerInstanceId: context.providerInstanceId,
-        toolUseId: "tool_use_id" in input ? input.tool_use_id : undefined,
+        toolUseId:
+          "tool_use_id" in input && typeof input.tool_use_id === "string"
+            ? input.tool_use_id
+            : undefined,
+        parentProviderTurnId:
+          "turn_id" in input && typeof input.turn_id === "string" ? input.turn_id : undefined,
         taskPrompt: args.message,
         proposedModel: args.model,
         proposedEffort: args.reasoning_effort,

@@ -896,6 +896,14 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             key={selectedThreadKey}
             environmentId={props.environmentId}
             threadId={props.selectedThread.id}
+            showCodexTurnUsage={
+              props.serverConfig?.providers.find(
+                (provider) =>
+                  provider.instanceId ===
+                  (props.selectedThread.session?.providerInstanceId ??
+                    props.selectedThread.modelSelection.instanceId),
+              )?.driver === "codex"
+            }
             workspaceRoot={props.threadCwd}
             feed={props.selectedThreadFeed}
             worktreeSetup={props.worktreeSetup}

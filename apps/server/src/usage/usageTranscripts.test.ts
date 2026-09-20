@@ -70,6 +70,32 @@ describe("parseClaudeLine", () => {
 });
 
 describe("parseCodexLine", () => {
+  const explicit = (id: string, input: number, cached = 0, write = 0, output = 10) =>
+    JSON.stringify({
+      type: "token_usage_record",
+      timestamp: "2026-08-01T05:17:49.919Z",
+      payload: {
+        response_id: id,
+        thread_id: "thread",
+        turn_id: "turn",
+        usage: {
+          input_tokens: input,
+          cached_input_tokens: cached,
+          cache_write_input_tokens: write,
+          output_tokens: output,
+          reasoning_output_tokens: 2,
+          total_tokens: input + output,
+        },
+        turn_token_usage: {
+          input_tokens: input,
+          cached_input_tokens: cached,
+          cache_write_input_tokens: write,
+          output_tokens: output,
+          reasoning_output_tokens: 2,
+          total_tokens: input + output,
+        },
+      },
+    });
   const sessionMeta = JSON.stringify({
     type: "session_meta",
     timestamp: "2026-08-01T05:17:41.289Z",
@@ -111,6 +137,108 @@ describe("parseCodexLine", () => {
     expect(record?.totals.uncachedInputTokens).toBe(19239 - 11008);
     expect(record?.totals.cachedInputTokens).toBe(11008);
     expect(record?.totals.reasoningTokens).toBe(116);
+  });
+
+  it("counts explicit responses by ID, including compaction and equal usage vectors", () => {
+    const state = initialCodexScanState();
+    parseCodexLine(sessionMeta, state);
+    parseCodexLine(
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn", model: "gpt-5.6-sol" } }),
+      state,
+    );
+    const first = parseCodexLine(explicit("r1", 100, 40, 10), state);
+    const second = parseCodexLine(explicit("r2", 100, 40, 10), state);
+    const embedded = parseCodexLine(
+      JSON.stringify({
+        type: "compacted",
+        timestamp: "2026-08-01T05:17:50Z",
+        payload: { latest_token_usage_record: JSON.parse(explicit("r2", 100, 40, 10)).payload },
+      }),
+      state,
+    );
+    expect(first?.totals).toMatchObject({
+      uncachedInputTokens: 50,
+      cachedInputTokens: 40,
+      cacheCreationTokens: 10,
+    });
+    expect(second?.dedupeKey).not.toBe(first?.dedupeKey);
+    expect(embedded?.dedupeKey).toBe(second?.dedupeKey);
+    expect(embedded?.codexSource).toBe("compacted");
+  });
+
+  it("recovers an embedded-only compaction and preserves identity across a copied fork", () => {
+    const payload = JSON.parse(explicit("shared", 120, 20)).payload;
+    const embedded = JSON.stringify({
+      type: "compacted",
+      timestamp: "2026-08-01T05:17:50Z",
+      payload: { latest_token_usage_record: payload },
+    });
+    const parent = initialCodexScanState();
+    parseCodexLine(sessionMeta, parent);
+    parseCodexLine(
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn", model: "gpt-5.6-sol" } }),
+      parent,
+    );
+    const recovered = parseCodexLine(embedded, parent);
+    const child = initialCodexScanState();
+    parseCodexLine(
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-08-01T05:17:50Z",
+        payload: { id: "child", forked_from_id: "thread" },
+      }),
+      child,
+    );
+    const copied = parseCodexLine(explicit("shared", 120, 20), child);
+    expect(recovered?.codexSource).toBe("compacted");
+    expect(recovered?.dedupeKey).toBe(copied?.dedupeKey);
+    expect(copied?.model).toBe("");
+  });
+
+  it("marks an exact receipt with missing cache-write tokens as incomplete", () => {
+    const state = initialCodexScanState();
+    parseCodexLine(
+      JSON.stringify({ type: "turn_context", payload: { turn_id: "turn", model: "gpt-5.6-sol" } }),
+      state,
+    );
+    const incomplete = JSON.parse(explicit("incomplete", 100, 20));
+    delete incomplete.payload.usage.cache_write_input_tokens;
+    expect(parseCodexLine(JSON.stringify(incomplete), state)).toBeNull();
+    expect(state.incompleteReceiptCount).toBe(1);
+  });
+
+  it("uses cumulative progress to retain distinct equal legacy vectors", () => {
+    const state = initialCodexScanState();
+    parseCodexLine(turnContext, state);
+    const notification = (total: number) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-08-01T05:17:49Z",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 0,
+              cache_write_input_tokens: 0,
+              output_tokens: 10,
+              reasoning_output_tokens: 0,
+              total_tokens: 110,
+            },
+            total_token_usage: {
+              input_tokens: total,
+              cached_input_tokens: 0,
+              cache_write_input_tokens: 0,
+              output_tokens: total / 10,
+              reasoning_output_tokens: 0,
+              total_tokens: total * 1.1,
+            },
+          },
+        },
+      });
+    expect(parseCodexLine(notification(100), state)?.totals.uncachedInputTokens).toBe(100);
+    expect(parseCodexLine(notification(100), state)).toBeNull();
+    expect(parseCodexLine(notification(200), state)?.totals.uncachedInputTokens).toBe(100);
   });
 
   it("skips a repeated token_count so deltas are not double counted", () => {

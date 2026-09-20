@@ -29,7 +29,7 @@ describe("Usage page preferences", () => {
   });
 
   it.each([1, 7, 30, 90] as const)("round-trips every metric with a %i-day range", (windowDays) => {
-    for (const metric of ["cost", "tokens", "limits"] as const) {
+    for (const metric of ["cost", "tokens", "limits", "ledger"] as const) {
       saveUsagePagePreferences({ metric, windowDays });
       expect(readUsagePagePreferences()).toEqual({ metric, windowDays });
     }

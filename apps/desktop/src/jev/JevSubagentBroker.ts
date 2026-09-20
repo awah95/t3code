@@ -24,6 +24,8 @@ const SpawnRequest = Schema.Struct({
   proposedModel: Schema.optional(Schema.Unknown),
   proposedEffort: Schema.optional(Schema.Unknown),
   forkTurns: Schema.optional(Schema.String),
+  toolUseId: Schema.optional(Schema.String),
+  parentProviderTurnId: Schema.optional(Schema.String),
 });
 const StatusRequest = Schema.Struct({ ...Identity.fields, error: Schema.String });
 const decodeIdentity = Schema.decodeUnknownSync(Identity);
@@ -131,6 +133,12 @@ export async function createJevSubagentBroker(options: {
         return;
       }
       const body = decodeSpawn(raw);
+      const receiptIdentity = {
+        toolUseId: body.toolUseId,
+        attemptId: body.toolUseId ?? undefined,
+        parentProviderTurnId: body.parentProviderTurnId,
+        ...(policy.ledgerContext ? { ledgerContext: policy.ledgerContext } : {}),
+      };
       if (!body.taskPrompt.trim() || body.taskPrompt.length > 120_000) {
         respond(400, {});
         return;
@@ -177,6 +185,7 @@ export async function createJevSubagentBroker(options: {
       if (JSON.stringify(request).length > JEV_MAX_REQUEST_CHARS) {
         options.onDecision({
           ...identity,
+          ...receiptIdentity,
           request,
           result: failedJevDecision(
             "Subagent routing request exceeds the context limit; Codex retained its original model.",
@@ -195,7 +204,7 @@ export async function createJevSubagentBroker(options: {
       res.on("close", abort);
       const signal = AbortSignal.timeout(10_000);
       signal.addEventListener("abort", abort, { once: true });
-      options.onDecision({ ...identity, request, result: null });
+      options.onDecision({ ...identity, ...receiptIdentity, request, result: null });
       try {
         let result: JevRouteResult;
         try {
@@ -240,7 +249,21 @@ export async function createJevSubagentBroker(options: {
                       "Unsupported subagent model and effort pair; Codex retained its original model.",
                   }
                 : result;
-        options.onDecision({ ...identity, request, result: effectiveResult });
+        options.onDecision({
+          ...identity,
+          ...receiptIdentity,
+          request,
+          result: {
+            ...effectiveResult,
+            proposedChoice: result.proposedChoice ?? result.choice,
+          },
+          ...(selected && allowed
+            ? {
+                dispatchModel: selected.model ?? selected.key,
+                ...(selected.effort ? { dispatchEffort: selected.effort } : {}),
+              }
+            : {}),
+        });
         respond(
           200,
           selected && allowed
