@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -8,6 +9,8 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import * as DesktopJev from "./DesktopJev.ts";
+
+vi.mock("electron", () => ({ safeStorage: {} }));
 
 function testLayer(baseDir: string, available: boolean, backend?: string) {
   const secrets = new Map<number, string>();
@@ -110,6 +113,26 @@ describe("DesktopJev credential storage", () => {
       }),
       true,
       "basic_text",
+    ),
+  );
+
+  it.effect("accepts full long prompts and visibly rejects oversized context", () =>
+    withJev(
+      Effect.gen(function* () {
+        const service = yield* DesktopJev.DesktopJev;
+        const request = {
+          requestId: "long",
+          prompt: "x".repeat(20000),
+          candidates: [{ key: "fast", description: "Fast" }],
+          context: { existingSession: false, hasAttachments: false, interactionMode: "default" },
+        };
+        assert.include((yield* service.decide(request)).error ?? "", "OpenRouter key");
+        const oversized = yield* service.decide({
+          ...request,
+          context: { ...request.context, originalTask: "x".repeat(240000) },
+        });
+        assert.include(oversized.error ?? "", "Invalid routing request");
+      }),
     ),
   );
 

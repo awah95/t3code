@@ -30,6 +30,7 @@ describe("Jev desktop routing lifecycle", () => {
   beforeEach(() => {
     useJevStore.setState({
       enabled: false,
+      mode: "auto",
       calls: [],
       revision: 0,
       notice: null,
@@ -83,7 +84,7 @@ describe("Jev desktop routing lifecycle", () => {
     expect(useJevStore.getState().calls).toHaveLength(0);
     expect(useJevStore.getState().estimatedUsd).toBeCloseTo(55 * result.costUsd!);
   });
-  it("can cancel a request even after its row is pruned from the log", async () => {
+  it("retains a pending request when completed history exceeds the log limit", async () => {
     let resolve!: (value: JevRouteResult) => void;
     vi.mocked(window.desktopBridge!.decideJevRoute!).mockReturnValue(
       new Promise((done) => {
@@ -101,19 +102,19 @@ describe("Jev desktop routing lifecycle", () => {
         status: "routed",
         notice: null,
       });
-    expect(useJevStore.getState().calls.some((call) => call.id === request.requestId)).toBe(false);
+    expect(useJevStore.getState().calls.some((call) => call.id === request.requestId)).toBe(true);
     useJevStore.getState().setEnabled(false);
     expect(window.desktopBridge?.cancelJevRoute).toHaveBeenCalledWith(request.requestId);
     resolve(result);
     expect(await pending).toBeNull();
   });
-  it("sanitizes common credentials and caps prompt size", () => {
+  it("sanitizes common credentials without truncating current prompts", () => {
     const raw =
       "Authorization: Bearer abcdef123 api_key=secret123 sk-or-abcdefghijk -----BEGIN RSA PRIVATE KEY-----private-----END RSA PRIVATE KEY-----";
     const sanitized = sanitizeJevPrompt(raw);
     for (const secret of ["abcdef123", "secret123", "sk-or-abcdefghijk", "-----BEGIN"])
       expect(sanitized).not.toContain(secret);
-    expect(sanitizeJevPrompt("a".repeat(20_000))).toHaveLength(12_000);
+    expect(sanitizeJevPrompt("a".repeat(20_000))).toHaveLength(20_000);
   });
   it("disables every registered thread policy when Auto is turned off", async () => {
     let resolveDisabled!: () => void;
@@ -173,5 +174,110 @@ describe("Jev desktop routing lifecycle", () => {
     resolveStartup();
     await registration;
     expect(calls).toEqual(["clear", "set"]);
+  });
+});
+
+describe("guided review", () => {
+  beforeEach(() => {
+    useJevStore.getState().cancelPending();
+    useJevStore.setState({
+      enabled: true,
+      mode: "guided",
+      calls: [],
+      revision: 0,
+      billedUsd: 0,
+      estimatedUsd: 0,
+      unknownCostCalls: 0,
+    });
+    vi.stubGlobal("window", {
+      desktopBridge: {
+        decideJevRoute: vi.fn().mockResolvedValue({
+          ...result,
+          choice: null,
+          recommendedChoice: "one",
+          confidence: 0.37,
+        }),
+        cancelJevRoute: vi.fn(),
+      },
+    });
+  });
+  const reviewed = () =>
+    new Promise<void>((resolve) => {
+      const unsubscribe = useJevStore.subscribe((state) => {
+        if (state.calls.some((call) => call.status === "awaiting-review")) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+  it("waits for explicit approval, retains recommendation and bills once", async () => {
+    const waiting = reviewed();
+    let completed = false;
+    const pending = decideWithJev(request).then((value) => {
+      completed = true;
+      return value;
+    });
+    await waiting;
+    expect(completed).toBe(false);
+    useJevStore.getState().clearCalls();
+    expect(useJevStore.getState().calls).toHaveLength(1);
+    useJevStore.getState().resolveReview("test", "suggestion");
+    expect(await pending).toMatchObject({ choice: "one", confidence: 0.37 });
+    expect(useJevStore.getState().calls[0]).toMatchObject({
+      decision: "suggestion",
+      result: { recommendedChoice: "one", choice: null },
+    });
+    expect(useJevStore.getState().estimatedUsd).toBe(result.costUsd);
+  });
+  it("keeps guided approval reachable after fifty newer log entries", async () => {
+    let finish!: (value: JevRouteResult) => void;
+    vi.mocked(window.desktopBridge!.decideJevRoute!).mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const waiting = reviewed();
+    const pending = decideWithJev(request);
+    for (let index = 0; index < 55; index++)
+      useJevStore.getState().addCall({
+        id: `newer-${index}`,
+        createdAt: "2026-09-20T00:00:00Z",
+        request,
+        result,
+        status: "routed",
+        notice: null,
+      });
+    finish({ ...result, recommendedChoice: "one" });
+    await waiting;
+    useJevStore.getState().resolveReview("test", "suggestion");
+    expect((await pending)?.choice).toBe("one");
+  });
+  it("lets the user retain the original selection", async () => {
+    const waiting = reviewed();
+    const pending = decideWithJev(request);
+    await waiting;
+    useJevStore.getState().resolveReview("test", "current");
+    expect((await pending)?.choice).toBeNull();
+    expect(useJevStore.getState().calls[0]?.decision).toBe("current");
+  });
+  it("cancels a waiting review on mode change without dispatching", async () => {
+    const waiting = reviewed();
+    const pending = decideWithJev(request);
+    await waiting;
+    useJevStore.getState().setMode("auto");
+    expect(await pending).toBeNull();
+    expect(useJevStore.getState().calls[0]?.status).toBe("cancelled");
+  });
+  it("ignores out-of-pool approvals and accepts an explicit compatible alternative", async () => {
+    const waiting = reviewed();
+    const pending = decideWithJev({
+      ...request,
+      candidates: [...request.candidates, { key: "two", description: "Alternative" }],
+    });
+    await waiting;
+    useJevStore.getState().resolveReview("test", "alternative", "injected");
+    expect(useJevStore.getState().calls[0]?.status).toBe("awaiting-review");
+    useJevStore.getState().resolveReview("test", "alternative", "two");
+    expect((await pending)?.choice).toBe("two");
   });
 });

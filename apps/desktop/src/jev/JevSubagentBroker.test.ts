@@ -112,6 +112,124 @@ describe("desktop Codex subagent routing broker", () => {
       costKind: "estimated",
     });
   });
+  it("returns an authoritative pair and preserves long redacted subtask context", async () => {
+    const { broker, post, decide } = await setup();
+    broker.setPolicy({
+      ...policy,
+      candidates: [
+        { key: "pair-low", model: "gpt-5.6-sol", effort: "low", description: "Low" },
+        { key: "pair-high", model: "gpt-5.6-sol", effort: "high", description: "High" },
+      ],
+      context: {
+        existingSession: true,
+        hasAttachments: false,
+        interactionMode: "default",
+        originalTask: "token=secret-value Parent task",
+        history: [{ role: "user", text: "Parent context" }],
+        failure: { unresolved: true, signals: ["failed"], model: "gpt-5.6-sol", effort: "xhigh" },
+      },
+    });
+    expect(
+      await (
+        await post({
+          threadId: "thread",
+          providerInstanceId: "codex-local",
+          taskPrompt: "a".repeat(20000) + " password=hidden",
+        })
+      ).json(),
+    ).toEqual({ model: "gpt-5.6-sol", effort: "high" });
+    const request = decide.mock.calls[0]?.[0];
+    expect(request.prompt).toBe("a".repeat(20000) + " password=[redacted]");
+    expect(request.context.originalTask).not.toContain("secret-value");
+    expect(request.context.history[0].text).toBe("Parent context");
+    expect(request.context.failure).toBeUndefined();
+  });
+  it("context-only updates preserve pending selections and accounting", async () => {
+    let finish!: (result: JevRouteResult) => void;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const { broker, post, cancel, onDecision } = await setup(
+      vi.fn(
+        () =>
+          new Promise<JevRouteResult>((resolve) => {
+            finish = resolve;
+            started();
+          }),
+      ),
+    );
+    broker.setPolicy(policy);
+    const response = post({
+      threadId: "thread",
+      providerInstanceId: "codex-local",
+      taskPrompt: "Review",
+    });
+    await ready;
+    broker.setPolicy({
+      ...policy,
+      context: {
+        existingSession: true,
+        hasAttachments: false,
+        interactionMode: "default",
+        originalTask: "Updated parent context",
+      },
+    });
+    finish(success);
+    expect(await (await response).json()).toEqual({ model: "gpt-strong" });
+    expect(cancel).not.toHaveBeenCalled();
+    expect(onDecision.mock.calls.at(-1)?.[0].result.costUsd).toBe(success.costUsd);
+  });
+  it("pool changes cancel in-flight selections and keep their usage", async () => {
+    let finish!: (result: JevRouteResult) => void;
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const { broker, post, cancel, onDecision } = await setup(
+      vi.fn(
+        () =>
+          new Promise<JevRouteResult>((resolve) => {
+            finish = resolve;
+            started();
+          }),
+      ),
+    );
+    broker.setPolicy(policy);
+    const response = post({
+      threadId: "thread",
+      providerInstanceId: "codex-local",
+      taskPrompt: "Review",
+    });
+    await ready;
+    broker.setPolicy({ ...policy, candidates: [policy.candidates[0]!] });
+    finish(success);
+    expect(await (await response).json()).toEqual({ model: null });
+    expect(cancel).toHaveBeenCalled();
+    expect(onDecision.mock.calls.at(-1)?.[0].result).toMatchObject({
+      choice: null,
+      costUsd: success.costUsd,
+    });
+  });
+  it("rejects oversized total context visibly without a router call", async () => {
+    const { broker, post, decide, onDecision } = await setup();
+    broker.setPolicy({
+      ...policy,
+      context: {
+        existingSession: false,
+        hasAttachments: false,
+        interactionMode: "subagent",
+        originalTask: "x".repeat(240000),
+      },
+    });
+    expect(
+      await (
+        await post({ threadId: "thread", providerInstanceId: "codex-local", taskPrompt: "Review" })
+      ).json(),
+    ).toEqual({ model: null });
+    expect(decide).not.toHaveBeenCalled();
+    expect(onDecision.mock.calls[0]?.[0].result.error).toContain("context limit");
+  });
   it("reports opt-in state without making Jev calls", async () => {
     const { broker, post, decide } = await setup();
     broker.setPolicy(policy);

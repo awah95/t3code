@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jevRouting": {
+      "types": "./src/jevRouting.ts",
+      "import": "./src/jevRouting.ts"
+    },
     "./legacyCliLauncher": {
       "types": "./src/legacyCliLauncher.ts",
       "import": "./src/legacyCliLauncher.ts"

@@ -1,4 +1,5 @@
-import type { ModelSelection } from "@t3tools/contracts";
+import { describeJevCandidate, getJevModelProfile } from "@t3tools/shared/jevRouting";
+import type { JevEffort, ModelSelection } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { getAppModelOptionsForInstance } from "../modelSelection";
@@ -13,11 +14,19 @@ export function eligibleJevModels(input: {
 }) {
   const candidates = [];
   for (const provider of input.providers) {
+    if (provider.driverKind !== "codex") continue;
     if (!provider.enabled || !provider.isAvailable || provider.status !== "ready") continue;
     // Keep Auto inside the user's chosen integration, including brand-new threads.
     if (provider.instanceId !== (input.sessionInstanceId ?? input.current.instanceId)) continue;
     for (const model of getAppModelOptionsForInstance(input.settings, provider)) {
-      if (model.isUnavailable) continue;
+      if (model.isUnavailable || !getJevModelProfile(model.slug)) continue;
+      const descriptor = provider.models
+        .find((entry) => entry.slug === model.slug)
+        ?.capabilities?.optionDescriptors?.find((option) => option.id === "reasoningEffort");
+      if (!descriptor || descriptor.type !== "select") continue;
+      const efforts = descriptor.options
+        .map((option) => option.id)
+        .filter((value): value is JevEffort => ["low", "medium", "high", "xhigh"].includes(value));
       const selection: ModelSelection = { instanceId: provider.instanceId, model: model.slug };
       if (
         getStartedThreadModelChangeBlockReason({
@@ -29,16 +38,22 @@ export function eligibleJevModels(input: {
         })
       )
         continue;
-      candidates.push({
-        key: `candidate_${candidates.length}`,
-        description:
-          `${provider.displayName} (${provider.driverKind}), model ${model.name} (${model.slug})`.slice(
-            0,
-            1000,
-          ),
-        selection,
-        provider,
-      });
+      for (const effort of efforts) {
+        candidates.push({
+          key: `candidate_${candidates.length}`,
+          model: model.slug,
+          effort,
+          description: describeJevCandidate(model.slug, effort),
+          selection: {
+            ...selection,
+            options: [
+              ...(input.current.options ?? []).filter((option) => option.id !== "reasoningEffort"),
+              { id: "reasoningEffort", value: effort },
+            ],
+          },
+          provider,
+        });
+      }
     }
   }
   return candidates.slice(0, 128);

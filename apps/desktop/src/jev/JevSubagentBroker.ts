@@ -8,6 +8,12 @@ import type {
   JevSubagentDecision,
   JevSubagentPolicy,
 } from "@t3tools/contracts";
+import {
+  JEV_MAX_REQUEST_CHARS,
+  sanitizeJevText,
+  sanitizeJevContext,
+  isJevCandidateAllowed,
+} from "@t3tools/shared/jevRouting";
 import * as Schema from "effect/Schema";
 import { failedJevDecision } from "./decision.ts";
 
@@ -17,6 +23,17 @@ const StatusRequest = Schema.Struct({ ...Identity.fields, error: Schema.String }
 const decodeIdentity = Schema.decodeUnknownSync(Identity);
 const decodeSpawn = Schema.decodeUnknownSync(SpawnRequest);
 const decodeStatus = Schema.decodeUnknownSync(StatusRequest);
+
+function samePool(a: JevSubagentPolicy | undefined, b: JevSubagentPolicy | undefined) {
+  return (
+    !!a &&
+    !!b &&
+    a.enabled === b.enabled &&
+    a.providerInstanceId === b.providerInstanceId &&
+    JSON.stringify(a.candidates.map(({ key, model, effort }) => ({ key, model, effort }))) ===
+      JSON.stringify(b.candidates.map(({ key, model, effort }) => ({ key, model, effort })))
+  );
+}
 
 export async function createJevSubagentBroker(options: {
   decide: (request: JevRouteRequest) => Promise<JevRouteResult>;
@@ -54,13 +71,18 @@ export async function createJevSubagentBroker(options: {
       for await (const chunk of req) {
         const bytes = Buffer.from(chunk);
         size += bytes.length;
-        if (size > 65_536) {
+        if (size > JEV_MAX_REQUEST_CHARS * 4) {
           respond(413, {});
           return;
         }
         chunks.push(bytes);
       }
-      const raw: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const serialized = Buffer.concat(chunks).toString("utf8");
+      if (serialized.length > JEV_MAX_REQUEST_CHARS) {
+        respond(413, {});
+        return;
+      }
+      const raw: unknown = JSON.parse(serialized);
       const identity = decodeIdentity(raw);
       const policy = policies.get(identity.threadId);
       const enabled =
@@ -103,35 +125,47 @@ export async function createJevSubagentBroker(options: {
         return;
       }
       const body = decodeSpawn(raw);
-      if (!body.taskPrompt.trim() || body.taskPrompt.length > 48_000) {
+      if (!body.taskPrompt.trim() || body.taskPrompt.length > 120_000) {
         respond(400, {});
         return;
       }
       // The desktop UI registers the allowlist; hook callers cannot expand it.
+      // A parent's failed approach is context, not a capability floor for an unrelated child.
+      const { failure: _parentFailure, ...parentContext } = policy.context ?? {
+        existingSession: false,
+        hasAttachments: false,
+        interactionMode: "subagent",
+      };
+      const childContext = sanitizeJevContext({
+        ...parentContext,
+        existingSession: false,
+        hasAttachments: false,
+        interactionMode: "subagent",
+      });
       const candidates = policy.candidates.map((candidate, index) => ({
+        ...candidate,
         key: `c${index}`,
-        description: `${candidate.key}: ${candidate.description}`.slice(0, 1000),
+        description: sanitizeJevText(
+          `${candidate.model ?? candidate.key}: ${candidate.description}`,
+        ),
       }));
       const request: JevRouteRequest = {
         requestId: NodeCrypto.randomUUID(),
-        prompt: body.taskPrompt
-          .replace(
-            /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
-            "[private key redacted]",
-          )
-          .replace(/Bearer\s+[a-zA-Z0-9._~-]+/gi, "Bearer [redacted]")
-          .replace(
-            /\b(?:sk-[a-zA-Z0-9_-]{8,}|gh[pousr]_[a-zA-Z0-9_]{8,}|AKIA[A-Z0-9]{16})\b/g,
-            "[credential redacted]",
-          )
-          .replace(
-            /\b(api[_-]?key|authorization|password|secret|token)\s*[:=]\s*[^\s,;]+/gi,
-            "$1=[redacted]",
-          )
-          .slice(0, 12_000),
+        prompt: sanitizeJevText(body.taskPrompt),
         candidates,
-        context: { existingSession: false, hasAttachments: false, interactionMode: "subagent" },
+        context: childContext,
       };
+      if (JSON.stringify(request).length > JEV_MAX_REQUEST_CHARS) {
+        options.onDecision({
+          ...identity,
+          request,
+          result: failedJevDecision(
+            "Subagent routing request exceeds the context limit; Codex retained its original model.",
+          ),
+        });
+        respond(200, { model: null });
+        return;
+      }
       let cancelled = false;
       const abort = () => {
         cancelled = true;
@@ -154,22 +188,37 @@ export async function createJevSubagentBroker(options: {
         }
         // Preserve accounting even when routing was disabled while awaiting Jev.
         const current = policies.get(body.threadId);
+        const index = candidates.findIndex((candidate) => candidate.key === result.choice);
+        const selected =
+          !cancelled && samePool(current, policy) && index >= 0
+            ? policy.candidates[index]
+            : undefined;
+        const allowed = selected && isJevCandidateAllowed(selected, childContext);
         const effectiveResult =
-          cancelled || current !== policy
+          cancelled || !samePool(current, policy)
             ? {
                 ...result,
                 choice: null,
                 error: "Subagent routing cancelled or disabled; Codex retained its original model.",
               }
-            : result;
+            : result.choice !== null && !allowed
+              ? {
+                  ...result,
+                  choice: null,
+                  error:
+                    "Unsupported subagent model and effort pair; Codex retained its original model.",
+                }
+              : result;
         options.onDecision({ ...identity, request, result: effectiveResult });
-        const index = candidates.findIndex((candidate) => candidate.key === result.choice);
-        respond(200, {
-          model:
-            !cancelled && current === policy && index >= 0
-              ? (policy.candidates[index]?.key ?? null)
-              : null,
-        });
+        respond(
+          200,
+          selected && allowed
+            ? {
+                model: selected.model ?? selected.key,
+                ...(selected.effort !== undefined ? { effort: selected.effort } : {}),
+              }
+            : { model: null },
+        );
       } finally {
         signal.removeEventListener("abort", abort);
         res.off("close", abort);
@@ -208,12 +257,18 @@ export async function createJevSubagentBroker(options: {
           policy.candidates.length &&
         policy.candidates.every(
           (candidate) =>
-            /^[a-zA-Z0-9._/-]{1,200}$/.test(candidate.key) && candidate.description.length <= 1000,
+            /^[a-zA-Z0-9._/-]{1,200}$/.test(candidate.key) &&
+            candidate.description.length <= 1000 &&
+            ((candidate.model === undefined && candidate.effort === undefined) ||
+              (typeof candidate.model === "string" &&
+                /^[a-zA-Z0-9._/-]{1,200}$/.test(candidate.model) &&
+                ["low", "medium", "high", "xhigh"].includes(candidate.effort ?? ""))),
         );
       if (policy.enabled && valid && (policies.has(policy.threadId) || policies.size < 128))
         policies.set(policy.threadId, policy);
       else policies.delete(policy.threadId);
-      for (const entry of pending.values()) if (entry.threadId === policy.threadId) entry.abort();
+      if (!samePool(previous, policies.get(policy.threadId)))
+        for (const entry of pending.values()) if (entry.threadId === policy.threadId) entry.abort();
     },
     async close() {
       policies.clear();

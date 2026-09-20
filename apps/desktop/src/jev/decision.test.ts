@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import type { JevRouteRequest } from "@t3tools/contracts";
-import { JEV_MODEL, parseJevDecision, requestJevDecision } from "./decision.ts";
+import {
+  buildJevDecisionBody,
+  JEV_MODEL,
+  parseJevDecision,
+  requestJevDecision,
+} from "./decision.ts";
 
 const request: JevRouteRequest = {
   requestId: "test-request",
@@ -85,6 +90,99 @@ describe("Jev decision validation and accounting", () => {
 });
 
 describe("Jev OpenRouter transport", () => {
+  it("provides full current task, recent context, model profiles and capability-first policy", () => {
+    const body = buildJevDecisionBody(
+      {
+        ...request,
+        prompt: "x".repeat(13_000) + " decisive requirement",
+        candidates: [
+          {
+            key: "astra_medium",
+            description: "Astra medium",
+            model: "gpt-6-astra",
+            effort: "medium",
+          },
+        ],
+        context: {
+          ...request.context,
+          originalTask: "Fix scheduling",
+          activePlan: "Preserve invariants",
+          history: [{ role: "assistant", text: "The last test still failed." }],
+          budget: {
+            checkedAt: "2026-09-20T00:00:00Z",
+            windows: [{ label: "Weekly", remainingPercent: 20 }],
+          },
+        },
+      },
+      Date.parse("2026-09-20T00:10:00Z"),
+    );
+    expect(body.state.task).toHaveLength(13_021);
+    expect(body.state.originalTask).toBe("Fix scheduling");
+    expect(body.state.routingPolicy.profiles.map((profile) => profile.model)).toEqual([
+      "gpt-6-astra",
+    ]);
+    expect(body.state.budgetStatus).toContain("stale");
+    expect(body.questions.model!.instructions).toContain("lowest expected total");
+  });
+  it("blocks an unresolved failure downgrade while retaining charged usage", async () => {
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const sent = JSON.parse(String(init?.body));
+      const answers = Object.fromEntries(
+        Object.entries(sent.questions).map(([key, value]) => {
+          const question = value as { criteria: Record<string, string> };
+          const keys = Object.keys(question.criteria);
+          return [
+            key,
+            {
+              type: "choice",
+              choice: keys[0],
+              confidence: 0.9,
+              probabilities: Object.fromEntries(
+                keys.map((entry) => [entry, entry === keys[0] ? 1 : 0]),
+              ),
+            },
+          ];
+        }),
+      );
+      return new Response(
+        JSON.stringify({ model: "jev-1.13.0", answers, usage: { input_tokens: 1000 } }),
+      );
+    });
+    const result = await requestJevDecision(
+      {
+        ...request,
+        candidates: [
+          { key: "fast", description: "Luna high", model: "gpt-5.6-luna", effort: "high" },
+          { key: "strong", description: "Sol high", model: "gpt-5.6-sol", effort: "high" },
+        ],
+        context: {
+          ...request.context,
+          failure: {
+            unresolved: true,
+            signals: ["still broken"],
+            model: "gpt-5.6-sol",
+            effort: "medium",
+          },
+        },
+      },
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(result).toMatchObject({ choice: null, inputTokens: 1000, costKind: "estimated" });
+    expect(result.error).toContain("downgrade");
+  });
+  it("does not send silently truncated oversized input", async () => {
+    const transport = vi.fn<typeof fetch>();
+    const result = await requestJevDecision(
+      { ...request, prompt: "x".repeat(240_001) },
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(transport).not.toHaveBeenCalled();
+    expect(result.error).toContain("No task text was silently truncated");
+  });
   it("uses the decision endpoint and keeps the key out of the body and result", async () => {
     const transport = vi
       .fn<typeof fetch>()

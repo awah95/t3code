@@ -1,3 +1,4 @@
+import { JevPanel } from "../jev/JevControls";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -124,6 +125,8 @@ import {
   sanitizeJevPrompt,
   useJevStore,
 } from "../jev/jevStore";
+import { buildJevContext } from "../jev/context";
+import { isJevCandidateAllowed } from "@t3tools/shared/jevRouting";
 import { eligibleJevModels } from "../jev/routing";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
@@ -2933,8 +2936,19 @@ export default function ChatView(props: ChatViewProps) {
       threadId: activeThread.id,
       providerInstanceId: provider.instanceId,
       enabled: candidates.length > 0,
+      context: buildJevContext({
+        messages: activeThread.messages.filter((message) => !message.streaming),
+        prompt: "",
+        current: activeThread.modelSelection,
+        existingSession: activeThread.session !== null,
+        interactionMode: activeThread.interactionMode,
+        plans: activeThread.proposedPlans,
+        ...(provider.snapshot.usageLimits ? { usageLimits: provider.snapshot.usageLimits } : {}),
+      }),
       candidates: candidates.map((candidate) => ({
-        key: candidate.selection.model,
+        key: candidate.key,
+        model: candidate.model,
+        effort: candidate.effort,
         description: candidate.description,
       })),
     }).catch(() =>
@@ -7767,6 +7781,21 @@ export default function ChatView(props: ChatViewProps) {
         useJevStore.setState({ notice: bypassReason });
         toastManager.add({ type: "info", title: "Jev Auto", description: bypassReason });
       } else {
+        const routingProvider = providerInstanceEntries.find(
+          (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
+        );
+        const routingContext = buildJevContext({
+          messages: activeThread.messages,
+          prompt: trimmed,
+          current: ctxSelectedModelSelection,
+          existingSession: activeThread.session !== null,
+          hasAttachments: composerImages.length + composerFiles.length > 0,
+          interactionMode: sendInteractionMode,
+          plans: activeThread.proposedPlans,
+          ...(routingProvider?.snapshot.usageLimits
+            ? { usageLimits: routingProvider.snapshot.usageLimits }
+            : {}),
+        });
         const candidates = eligibleJevModels({
           providers: providerInstanceEntries,
           settings,
@@ -7778,113 +7807,142 @@ export default function ChatView(props: ChatViewProps) {
           hasStartedSession: activeThread.session !== null || activeThread.messages.length > 0,
         }).filter(
           (candidate) =>
+            isJevCandidateAllowed(candidate, routingContext) &&
             !getAntigravitySendBlockReason(candidate.provider.snapshot, candidate.selection.model),
         );
         const manual = candidates.find(
           (candidate) =>
             candidate.selection.instanceId === ctxSelectedModelSelection.instanceId &&
-            candidate.selection.model === ctxSelectedModel,
+            candidate.selection.model === ctxSelectedModel &&
+            candidate.effort === routingContext.currentEffort,
         );
-        const fallback = manual ?? candidates[0];
-        if (!fallback) {
-          setThreadError(
-            threadIdForSend,
-            "Jev Auto found no available model compatible with this conversation. Check provider settings.",
-          );
-          return;
-        }
-        const revision = useJevStore.getState().revision;
-        const drainGeneration = useQueuedMessageStore.getState().drainGeneration;
-        const generation = composerSendGenerationRef.current;
-        const promptBeforeRouting = promptRef.current;
-        sendInFlightRef.current = true;
-        let decision;
-        try {
-          decision = await decideWithJev({
-            requestId: randomUUID(),
-            prompt: sanitizeJevPrompt(trimmed),
-            candidates: candidates.map(({ key, description }) => ({
-              key,
-              description: sanitizeJevPrompt(description),
-            })),
-            context: {
-              existingSession: activeThread.session !== null,
-              hasAttachments: composerImages.length + composerFiles.length > 0,
-              interactionMode: sendInteractionMode,
-            },
-          });
-        } finally {
-          sendInFlightRef.current = false;
-        }
-        if (
-          useJevStore.getState().revision !== revision ||
-          currentRouteThreadKeyRef.current !== routeThreadKey ||
-          composerSendGenerationRef.current !== generation ||
-          useQueuedMessageStore.getState().drainGeneration !== drainGeneration
-        )
-          return;
-        if (!queuedMessage && promptRef.current !== promptBeforeRouting) {
+        const fallback = manual;
+        if (candidates.length === 0) {
           useJevStore.setState({
-            notice: "The prompt changed during routing. Send again to route the updated message.",
+            notice:
+              "Jev Auto skipped: no supported model and effort pairs are available. Keeping your selected model.",
           });
-          toastManager.add({
-            type: "info",
-            title: "Prompt updated",
-            description: "Send again to route the updated message.",
-          });
-          return;
+        } else {
+          const revision = useJevStore.getState().revision;
+          const drainGeneration = useQueuedMessageStore.getState().drainGeneration;
+          const generation = composerSendGenerationRef.current;
+          const promptBeforeRouting = promptRef.current;
+          sendInFlightRef.current = true;
+          let decision;
+          try {
+            decision = await decideWithJev({
+              requestId: randomUUID(),
+              prompt: sanitizeJevPrompt(trimmed),
+              candidates: candidates.map(({ key, description, model, effort }) => ({
+                key,
+                model,
+                effort,
+                description: sanitizeJevPrompt(description),
+              })),
+              context: routingContext,
+            });
+          } finally {
+            sendInFlightRef.current = false;
+          }
+          if (
+            useJevStore.getState().revision !== revision ||
+            currentRouteThreadKeyRef.current !== routeThreadKey ||
+            composerSendGenerationRef.current !== generation ||
+            useQueuedMessageStore.getState().drainGeneration !== drainGeneration
+          )
+            return;
+          if (!queuedMessage && promptRef.current !== promptBeforeRouting) {
+            useJevStore.setState({
+              notice: "The prompt changed during routing. Send again to route the updated message.",
+            });
+            toastManager.add({
+              type: "info",
+              title: "Prompt updated",
+              description: "Send again to route the updated message.",
+            });
+            return;
+          }
+          const chosen =
+            candidates.find((candidate) => candidate.key === decision?.choice) ?? fallback;
+          if (!chosen) {
+            useJevStore.setState({
+              notice:
+                decision?.error ??
+                "Jev routing unavailable. Keeping your selected model and effort.",
+            });
+          } else {
+            // Recheck availability after the network await, before formatting or dispatching.
+            const liveProvider = appAtomRegistry
+              .get(environmentServerConfigsAtom)
+              .get(environmentId)
+              ?.providers?.find((provider) => provider.instanceId === chosen.selection.instanceId);
+            if (
+              !liveProvider ||
+              liveProvider.status !== "ready" ||
+              liveProvider.enabled === false ||
+              liveProvider.availability === "unavailable"
+            ) {
+              setThreadError(
+                threadIdForSend,
+                "The routed provider became unavailable. Retry when it is ready.",
+              );
+              return;
+            }
+            const liveDescriptor = liveProvider.models
+              .find((model) => model.slug === chosen.model)
+              ?.capabilities?.optionDescriptors?.find((option) => option.id === "reasoningEffort");
+            if (
+              !liveDescriptor ||
+              liveDescriptor.type !== "select" ||
+              !liveDescriptor.options.some((option) => option.id === chosen.effort) ||
+              !isJevCandidateAllowed(chosen, routingContext)
+            ) {
+              setThreadError(
+                threadIdForSend,
+                "The routed model or effort is no longer supported. Send again to refresh routing.",
+              );
+              return;
+            }
+            const routedOptions = [
+              ...(ctxSelectedModelSelection.options ?? []).filter(
+                (option) => option.id !== "reasoningEffort",
+              ),
+              { id: "reasoningEffort", value: chosen.effort },
+            ];
+            ctxSelectedProvider = chosen.provider.driverKind;
+            ctxSelectedModel = chosen.selection.model;
+            ctxSelectedProviderModels = liveProvider.models;
+            const providerState = getComposerProviderState({
+              provider: chosen.provider.driverKind,
+              model: chosen.selection.model,
+              models: liveProvider.models,
+              modelOptions: routedOptions,
+              promptInjectionState: getComposerPromptInjectionState(promptForSend),
+              planModeEnabled: settings.planModeEnabled,
+            });
+            ctxSelectedPromptEffort = providerState.promptEffort;
+            ctxSelectedModelSelection = createModelSelection(
+              chosen.selection.instanceId,
+              chosen.selection.model,
+              providerState.modelOptionsForDispatch,
+            );
+            sendInteractionMode = resolveComposerInteractionMode({
+              planModeEnabled: settings.planModeEnabled,
+              provider: chosen.provider.snapshot,
+              interactionMode: sendInteractionMode,
+            }).interactionMode;
+            if (decision?.error)
+              toastManager.add({
+                type: "warning",
+                title: "Jev fallback",
+                description: decision.error,
+              });
+            setComposerDraftModelSelection(composerDraftTarget, ctxSelectedModelSelection, {
+              explicit: false,
+              replaceOptions: true,
+            });
+          }
         }
-        const chosen =
-          candidates.find((candidate) => candidate.key === decision?.choice) ?? fallback;
-        // Recheck availability after the network await, before formatting or dispatching.
-        const liveProvider = appAtomRegistry
-          .get(environmentServerConfigsAtom)
-          .get(environmentId)
-          ?.providers?.find((provider) => provider.instanceId === chosen.selection.instanceId);
-        if (
-          !liveProvider ||
-          liveProvider.status !== "ready" ||
-          liveProvider.enabled === false ||
-          liveProvider.availability === "unavailable"
-        ) {
-          setThreadError(
-            threadIdForSend,
-            "The routed provider became unavailable. Retry when it is ready.",
-          );
-          return;
-        }
-        const routedOptions =
-          chosen.provider.driverKind === ctxSelectedProvider
-            ? ctxSelectedModelSelection.options
-            : undefined;
-        ctxSelectedProvider = chosen.provider.driverKind;
-        ctxSelectedModel = chosen.selection.model;
-        ctxSelectedProviderModels = chosen.provider.models;
-        const providerState = getComposerProviderState({
-          provider: chosen.provider.driverKind,
-          model: chosen.selection.model,
-          models: chosen.provider.models,
-          modelOptions: routedOptions,
-          promptInjectionState: getComposerPromptInjectionState(promptForSend),
-          planModeEnabled: settings.planModeEnabled,
-        });
-        ctxSelectedPromptEffort = providerState.promptEffort;
-        ctxSelectedModelSelection = createModelSelection(
-          chosen.selection.instanceId,
-          chosen.selection.model,
-          providerState.modelOptionsForDispatch,
-        );
-        sendInteractionMode = resolveComposerInteractionMode({
-          planModeEnabled: settings.planModeEnabled,
-          provider: chosen.provider.snapshot,
-          interactionMode: sendInteractionMode,
-        }).interactionMode;
-        if (decision?.error)
-          toastManager.add({ type: "warning", title: "Jev fallback", description: decision.error });
-        setComposerDraftModelSelection(composerDraftTarget, ctxSelectedModelSelection, {
-          explicit: false,
-          replaceOptions: true,
-        });
       }
     }
 
@@ -7917,8 +7975,21 @@ export default function ChatView(props: ChatViewProps) {
               threadId: threadIdForSend,
               providerInstanceId: provider.instanceId,
               enabled: candidates.length > 0,
+              context: buildJevContext({
+                messages: activeThread.messages,
+                prompt: trimmed,
+                current: ctxSelectedModelSelection,
+                existingSession: activeThread.session !== null,
+                interactionMode: sendInteractionMode,
+                plans: activeThread.proposedPlans,
+                ...(provider.snapshot.usageLimits
+                  ? { usageLimits: provider.snapshot.usageLimits }
+                  : {}),
+              }),
               candidates: candidates.map((candidate) => ({
-                key: candidate.selection.model,
+                key: candidate.key,
+                model: candidate.model,
+                effort: candidate.effort,
                 description: candidate.description,
               })),
             });
@@ -10574,6 +10645,8 @@ export default function ChatView(props: ChatViewProps) {
           />
         ))}
       </div>
+
+      {!rightPanelMaximized && <JevPanel />}
 
       {rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelTabs

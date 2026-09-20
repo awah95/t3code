@@ -53,7 +53,12 @@ export interface CodexJevHookContext {
   token: string;
   threadId: string;
   providerInstanceId: string;
-  candidates: ReadonlyArray<{ key: string; description: string }>;
+  candidates: ReadonlyArray<{
+    key: string;
+    description: string;
+    model?: string;
+    effort?: "low" | "medium" | "high" | "xhigh";
+  }>;
 }
 
 /** Standalone hook logic: no key access and no mutation except the selected spawn model. */
@@ -86,7 +91,7 @@ export async function runCodexJevHook(
     args.fork_context === true ||
     typeof args.message !== "string" ||
     !args.message.trim() ||
-    args.message.length > 12_000 ||
+    args.message.length > 120_000 ||
     "resume" in args ||
     context.candidates.length === 0
   )
@@ -125,11 +130,19 @@ export async function runCodexJevHook(
       result === null ||
       !("model" in result) ||
       typeof result.model !== "string" ||
-      !context.candidates.some((candidate) => candidate.key === result.model)
+      !context.candidates.some((candidate) =>
+        candidate.model === undefined && candidate.effort === undefined
+          ? candidate.key === result.model && !("effort" in result)
+          : candidate.model === result.model &&
+            "effort" in result &&
+            candidate.effort === result.effort &&
+            ["low", "medium", "high", "xhigh"].includes(String(result.effort)),
+      )
     )
       return {};
     const updatedInput: Record<string, unknown> = { ...args, model: result.model };
-    if (result.model !== args.model) delete updatedInput.reasoning_effort;
+    if ("effort" in result) updatedInput.reasoning_effort = result.effort;
+    else if (result.model !== args.model) delete updatedInput.reasoning_effort;
     return {
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
@@ -181,16 +194,25 @@ export async function readCodexJevPolicy(
       !Array.isArray(policy.candidates)
     )
       return null;
-    const candidates: Array<{ key: string; description: string }> = [];
+    const candidates: Array<CodexJevHookContext["candidates"][number]> = [];
     for (const candidate of policy.candidates) {
       if (
         typeof candidate !== "object" ||
         candidate === null ||
         typeof candidate.key !== "string" ||
-        typeof candidate.description !== "string"
+        typeof candidate.description !== "string" ||
+        ((candidate.model !== undefined || candidate.effort !== undefined) &&
+          (typeof candidate.model !== "string" ||
+            !["low", "medium", "high", "xhigh"].includes(candidate.effort)))
       )
         return null;
-      candidates.push({ key: candidate.key, description: candidate.description });
+      candidates.push({
+        key: candidate.key,
+        description: candidate.description,
+        ...(candidate.model !== undefined
+          ? { model: candidate.model, effort: candidate.effort }
+          : {}),
+      });
     }
     return candidates.length > 0 ? candidates : null;
   } catch {
@@ -212,7 +234,7 @@ try {
   let input = "";
   for await (const chunk of process.stdin) {
     input += chunk;
-    if (input.length > 32768) throw new Error("Input too large");
+    if (input.length > 240000) throw new Error("Input too large");
   }
   const candidates = await policy(context);
   const output = candidates ? await route(JSON.parse(input), { ...context, candidates }) : {};

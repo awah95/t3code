@@ -1,4 +1,5 @@
-import type { JevRouteRequest, JevRouteResult } from "@t3tools/contracts";
+import { sanitizeJevText } from "@t3tools/shared/jevRouting";
+import type { JevRouteRequest, JevRouteResult, JevSubagentPolicy } from "@t3tools/contracts";
 import { create } from "zustand";
 import { isElectron } from "../env";
 
@@ -7,19 +8,18 @@ export interface JevCall {
   createdAt: string;
   request: JevRouteRequest;
   result: JevRouteResult | null;
-  status: "pending" | "routed" | "fallback" | "cancelled" | "skipped";
+  status: "pending" | "awaiting-review" | "routed" | "fallback" | "cancelled" | "skipped";
+  decision?: "suggestion" | "current" | "alternative";
+  approvedChoice?: string | null;
   notice: string | null;
   kind?: "turn" | "subagent";
 }
 
-type SubagentPolicy = {
-  threadId: string;
-  providerInstanceId: string;
-  enabled: boolean;
-  candidates: { key: string; description: string }[];
-};
+type SubagentPolicy = JevSubagentPolicy;
 const subagentPolicies = new Map<string, SubagentPolicy>();
 const pendingTurnRequests = new Set<string>();
+type ReviewResolution = { action: "suggestion" | "current" | "alternative"; choice: string | null };
+const pendingReviews = new Map<string, (resolution: ReviewResolution | null) => void>();
 let listeningForSubagents = false;
 let policyInitialization: Promise<void> | null = null;
 let policyQueue = Promise.resolve();
@@ -120,6 +120,13 @@ export function listenForJevSubagents() {
 
 export const useJevStore = create<{
   enabled: boolean;
+  mode: "guided" | "auto";
+  setMode: (mode: "guided" | "auto") => void;
+  resolveReview: (
+    id: string,
+    action: "suggestion" | "current" | "alternative",
+    choice?: string,
+  ) => void;
   subagentsEnabled: boolean;
   setSubagentsEnabled: (enabled: boolean) => void;
   panelOpen: boolean;
@@ -138,6 +145,35 @@ export const useJevStore = create<{
   cancelPending: () => void;
 }>((set, get) => ({
   enabled: false,
+  mode: "guided",
+  setMode: (mode) => {
+    get().cancelPending();
+    set({
+      mode,
+      notice:
+        mode === "guided"
+          ? "Guided mode: review each recommendation before sending."
+          : "Automatic routing enabled; low confidence retains your current selection.",
+    });
+  },
+  resolveReview: (id, action, choice) => {
+    const call = get().calls.find((entry) => entry.id === id && entry.status === "awaiting-review");
+    const resolve = pendingReviews.get(id);
+    if (!call || !resolve) return;
+    const selected =
+      action === "current"
+        ? null
+        : action === "suggestion"
+          ? (call.result?.recommendedChoice ?? call.result?.choice)
+          : choice;
+    if (
+      action !== "current" &&
+      (!selected || !call.request.candidates.some((candidate) => candidate.key === selected))
+    )
+      return;
+    pendingReviews.delete(id);
+    resolve({ action, choice: selected ?? null });
+  },
   subagentsEnabled: false,
   panelOpen: false,
   revision: 0,
@@ -153,7 +189,7 @@ export const useJevStore = create<{
       enabled,
       revision: get().revision + 1,
       notice: enabled
-        ? "Jev Auto enabled. Task text is sent to OpenRouter for routing."
+        ? "Jev Auto enabled. Task text, recent chat history and plan context are sent to OpenRouter for routing."
         : "Jev Auto is off.",
     });
   },
@@ -172,7 +208,14 @@ export const useJevStore = create<{
       notice: "Manual model pinned. Enable Jev Auto to resume routing.",
     });
   },
-  addCall: (call) => set({ calls: [call, ...get().calls].slice(0, 50), notice: call.notice }),
+  addCall: (call) =>
+    set({
+      calls: [call, ...get().calls].filter(
+        (entry, index) =>
+          index < 50 || entry.status === "awaiting-review" || entry.status === "pending",
+      ),
+      notice: call.notice,
+    }),
   finishCall: (id, result, cancelled = false) =>
     set({
       billedUsd: get().billedUsd + (result.costKind === "billed" ? (result.costUsd ?? 0) : 0),
@@ -191,8 +234,22 @@ export const useJevStore = create<{
       ),
       notice: cancelled ? "Routing cancelled. Message was not sent." : result.error,
     }),
-  clearCalls: () => set({ calls: get().calls.filter((call) => call.status === "pending") }),
+  clearCalls: () =>
+    set({
+      calls: get().calls.filter(
+        (call) => call.status === "pending" || call.status === "awaiting-review",
+      ),
+    }),
   cancelPending: () => {
+    for (const resolve of pendingReviews.values()) resolve(null);
+    pendingReviews.clear();
+    set({
+      calls: get().calls.map((call) =>
+        call.status === "awaiting-review"
+          ? { ...call, status: "cancelled", notice: "Review cancelled. Message was not sent." }
+          : call,
+      ),
+    });
     if (!isElectron) return;
     for (const id of pendingTurnRequests) {
       void window.desktopBridge?.cancelJevRoute?.(id);
@@ -201,24 +258,8 @@ export const useJevStore = create<{
   },
 }));
 
-/** Send only task text, never attachment bodies, terminal output or full history. */
-export function sanitizeJevPrompt(prompt: string): string {
-  return prompt
-    .replace(
-      /-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?-----END [^-]*PRIVATE KEY-----/g,
-      "[private key redacted]",
-    )
-    .replace(
-      /\b(?:sk-[a-zA-Z0-9_-]{8,}|gh[pousr]_[a-zA-Z0-9_]{8,}|AKIA[A-Z0-9]{16})\b/g,
-      "[credential redacted]",
-    )
-    .replace(/Bearer\s+[a-zA-Z0-9._~-]+/gi, "Bearer [redacted]")
-    .replace(
-      /\b(api[_-]?key|authorization|password|secret|token)\s*[:=]\s*[^\s,;]+/gi,
-      "$1=[redacted]",
-    )
-    .slice(0, 12_000);
-}
+/** Redact common credentials without shortening the current request. */
+export const sanitizeJevPrompt = sanitizeJevText;
 
 export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteResult | null> {
   const store = useJevStore.getState();
@@ -254,5 +295,38 @@ export async function decideWithJev(request: JevRouteRequest): Promise<JevRouteR
   }
   const cancelled = useJevStore.getState().revision !== revision;
   useJevStore.getState().finishCall(request.requestId, result, cancelled);
-  return cancelled ? null : result;
+  if (cancelled) return null;
+  if (store.mode !== "guided") return result;
+  const resolution = await new Promise<ReviewResolution | null>((resolve) => {
+    pendingReviews.set(request.requestId, resolve);
+    useJevStore.setState((state) => ({
+      panelOpen: true,
+      notice: "Review Jev's recommendation before the message is sent.",
+      calls: state.calls.map((call) =>
+        call.id === request.requestId ? { ...call, status: "awaiting-review" } : call,
+      ),
+    }));
+  });
+  if (!resolution || useJevStore.getState().revision !== revision) return null;
+  useJevStore.setState((state) => ({
+    calls: state.calls.map((call) =>
+      call.id === request.requestId
+        ? {
+            ...call,
+            status: resolution.choice ? "routed" : "fallback",
+            decision: resolution.action,
+            approvedChoice: resolution.choice,
+            notice: resolution.choice
+              ? "Selection approved for sending."
+              : "Current model selected for sending.",
+          }
+        : call,
+    ),
+    notice: null,
+  }));
+  return {
+    ...result,
+    choice: resolution.choice,
+    error: resolution.choice ? null : "Using your current model by your choice.",
+  };
 }

@@ -7,20 +7,39 @@ and custom binaries or environment variables.
 ## Jev routing in this desktop fork
 
 Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then turn
-on **Jev Auto** in the chat header. Jev chooses among the enabled models in your
+on **Jev Auto** in the chat header. Jev chooses a supported Codex model and reasoning effort in your
 selected provider instance; existing conversations stay in that instance. Selecting
 a model manually turns Auto off. Routing failures retain a valid selected model.
 
 Open **Jev calls** to inspect routing requests, decisions, latency and session cost.
-The log keeps the latest 50 calls in memory; totals also include older calls. Estimated
+Guided mode reviews each user-message recommendation before dispatch. In **Jev calls**,
+choose **Guided** or **Automatic**. Guided offers the recommendation, your current selection,
+or another compatible model/effort pair; **Cancel send** keeps the message unsent. No
+review is accepted automatically. Model selection and effort are assessed separately;
+confidence describes their selection certainty, not the probability of task success.
+The original recommendation remains visible when you choose a different model.
+
+**Evaluate a prompt set** accepts the JSON companion to a routing corpus. It calls Jev
+through your saved key, excludes expected answers from requests, and executes no coding
+tasks. Download the results to compare recommendations with your expected ranges. It
+runs at most 56 cases and checks a $0.25 stop budget between calls. Evaluation costs are
+separate from the chat log; a final call can take the total over the stop amount.
+
+The log keeps the latest 50 calls plus active requests in memory; totals also include older calls. Estimated
 costs are separate from reported charges and exclude the coding model's own usage.
-OpenRouter receives a shortened task prompt and model descriptions. Common credential
+OpenRouter receives the full current prompt, up to ten recent user/assistant exchanges,
+the original task, agreed plan, failure feedback, model profiles and available quota snapshots.
+Raw tool logs, internal reasoning and attachment bodies are excluded. History omissions
+are shown in the call log; oversized requests fall back without silently shortening the prompt.
+Routing favors capability and expected completion quality before quota. Profile guidance is
+not a measured success rate or speed benchmark. Common credential
 patterns are redacted, but this is not a guarantee that all sensitive text is removed.
 
 The separate **Codex subagent routing** control opts into a T3 session hook. Enabling
 it trusts the exact generated hook through Codex's configuration API. Other hooks and
 account settings remain intact. Full-history forks retain their parent's model;
-independent subtasks can use Jev's selected model. Turning routing off stops further
+independent subtasks can use Jev's selected model and effort. Child routing remains automatic
+with its confidence guard, including when user-message routing is Guided. Turning routing off stops further
 Jev decisions; a previously written hook trust entry may remain in Codex settings.
 
 This MVP supports local desktop environments. Provider commands, plan follow-ups and

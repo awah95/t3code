@@ -121,6 +121,91 @@ describe("Codex Jev hook", () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it("routes exact model and effort pairs, including effort-only changes", async () => {
+    const paired = {
+      ...context,
+      candidates: [
+        { key: "a", description: "Low", model: "model-b", effort: "low" as const },
+        { key: "b", description: "High", model: "model-b", effort: "high" as const },
+      ],
+    };
+    const routed = await runCodexJevHook(
+      input,
+      paired,
+      vi.fn<typeof fetch>().mockResolvedValue(Response.json({ model: "model-b", effort: "high" })),
+    );
+    expect(routed).toMatchObject({
+      hookSpecificOutput: {
+        updatedInput: {
+          ...input.tool_input,
+          model: "model-b",
+          reasoning_effort: "high",
+        },
+      },
+    });
+    for (const result of [
+      { model: "model-b", effort: "xhigh" },
+      { model: "model-b" },
+      { model: "model-a", effort: "high" },
+    ]) {
+      expect(
+        await runCodexJevHook(
+          input,
+          paired,
+          vi.fn<typeof fetch>().mockResolvedValue(Response.json(result)),
+        ),
+      ).toEqual({});
+    }
+  });
+  it("serializes paired routing without runtime imports and retains long prompts", async () => {
+    const paired = [{ key: "opaque", description: "High", model: "model-b", effort: "high" }];
+    for (const [proposedModel, effort] of [
+      ["model-b", "high"],
+      ["model-a", "high"],
+      ["model-b", "xhigh"],
+    ]) {
+      const outputs: string[] = [];
+      const longInput = {
+        ...input,
+        tool_input: {
+          ...input.tool_input,
+          model: proposedModel,
+          reasoning_effort: "low",
+          message: "x".repeat(50000),
+        },
+      };
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(Response.json({ enabled: true, candidates: paired }))
+        .mockResolvedValueOnce(Response.json({ model: "model-b", effort }));
+      await NodeVM.runInNewContext(`(async () => { ${codexJevRunnerSource()} })()`, {
+        process: {
+          env: {
+            T3CODE_JEV_BROKER_URL: context.endpoint,
+            T3CODE_JEV_BROKER_TOKEN: context.token,
+            T3CODE_JEV_THREAD_ID: context.threadId,
+            T3CODE_JEV_PROVIDER_INSTANCE_ID: context.providerInstanceId,
+          },
+          stdin: (async function* () {
+            yield JSON.stringify(longInput);
+          })(),
+          stdout: { write: (value: string) => outputs.push(value) },
+        },
+        fetch: fetcher,
+        URL,
+        AbortSignal,
+      });
+      const result = JSON.parse(outputs.join(""));
+      if (effort === "high")
+        expect(result.hookSpecificOutput.updatedInput).toEqual({
+          ...longInput.tool_input,
+          model: "model-b",
+          reasoning_effort: "high",
+        });
+      else expect(result).toEqual({});
+      expect(JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)).taskPrompt).toHaveLength(50000);
+    }
+  });
   it("falls back on unavailable, invalid or failed decisions", async () => {
     for (const response of [
       Response.json({ model: "not-available" }),

@@ -1,4 +1,5 @@
 import type { JevRouteRequest, JevRouteResult, JevStatus } from "@t3tools/contracts";
+import { JEV_MAX_REQUEST_CHARS } from "@t3tools/shared/jevRouting";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -85,7 +86,9 @@ export const layer = Layer.effect(
           if (
             !request.requestId ||
             request.requestId.length > 128 ||
-            request.prompt.length > 12_000 ||
+            // Serialized size is the wire boundary limit, including optional context.
+            // @effect-diagnostics-next-line preferSchemaOverJson:off
+            JSON.stringify(request).length > JEV_MAX_REQUEST_CHARS ||
             request.candidates.length < 1 ||
             request.candidates.length > 128 ||
             new Set(request.candidates.map((candidate) => candidate.key)).size !==
