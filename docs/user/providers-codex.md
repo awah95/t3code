@@ -4,6 +4,30 @@ For one account, use the default Codex provider with your normal Codex login.
 [Provider setup](./install.md#providers) covers installation, Settings > Providers,
 and custom binaries or environment variables.
 
+## Jev routing in this desktop fork
+
+Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then turn
+on **Jev Auto** in the chat header. Jev chooses among the enabled models in your
+selected provider instance; existing conversations stay in that instance. Selecting
+a model manually turns Auto off. Routing failures retain a valid selected model.
+
+Open **Jev calls** to inspect routing requests, decisions, latency and session cost.
+The log keeps the latest 50 calls in memory; totals also include older calls. Estimated
+costs are separate from reported charges and exclude the coding model's own usage.
+OpenRouter receives a shortened task prompt and model descriptions. Common credential
+patterns are redacted, but this is not a guarantee that all sensitive text is removed.
+
+The separate **Codex subagent routing** control opts into a T3 session hook. Enabling
+it trusts the exact generated hook through Codex's configuration API. Other hooks and
+account settings remain intact. Full-history forks retain their parent's model;
+independent subtasks can use Jev's selected model. Turning routing off stops further
+Jev decisions; a previously written hook trust entry may remain in Codex settings.
+
+This MVP supports local desktop environments. Provider commands, plan follow-ups and
+explicit multi-model sends retain their normal model selection. Auto and subagent
+routing start off when the desktop client reloads. The API key is encrypted with the
+operating system's secure storage and can be removed from Settings.
+
 ## Use multiple accounts
 
 A shared Codex home with a shadow home lets work and personal accounts continue

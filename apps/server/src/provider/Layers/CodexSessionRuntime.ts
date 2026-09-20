@@ -1,4 +1,12 @@
 import {
+  codexJevHookLaunchArgs,
+  codexJevHookTrustWrite,
+  readCodexJevPolicy,
+  reportCodexJevStatus,
+  JEV_BROKER_URL,
+  JEV_BROKER_TOKEN,
+} from "../CodexJevHook.ts";
+import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
@@ -172,6 +180,8 @@ export interface CodexSessionRuntimeOptions {
   readonly binaryPath: string;
   readonly homePath?: string;
   readonly launchArgs?: string;
+  readonly jevHookCommand?: string;
+  readonly strictResume?: boolean;
   readonly environment?: NodeJS.ProcessEnv;
   readonly cwd: string;
   readonly runtimeMode: RuntimeMode;
@@ -206,6 +216,7 @@ export interface CodexThreadSnapshot {
 }
 
 export interface CodexSessionRuntimeShape {
+  readonly prepareJevRestart?: Effect.Effect<boolean>;
   readonly start: () => Effect.Effect<ProviderSession, CodexSessionRuntimeError>;
   readonly getSession: Effect.Effect<ProviderSession>;
   readonly sendTurn: (
@@ -585,6 +596,7 @@ function buildCodexCollaborationMode(input: {
   readonly model?: string;
   readonly effort?: EffectCodexSchema.V2TurnStartParams__ReasoningEffort;
   readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
+  readonly jevSubagentsEnabled?: boolean;
 }): EffectCodexSchema.V2TurnStartParams__CollaborationMode | undefined {
   if (input.interactionMode === undefined) {
     return undefined;
@@ -596,11 +608,15 @@ function buildCodexCollaborationMode(input: {
     settings: {
       model,
       reasoning_effort: reasoningEffort,
-      developer_instructions: buildCodexDeveloperInstructions(
-        input.interactionMode,
-        { model, reasoningEffort },
-        input.browserToolsAvailable ?? true,
-      ),
+      developer_instructions:
+        buildCodexDeveloperInstructions(
+          input.interactionMode,
+          { model, reasoningEffort },
+          input.browserToolsAvailable ?? true,
+        ) +
+        (input.jevSubagentsEnabled
+          ? '\nThe user enabled Jev subagent model routing. For independent delegated tasks that do not need all prior context, explicitly use fork_turns: "none" or a bounded turn count so Jev can choose an appropriate model. Keep a full-history fork when it needs full context; full-history forks retain the parent model. This does not itself authorize spawning extra agents.'
+          : ""),
     },
   };
 }
@@ -623,6 +639,7 @@ export function buildTurnStartParams(input: {
   readonly interactionMode?: ProviderInteractionMode;
   /** Defaults to true so callers that predate the agent-access gate are unchanged. */
   readonly browserToolsAvailable?: boolean | T3CodeToolAvailability;
+  readonly jevSubagentsEnabled?: boolean;
 }): Effect.Effect<
   CodexTurnStartParamsWithCollaborationMode,
   CodexErrors.CodexAppServerProtocolParseError
@@ -644,6 +661,7 @@ export function buildTurnStartParams(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.effort ? { effort: input.effort } : {}),
     browserToolsAvailable: input.browserToolsAvailable ?? true,
+    jevSubagentsEnabled: input.jevSubagentsEnabled ?? false,
   });
 
   return decodeCodexTurnStartParamsWithCollaborationMode({
@@ -728,6 +746,7 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  readonly strictResume?: boolean;
 }): Effect.Effect<typeof CodexThreadResumeMetadata.Type, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -762,14 +781,16 @@ export const openCodexThread = (input: {
           ),
         ),
       ),
-      Effect.catchIf(isRecoverableThreadResumeError, (error) =>
-        Effect.logWarning("codex app-server thread resume fell back to fresh start", {
-          threadId: input.threadId,
-          requestedRuntimeMode: input.runtimeMode,
-          resumeThreadId,
-          recoverable: true,
-          cause: error,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+      Effect.catchIf(
+        (error) => !input.strictResume && isRecoverableThreadResumeError(error),
+        (error) =>
+          Effect.logWarning("codex app-server thread resume fell back to fresh start", {
+            threadId: input.threadId,
+            requestedRuntimeMode: input.runtimeMode,
+            resumeThreadId,
+            recoverable: true,
+            cause: error,
+          }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
       ),
     );
 };
@@ -1315,11 +1336,24 @@ export const makeCodexSessionRuntime = (
     // `CODEX_HOME=~/.codex_work` reach codex as an absolute path.
     const resolvedHomePath = options.homePath ? expandHomePath(options.homePath) : undefined;
     const env = {
-      ...options.environment,
+      ...(options.jevHookCommand ? (options.environment ?? process.env) : options.environment),
+      ...(options.jevHookCommand
+        ? {
+            T3CODE_JEV_THREAD_ID: options.threadId,
+            T3CODE_JEV_PROVIDER_INSTANCE_ID: options.providerInstanceId ?? "codex",
+            ELECTRON_RUN_AS_NODE: "1",
+          }
+        : {}),
       ...(resolvedHomePath ? { CODEX_HOME: resolvedHomePath } : {}),
     };
     const extendEnv = options.environment === undefined;
-    const appServerArgs = codexSessionAppServerArgs(options.appServerArgs, options.launchArgs);
+    const appServerArgs = codexSessionAppServerArgs(
+      [
+        ...(options.appServerArgs ?? []),
+        ...(options.jevHookCommand ? codexJevHookLaunchArgs(options.jevHookCommand) : []),
+      ],
+      options.launchArgs,
+    );
     const spawnCommand = yield* resolveSpawnCommand(options.binaryPath, appServerArgs, {
       env,
       extendEnv,
@@ -2429,10 +2463,73 @@ export const makeCodexSessionRuntime = (
       Effect.forkIn(runtimeScope),
     );
 
+    const jevStatus = (message: string) =>
+      Effect.promise(() =>
+        reportCodexJevStatus(
+          {
+            endpoint: (options.environment ?? process.env)[JEV_BROKER_URL] ?? "",
+            token: (options.environment ?? process.env)[JEV_BROKER_TOKEN] ?? "",
+            threadId: options.threadId,
+            providerInstanceId: options.providerInstanceId ?? "codex",
+          },
+          message,
+        ),
+      );
+    let jevHookLoaded = false;
+    const prepareJevTrust = Effect.gen(function* () {
+      const sourceEnvironment = options.environment ?? process.env;
+      const endpoint = sourceEnvironment[JEV_BROKER_URL];
+      const token = sourceEnvironment[JEV_BROKER_TOKEN];
+      if (!endpoint || !token) return false;
+      const candidates = yield* Effect.tryPromise(() =>
+        readCodexJevPolicy({
+          endpoint,
+          token,
+          threadId: options.threadId,
+          providerInstanceId: options.providerInstanceId ?? "codex",
+        }),
+      );
+      if (!candidates) return false;
+      if (!options.jevHookCommand) {
+        yield* jevStatus(
+          "Subagent routing is unavailable: the Codex launch settings already define session hooks, or the local hook could not be prepared.",
+        );
+        return false;
+      }
+      const hooks = yield* client.raw.request("hooks/list", { cwds: [options.cwd] });
+      const write = codexJevHookTrustWrite(hooks, options.jevHookCommand);
+      if (!write) {
+        const known = codexJevHookTrustWrite(hooks, options.jevHookCommand, true) !== null;
+        if (!known)
+          yield* jevStatus(
+            "This Codex runtime did not expose the expected Jev hook. Native subagent model selection remains active.",
+          );
+        return known;
+      }
+      // The native writer preserves unrelated hooks and comments; only the exact generated hash is trusted.
+      yield* client.raw.request("config/value/write", write);
+      return true;
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.logWarning(
+          "Jev subagent hook could not be enabled; preserving native model selection.",
+          { cause },
+        ).pipe(
+          Effect.andThen(
+            jevStatus(
+              "Jev could not enable its Codex hook; native subagent model selection remains active.",
+            ),
+          ),
+          Effect.as(false),
+        ),
+      ),
+    );
+
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
       yield* client.notify("initialized", undefined);
+      jevHookLoaded = (yield* prepareJevTrust) === true;
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
@@ -2444,6 +2541,7 @@ export const makeCodexSessionRuntime = (
         requestedModel,
         serviceTier: options.serviceTier,
         resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(options.strictResume ? { strictResume: true } : {}),
       });
 
       const providerThreadId = opened.thread.id;
@@ -2492,6 +2590,20 @@ export const makeCodexSessionRuntime = (
     });
 
     return {
+      prepareJevRestart: Effect.gen(function* () {
+        if (jevHookLoaded) return false;
+        if (!(yield* prepareJevTrust)) return false;
+        if (
+          (yield* Ref.get(sessionRef)).activeTurnId ||
+          (yield* Ref.get(collabChildLiveTurnsRef)).size > 0
+        ) {
+          yield* jevStatus(
+            "Jev subagent routing will activate after the current turn and background subagents finish.",
+          );
+          return false;
+        }
+        return true;
+      }),
       start,
       getSession: Ref.get(sessionRef),
       compactThread: Effect.gen(function* () {
@@ -2500,6 +2612,7 @@ export const makeCodexSessionRuntime = (
       }),
       sendTurn: (input) =>
         Effect.gen(function* () {
+          const jevSubagentsEnabled = jevHookLoaded && (yield* prepareJevTrust) === true;
           const providerThreadId = yield* readProviderThreadId;
           if (hasConfiguredMcpServer(options.appServerArgs)) {
             yield* client.request("config/mcpServer/reload", undefined).pipe(
@@ -2514,6 +2627,7 @@ export const makeCodexSessionRuntime = (
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
           const params = yield* buildTurnStartParams({
+            jevSubagentsEnabled: jevSubagentsEnabled === true,
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),

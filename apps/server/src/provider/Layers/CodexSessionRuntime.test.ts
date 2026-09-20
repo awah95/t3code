@@ -1027,6 +1027,52 @@ describe("openCodexThread", () => {
     }),
   );
 
+  it.effect("never replaces missing history during a strict Jev restart", () =>
+    Effect.gen(function* () {
+      const client = {
+        request: () => Effect.die("Strict resume must not create a fresh thread"),
+        raw: {
+          request: () =>
+            Effect.fail(
+              new CodexErrors.CodexAppServerRequestError({
+                code: -32600,
+                errorMessage: "no rollout found",
+              }),
+            ),
+        },
+      };
+      const error = yield* openCodexThread({
+        client,
+        threadId: ThreadId.make("jev-thread"),
+        runtimeMode: "full-access",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.6-sol",
+        serviceTier: undefined,
+        resumeThreadId: "prior-thread",
+        strictResume: true,
+      }).pipe(Effect.flip);
+      NodeAssert.ok(isCodexAppServerRequestError(error));
+      NodeAssert.equal(error.errorMessage, "no rollout found");
+    }),
+  );
+  it.effect("adds subagent context guidance only while Jev is opted in", () =>
+    Effect.gen(function* () {
+      for (const enabled of [false, true]) {
+        const params = yield* buildTurnStartParams({
+          threadId: "jev-thread",
+          runtimeMode: "full-access",
+          model: "gpt-5.6-sol",
+          interactionMode: "default",
+          jevSubagentsEnabled: enabled,
+        });
+        NodeAssert.equal(
+          params.collaborationMode?.settings.developer_instructions?.includes("user enabled Jev"),
+          enabled,
+        );
+      }
+    }),
+  );
+
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {

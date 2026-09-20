@@ -62,6 +62,22 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getJevStatus: () => ipcRenderer.invoke(IpcChannels.GET_JEV_STATUS_CHANNEL),
+  setJevApiKey: (key) => ipcRenderer.invoke(IpcChannels.SET_JEV_API_KEY_CHANNEL, key),
+  decideJevRoute: (request) => ipcRenderer.invoke(IpcChannels.DECIDE_JEV_ROUTE_CHANNEL, request),
+  cancelJevRoute: (id) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_ROUTE_CHANNEL, id),
+  setJevSubagentPolicy: (policy) =>
+    ipcRenderer.invoke(IpcChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
+  clearJevSubagentPolicies: () =>
+    ipcRenderer.invoke(IpcChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL),
+  onJevSubagentDecision: (listener) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      value: import("@t3tools/contracts").JevSubagentDecision,
+    ) => listener(value);
+    ipcRenderer.on(IpcChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(IpcChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
+  },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);
     if (typeof result !== "object" || result === null) {

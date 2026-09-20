@@ -1,3 +1,5 @@
+import { HostProcessPlatform, HostProcessExecutablePath } from "@t3tools/shared/hostProcess";
+import { prepareCodexJevHook } from "../CodexJevSetup.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
  *
@@ -66,7 +68,6 @@ import {
   makeCodexSessionRuntime,
   type CodexSessionRuntimeError,
   type CodexSessionRuntimeOptions,
-  type CodexSessionRuntimeSendTurnInput,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -101,6 +102,7 @@ export interface CodexAdapterLiveOptions {
 }
 
 interface CodexAdapterSessionContext {
+  readonly startInput: Parameters<CodexAdapterShape["startSession"]>[0];
   readonly threadId: ThreadId;
   readonly scope: Scope.Closeable;
   readonly runtime: CodexSessionRuntimeShape;
@@ -2235,6 +2237,8 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   codexConfig: CodexSettings,
   options?: CodexAdapterLiveOptions,
 ) {
+  const hostPlatform = yield* HostProcessPlatform;
+  const hostExecutablePath = yield* HostProcessExecutablePath;
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("codex");
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const crypto = yield* Crypto.Crypto;
@@ -2251,7 +2255,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
 
-  const startSession: CodexAdapterShape["startSession"] = (input) =>
+  const startSession = (
+    input: Parameters<CodexAdapterShape["startSession"]>[0],
+    strictResume = false,
+  ) =>
     Effect.scoped(
       Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -2272,7 +2279,18 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
             ? getCodexServiceTierOptionValue(input.modelSelection)
             : undefined;
         const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+        const jevHook = yield* Effect.tryPromise(() =>
+          prepareCodexJevHook(
+            serverConfig.stateDir,
+            options?.environment ?? process.env,
+            resolveCodexLaunchArgs(codexConfig.launchArgs, options?.environment),
+            hostPlatform,
+            hostExecutablePath,
+          ),
+        ).pipe(Effect.catch(() => Effect.succeed(undefined)));
         const runtimeInput: CodexSessionRuntimeOptions = {
+          ...(jevHook ? { jevHookCommand: jevHook.command } : {}),
+          ...(strictResume ? { strictResume: true } : {}),
           threadId: input.threadId,
           providerInstanceId: boundInstanceId,
           cwd: input.cwd ?? process.cwd(),
@@ -2480,6 +2498,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
         );
 
         sessions.set(input.threadId, {
+          startInput: input,
           threadId: input.threadId,
           scope: sessionScope,
           runtime,
@@ -2526,7 +2545,24 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       { concurrency: 1 },
     );
 
-    const session = yield* requireSession(input.threadId);
+    let session = yield* requireSession(input.threadId);
+    if (session.runtime.prepareJevRestart) {
+      const current = yield* session.runtime.getSession;
+      const needsRestart = yield* session.runtime.prepareJevRestart;
+      if (!current.activeTurnId && needsRestart) {
+        // Native Codex snapshots hook trust when opening a thread. Resume in a fresh
+        // process once on first opt-in; later toggles only change desktop policy.
+        yield* startSession(
+          {
+            ...session.startInput,
+            resumeCursor: current.resumeCursor,
+            ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+          },
+          true,
+        );
+        session = yield* requireSession(input.threadId);
+      }
+    }
     const reasoningEffort =
       input.modelSelection?.instanceId === boundInstanceId
         ? getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort")

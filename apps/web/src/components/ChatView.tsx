@@ -118,6 +118,13 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { isElectron } from "../env";
+import {
+  decideWithJev,
+  registerJevSubagentPolicy,
+  sanitizeJevPrompt,
+  useJevStore,
+} from "../jev/jevStore";
+import { eligibleJevModels } from "../jev/routing";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
@@ -1797,6 +1804,12 @@ export default function ChatView(props: ChatViewProps) {
   const fanoutState = useAtomValue(fanoutStateAtom);
   const sendInFlightRef = fanoutState.sendInFlight;
   const composerSendGenerationRef = useRef(0);
+  useEffect(
+    () => () => {
+      useJevStore.getState().cancelPending();
+    },
+    [routeThreadKey],
+  );
   const multipleModelSelections = fanoutState.selections;
   const setMultipleModelSelections = useCallback(
     (selections: SetStateAction<ReadonlyArray<ModelSelection> | null>) => {
@@ -2886,6 +2899,56 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
+  const jevSubagentsEnabled = useJevStore((state) => state.enabled && state.subagentsEnabled);
+  useEffect(() => {
+    if (!isElectron || !activeThread || !jevSubagentsEnabled) return;
+    const target = environmentById.get(environmentId)?.entry.target;
+    if (
+      !target ||
+      (target._tag !== "PrimaryConnectionTarget" && !isDesktopLocalConnectionTarget(target))
+    )
+      return;
+    const instanceId =
+      activeThread.session?.providerInstanceId ?? selectedProviderEntry?.instanceId;
+    const provider = providerInstanceEntries.find((entry) => entry.instanceId === instanceId);
+    if (!provider || provider.driverKind !== "codex") {
+      void registerJevSubagentPolicy({
+        threadId: activeThread.id,
+        providerInstanceId: instanceId ?? activeThread.modelSelection.instanceId,
+        enabled: false,
+        candidates: [],
+      }).catch(() =>
+        useJevStore.setState({ notice: "Could not disable subagent routing for this thread." }),
+      );
+      return;
+    }
+    const candidates = eligibleJevModels({
+      providers: [provider],
+      settings,
+      current: { ...activeThread.modelSelection, instanceId: provider.instanceId },
+      sessionInstanceId: activeThread.session?.providerInstanceId ?? null,
+      hasStartedSession: false,
+    });
+    void registerJevSubagentPolicy({
+      threadId: activeThread.id,
+      providerInstanceId: provider.instanceId,
+      enabled: candidates.length > 0,
+      candidates: candidates.map((candidate) => ({
+        key: candidate.selection.model,
+        description: candidate.description,
+      })),
+    }).catch(() =>
+      useJevStore.setState({ notice: "Could not enable Codex subagent routing for this thread." }),
+    );
+  }, [
+    activeThread,
+    environmentById,
+    environmentId,
+    jevSubagentsEnabled,
+    providerInstanceEntries,
+    selectedProviderEntry,
+    settings,
+  ]);
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
@@ -3969,6 +4032,7 @@ export default function ChatView(props: ChatViewProps) {
     () => {},
   );
   const onInterrupt = useCallback(async () => {
+    useJevStore.getState().cancelPending();
     const { activeThread, phase, setThreadError } = interruptContextRef.current;
     const input = buildRunningThreadTurnInterruptInput(activeThread, phase);
     if (!input || !activeThread) return;
@@ -7395,7 +7459,7 @@ export default function ChatView(props: ChatViewProps) {
       previewAnnotations: sendContextPreviewAnnotations,
       reviewComments: composerReviewComments,
     } = queuedMessage ?? sendCtx;
-    const {
+    let {
       selectedProvider: ctxSelectedProvider,
       selectedModel: ctxSelectedModel,
       selectedProviderModels: ctxSelectedProviderModels,
@@ -7466,6 +7530,8 @@ export default function ChatView(props: ChatViewProps) {
         ? parseCodexFeedbackCommand(trimmed)
         : null;
     if (feedbackCommand && !queuedMessage && multipleModelSelections === null) {
+      if (isElectron && useJevStore.getState().enabled)
+        useJevStore.setState({ notice: "Jev Auto skipped: feedback is a native Codex operation." });
       if (!isServerThread || activeThread.session === null) {
         toastManager.add(
           stackedThreadToast({
@@ -7527,6 +7593,10 @@ export default function ChatView(props: ChatViewProps) {
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
+      if (isElectron && useJevStore.getState().enabled)
+        useJevStore.setState({
+          notice: "Jev Auto skipped: plan follow-ups keep the current model.",
+        });
       const outgoingFollowUpText = formatOutgoingPrompt({
         provider: ctxSelectedProvider,
         model: ctxSelectedModel,
@@ -7589,6 +7659,10 @@ export default function ChatView(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand && !queuedMessage && multipleModelSelections === null) {
+      if (isElectron && useJevStore.getState().enabled)
+        useJevStore.setState({
+          notice: "Jev Auto skipped: this command changes the interaction mode.",
+        });
       handleInteractionModeChange(standaloneSlashCommand);
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -7675,6 +7749,196 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
 
+    const jev = useJevStore.getState();
+    if (isElectron && jev.enabled) {
+      const environmentTarget = environmentById.get(environmentId)?.entry.target;
+      const localEnvironment =
+        environmentTarget !== undefined &&
+        (environmentTarget._tag === "PrimaryConnectionTarget" ||
+          isDesktopLocalConnectionTarget(environmentTarget));
+      const bypassReason = !localEnvironment
+        ? "Jev Auto currently supports local desktop environments."
+        : multipleModelSelections !== null
+          ? "Jev Auto skipped: multiple models were explicitly selected."
+          : trimmed.startsWith("/")
+            ? "Jev Auto skipped: provider commands use the selected model."
+            : null;
+      if (bypassReason) {
+        useJevStore.setState({ notice: bypassReason });
+        toastManager.add({ type: "info", title: "Jev Auto", description: bypassReason });
+      } else {
+        const candidates = eligibleJevModels({
+          providers: providerInstanceEntries,
+          settings,
+          current:
+            activeThread.session !== null || activeThread.messages.length > 0
+              ? activeThread.modelSelection
+              : ctxSelectedModelSelection,
+          sessionInstanceId: activeThread.session?.providerInstanceId ?? null,
+          hasStartedSession: activeThread.session !== null || activeThread.messages.length > 0,
+        }).filter(
+          (candidate) =>
+            !getAntigravitySendBlockReason(candidate.provider.snapshot, candidate.selection.model),
+        );
+        const manual = candidates.find(
+          (candidate) =>
+            candidate.selection.instanceId === ctxSelectedModelSelection.instanceId &&
+            candidate.selection.model === ctxSelectedModel,
+        );
+        const fallback = manual ?? candidates[0];
+        if (!fallback) {
+          setThreadError(
+            threadIdForSend,
+            "Jev Auto found no available model compatible with this conversation. Check provider settings.",
+          );
+          return;
+        }
+        const revision = useJevStore.getState().revision;
+        const drainGeneration = useQueuedMessageStore.getState().drainGeneration;
+        const generation = composerSendGenerationRef.current;
+        const promptBeforeRouting = promptRef.current;
+        sendInFlightRef.current = true;
+        let decision;
+        try {
+          decision = await decideWithJev({
+            requestId: randomUUID(),
+            prompt: sanitizeJevPrompt(trimmed),
+            candidates: candidates.map(({ key, description }) => ({
+              key,
+              description: sanitizeJevPrompt(description),
+            })),
+            context: {
+              existingSession: activeThread.session !== null,
+              hasAttachments: composerImages.length + composerFiles.length > 0,
+              interactionMode: sendInteractionMode,
+            },
+          });
+        } finally {
+          sendInFlightRef.current = false;
+        }
+        if (
+          useJevStore.getState().revision !== revision ||
+          currentRouteThreadKeyRef.current !== routeThreadKey ||
+          composerSendGenerationRef.current !== generation ||
+          useQueuedMessageStore.getState().drainGeneration !== drainGeneration
+        )
+          return;
+        if (!queuedMessage && promptRef.current !== promptBeforeRouting) {
+          useJevStore.setState({
+            notice: "The prompt changed during routing. Send again to route the updated message.",
+          });
+          toastManager.add({
+            type: "info",
+            title: "Prompt updated",
+            description: "Send again to route the updated message.",
+          });
+          return;
+        }
+        const chosen =
+          candidates.find((candidate) => candidate.key === decision?.choice) ?? fallback;
+        // Recheck availability after the network await, before formatting or dispatching.
+        const liveProvider = appAtomRegistry
+          .get(environmentServerConfigsAtom)
+          .get(environmentId)
+          ?.providers?.find((provider) => provider.instanceId === chosen.selection.instanceId);
+        if (
+          !liveProvider ||
+          liveProvider.status !== "ready" ||
+          liveProvider.enabled === false ||
+          liveProvider.availability === "unavailable"
+        ) {
+          setThreadError(
+            threadIdForSend,
+            "The routed provider became unavailable. Retry when it is ready.",
+          );
+          return;
+        }
+        const routedOptions =
+          chosen.provider.driverKind === ctxSelectedProvider
+            ? ctxSelectedModelSelection.options
+            : undefined;
+        ctxSelectedProvider = chosen.provider.driverKind;
+        ctxSelectedModel = chosen.selection.model;
+        ctxSelectedProviderModels = chosen.provider.models;
+        const providerState = getComposerProviderState({
+          provider: chosen.provider.driverKind,
+          model: chosen.selection.model,
+          models: chosen.provider.models,
+          modelOptions: routedOptions,
+          promptInjectionState: getComposerPromptInjectionState(promptForSend),
+          planModeEnabled: settings.planModeEnabled,
+        });
+        ctxSelectedPromptEffort = providerState.promptEffort;
+        ctxSelectedModelSelection = createModelSelection(
+          chosen.selection.instanceId,
+          chosen.selection.model,
+          providerState.modelOptionsForDispatch,
+        );
+        sendInteractionMode = resolveComposerInteractionMode({
+          planModeEnabled: settings.planModeEnabled,
+          provider: chosen.provider.snapshot,
+          interactionMode: sendInteractionMode,
+        }).interactionMode;
+        if (decision?.error)
+          toastManager.add({ type: "warning", title: "Jev fallback", description: decision.error });
+        setComposerDraftModelSelection(composerDraftTarget, ctxSelectedModelSelection, {
+          explicit: false,
+          replaceOptions: true,
+        });
+      }
+    }
+
+    if (
+      isElectron &&
+      useJevStore.getState().enabled &&
+      useJevStore.getState().subagentsEnabled &&
+      ctxSelectedProvider === "codex"
+    ) {
+      const target = environmentById.get(environmentId)?.entry.target;
+      if (
+        target &&
+        (target._tag === "PrimaryConnectionTarget" || isDesktopLocalConnectionTarget(target))
+      ) {
+        const provider = providerInstanceEntries.find(
+          (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
+        );
+        if (provider) {
+          const candidates = eligibleJevModels({
+            providers: [provider],
+            settings,
+            current: ctxSelectedModelSelection,
+            sessionInstanceId: null,
+            hasStartedSession: false,
+          });
+          const revision = useJevStore.getState().revision;
+          sendInFlightRef.current = true;
+          try {
+            await registerJevSubagentPolicy({
+              threadId: threadIdForSend,
+              providerInstanceId: provider.instanceId,
+              enabled: candidates.length > 0,
+              candidates: candidates.map((candidate) => ({
+                key: candidate.selection.model,
+                description: candidate.description,
+              })),
+            });
+          } catch {
+            toastManager.add({
+              type: "warning",
+              title: "Subagent routing unavailable",
+              description: "The turn will use Codex's normal subagent choices.",
+            });
+          } finally {
+            sendInFlightRef.current = false;
+          }
+          if (
+            useJevStore.getState().revision !== revision ||
+            currentRouteThreadKeyRef.current !== routeThreadKey
+          )
+            return;
+        }
+      }
+    }
     const composerImagesSnapshot = [...composerImages];
     const composerFilesSnapshot = [...composerFiles];
     const composerAttachmentsSnapshot = [...composerImagesSnapshot, ...composerFilesSnapshot];
@@ -9339,6 +9603,7 @@ export default function ChatView(props: ChatViewProps) {
         nextModelSelection,
         { explicit: true },
       );
+      useJevStore.getState().pinManual();
       setStickyComposerModelSelection(nextModelSelection);
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },

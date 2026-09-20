@@ -1,6 +1,12 @@
 import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
+import { getJevStatus, setJevApiKey, decideJevRoute, cancelJevRoute } from "./methods/jev.ts";
+import {
+  setJevSubagentPolicy,
+  clearJevSubagentPolicies,
+  installJevSubagentEvents,
+} from "./methods/jevSubagents.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
@@ -73,6 +79,13 @@ import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./m
 
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
+  yield* ipc.handle(getJevStatus);
+  yield* ipc.handle(setJevApiKey);
+  yield* ipc.handle(decideJevRoute);
+  yield* ipc.handle(cancelJevRoute);
+  yield* ipc.handle(setJevSubagentPolicy);
+  yield* ipc.handle(clearJevSubagentPolicies);
+  yield* installJevSubagentEvents();
   yield* installNotificationBadge();
   yield* PreviewIpc.installPreviewEventForwarding();
 

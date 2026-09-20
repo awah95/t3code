@@ -266,6 +266,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["combine matching repositories environments sidebar"],
   },
   {
+    id: "jev-routing",
+    title: "Jev Auto routing",
+    to: "/settings/general",
+    searchTerms: ["OpenRouter API key automatic model router encrypted cost"],
+    desktopOnly: true,
+  },
+  {
     id: "auto-settle-inactive-threads",
     title: "Auto-settle inactive threads",
     to: "/settings/general",

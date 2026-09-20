@@ -60,6 +60,7 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
 
 class FakeCodexRuntime implements CodexSessionRuntimeShape {
+  prepareJevRestart?: Effect.Effect<boolean>;
   private readonly eventQueue = Effect.runSync(Queue.unbounded<ProviderEvent>());
   private readonly now = "2026-01-01T00:00:00.000Z";
 
@@ -130,7 +131,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Effect.promise(() => this.startImpl());
   }
 
-  getSession = Effect.promise(() => this.startImpl());
+  getSession: Effect.Effect<ProviderSession> = Effect.promise(() => this.startImpl());
 
   sendTurn(input: CodexSessionRuntimeSendTurnInput) {
     return Effect.promise(() => this.sendTurnImpl(input));
@@ -319,6 +320,48 @@ const sessionErrorLayer = it.layer(
 );
 
 sessionErrorLayer("CodexAdapterLive session errors", (it) => {
+  it.effect("resumes the same native thread in a fresh runtime when Jev requires hook reload", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("jev-resume");
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const oldRuntime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(oldRuntime);
+      const previous = yield* oldRuntime.getSession;
+      oldRuntime.getSession = Effect.succeed({
+        ...previous,
+        resumeCursor: { threadId: "native-history" },
+      } as ProviderSession);
+      oldRuntime.prepareJevRestart = Effect.succeed(true);
+      yield* adapter.sendTurn({ threadId, input: "continue", attachments: [] });
+      const nextRuntime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(nextRuntime);
+      NodeAssert.notEqual(nextRuntime, oldRuntime);
+      NodeAssert.deepEqual(nextRuntime.options.resumeCursor, { threadId: "native-history" });
+      NodeAssert.equal(nextRuntime.options.strictResume, true);
+      NodeAssert.equal(oldRuntime.closeImpl.mock.calls.length, 1);
+      NodeAssert.equal(nextRuntime.sendTurnImpl.mock.calls.length, 1);
+    }),
+  );
+  it.effect("does not restart an active parent turn to enable Jev", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const threadId = asThreadId("jev-active");
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const runtime = sessionRuntimeFactory.lastRuntime;
+      NodeAssert.ok(runtime);
+      const previous = yield* runtime.getSession;
+      runtime.getSession = Effect.succeed({
+        ...previous,
+        activeTurnId: asTurnId("busy"),
+      } as ProviderSession);
+      runtime.prepareJevRestart = Effect.succeed(true);
+      yield* adapter.sendTurn({ threadId, input: "steer", attachments: [] });
+      NodeAssert.equal(sessionRuntimeFactory.lastRuntime, runtime);
+      NodeAssert.equal(runtime.closeImpl.mock.calls.length, 0);
+    }),
+  );
+
   it.effect("maps missing adapter sessions to ProviderAdapterSessionNotFoundError", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
