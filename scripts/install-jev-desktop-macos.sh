@@ -1,5 +1,22 @@
 #!/bin/zsh
 
+# Build and install the current checkout as a side-by-side macOS desktop app.
+#
+# Quick start (from the repository root):
+#   ./scripts/install-jev-desktop-macos.sh
+#
+# Validate a fresh build without replacing the installed app:
+#   ./scripts/install-jev-desktop-macos.sh --verify-only
+#
+# Requirements:
+#   - macOS on Apple Silicon or Intel
+#   - repository dependencies installed with `vp i`
+#   - Node.js 24 or newer (set T3CODE_NODE=/path/to/node if needed)
+#
+# The installer gracefully closes a running Jev app, builds the latest checkout, and atomically
+# replaces ~/Applications/T3 Code Jev.app. The official /Applications/T3 Code (Alpha).app remains
+# installed alongside it and is never modified. Run with --help for details.
+
 set -euo pipefail
 
 readonly SCRIPT_DIR="${0:A:h}"
@@ -9,6 +26,37 @@ readonly DESTINATION="${INSTALL_DIR}/T3 Code Jev.app"
 readonly OFFICIAL_APP="/Applications/T3 Code (Alpha).app"
 readonly JEV_BUNDLE_ID="com.t3tools.t3code.jev"
 readonly VERIFY_ONLY="${1:-}"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/install-jev-desktop-macos.sh
+  ./scripts/install-jev-desktop-macos.sh --verify-only
+  ./scripts/install-jev-desktop-macos.sh --help
+
+Commands:
+  (no option)    Build the latest checkout and install it at:
+                 ~/Applications/T3 Code Jev.app
+  --verify-only  Build, unpack, customize, and verify the app without installing it.
+  --help         Show this documentation.
+
+Before running:
+  1. Open a terminal and change to this repository.
+  2. Install dependencies once with `vp i` if node_modules is missing.
+  3. Ensure Node.js 24 or newer is available. To select one explicitly:
+       T3CODE_NODE=/absolute/path/to/node ./scripts/install-jev-desktop-macos.sh
+
+What installation does:
+  - Builds the macOS ZIP for this Mac's architecture from the current checkout.
+  - Gracefully quits every running app with the Jev bundle identifier.
+  - Verifies Electron helper names and the app's code signature before replacement.
+  - Atomically replaces only ~/Applications/T3 Code Jev.app.
+  - Preserves /Applications/T3 Code (Alpha).app as the official side-by-side app.
+  - Disables official auto-updates and removes static URL registration from the Jev bundle.
+
+After installation, open "T3 Code Jev" from your Applications folder.
+USAGE
+}
 
 fail() {
   print -u2 -- "install-jev-desktop-macos: $*"
@@ -40,14 +88,11 @@ resolve_node() {
 }
 
 app_is_running() {
-  /usr/bin/osascript - "$JEV_BUNDLE_ID" <<'APPLESCRIPT'
-on run argv
-  set bundleId to item 1 of argv
-  tell application "System Events"
-    return exists (first application process whose bundle identifier is bundleId)
-  end tell
-end run
-APPLESCRIPT
+  if [[ -n "$(/usr/bin/lsappinfo find "bundleID=${JEV_BUNDLE_ID}")" ]]; then
+    print -- true
+  else
+    print -- false
+  fi
 }
 
 quit_installed_app() {
@@ -55,12 +100,11 @@ quit_installed_app() {
   [[ "$(app_is_running)" == "true" ]] || return 0
 
   print -- "Quitting ${DESTINATION}..."
-  /usr/bin/osascript <<'APPLESCRIPT'
-tell application id "com.t3tools.t3code.jev" to quit
-APPLESCRIPT
-
   local attempt
   for attempt in {1..30}; do
+    /usr/bin/osascript <<'APPLESCRIPT'
+tell application id "com.t3tools.t3code.jev" to quit
+APPLESCRIPT
     [[ "$(app_is_running)" == "false" ]] && return 0
     sleep 1
   done
@@ -69,7 +113,14 @@ APPLESCRIPT
 }
 
 [[ "$(uname -s)" == "Darwin" ]] || fail "this installer only supports macOS"
-[[ -z "$VERIFY_ONLY" || "$VERIFY_ONLY" == "--verify-only" ]] || fail "usage: $0 [--verify-only]"
+if [[ "$VERIFY_ONLY" == "--help" || "$VERIFY_ONLY" == "-h" ]]; then
+  usage
+  exit 0
+fi
+[[ -z "$VERIFY_ONLY" || "$VERIFY_ONLY" == "--verify-only" ]] || {
+  usage >&2
+  fail "unknown option: ${VERIFY_ONLY}"
+}
 [[ -f "${REPO_ROOT}/scripts/build-desktop-artifact.ts" ]] || fail "repository root not found"
 [[ -x "${REPO_ROOT}/node_modules/.bin/vp" ]] || fail "dependencies are missing; run vp i first"
 [[ ! -L "$DESTINATION" ]] || fail "refusing to replace symlink at ${DESTINATION}"
