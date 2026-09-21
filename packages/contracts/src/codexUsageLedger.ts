@@ -76,6 +76,14 @@ export const CodexLedgerResponse = Schema.Struct({
 });
 export type CodexLedgerResponse = typeof CodexLedgerResponse.Type;
 
+export const CodexLedgerSameTokenComparison = Schema.Struct({
+  model: Schema.String,
+  effort: Schema.NullOr(Schema.String),
+  reason: Schema.Literals(["beforeJev", "astraMedium"]),
+  valuation: CodexLedgerValuation,
+});
+export type CodexLedgerSameTokenComparison = typeof CodexLedgerSameTokenComparison.Type;
+
 export const CodexLedgerTurn = Schema.Struct({
   identity: CodexLedgerIdentity,
   startedAt: Schema.String,
@@ -86,6 +94,15 @@ export const CodexLedgerTurn = Schema.Struct({
   lifecycle: Schema.Literals(["completed", "aborted", "active", "unknown"]),
   responseCount: NonNegativeInt,
   childTurnCount: NonNegativeInt,
+  routingBefore: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        model: Schema.NullOr(Schema.String),
+        effort: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+  sameTokenComparisons: Schema.optional(Schema.Array(CodexLedgerSameTokenComparison)),
   tokens: CodexLedgerTokens,
   valuation: CodexLedgerValuation,
   coverage: CodexLedgerCoverage,
@@ -141,6 +158,29 @@ export type CodexLedgerTurnInput = typeof CodexLedgerTurnInput.Type;
 export const CodexLedgerTurnDetail = Schema.Struct({
   turn: CodexLedgerTurn,
   responses: Schema.Array(CodexLedgerResponse),
+  routing: Schema.NullOr(
+    Schema.Struct({
+      before: Schema.NullOr(
+        Schema.Struct({
+          model: Schema.NullOr(Schema.String),
+          effort: Schema.NullOr(Schema.String),
+        }),
+      ),
+      used: Schema.Struct({
+        model: Schema.NullOr(Schema.String),
+        effort: Schema.NullOr(Schema.String),
+      }),
+    }),
+  ),
+  sameTokenComparisons: Schema.Array(CodexLedgerSameTokenComparison),
+  threadThroughTurn: Schema.NullOr(
+    Schema.Struct({
+      includedTurnCount: NonNegativeInt,
+      tokens: CodexLedgerTokens,
+      valuation: CodexLedgerValuation,
+      coverage: CodexLedgerCoverage,
+    }),
+  ),
   /** All observed root-linked turns are included in these totals, including children beyond the preview. */
   family: Schema.Struct({
     rootTurnId: LedgerId,

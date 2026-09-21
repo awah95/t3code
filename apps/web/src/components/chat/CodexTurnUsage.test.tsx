@@ -1,4 +1,5 @@
 import { EnvironmentId, ThreadId, TurnId } from "@t3tools/contracts";
+import { cloneElement, type ReactElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -21,6 +22,13 @@ vi.mock("effect/unstable/reactivity", () => ({
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => <a href="/usage">{children}</a>,
+}));
+
+vi.mock("../ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ render, children }: { render: ReactElement; children: React.ReactNode }) =>
+    cloneElement(render, {}, children),
+  TooltipPopup: () => null,
 }));
 
 vi.mock("../../state/server", () => ({
@@ -79,6 +87,18 @@ const rootTurn = {
   lifecycle: "completed" as const,
   responseCount: 1,
   childTurnCount: 2,
+  routingBefore: {
+    model: "gpt-6-astra",
+    effort: "medium",
+  },
+  sameTokenComparisons: [
+    {
+      model: "gpt-6-astra",
+      effort: "medium",
+      reason: "beforeJev" as const,
+      valuation: valuation("0.1537128"),
+    },
+  ],
   tokens: tokens(26_701),
   valuation: valuation("0.0637128"),
   coverage,
@@ -97,6 +117,7 @@ const childTurn = (index: number, model: string, tokenCount: number, amount: str
   model,
   scope: "child" as const,
   childTurnCount: 0,
+  sameTokenComparisons: [],
   tokens: tokens(tokenCount),
   valuation: valuation(amount),
 });
@@ -108,6 +129,31 @@ beforeEach(() => {
     value: {
       turn: rootTurn,
       responses: [],
+      routing: {
+        before: { model: "gpt-6-astra", effort: "medium" },
+        used: { model: "gpt-5.6-sol", effort: "medium" },
+      },
+      sameTokenComparisons: [
+        {
+          model: "gpt-6-astra",
+          effort: "medium",
+          reason: "beforeJev" as const,
+          valuation: valuation("0.1537128"),
+        },
+      ],
+      threadThroughTurn: {
+        includedTurnCount: 4,
+        tokens: {
+          inputTokens: 86_000,
+          cachedInputTokens: 70_000,
+          cacheWriteTokens: 0,
+          outputTokens: 1_500,
+          reasoningTokens: 500,
+          processedTokens: 87_500,
+        },
+        valuation: valuation("0.4"),
+        coverage,
+      },
       family: {
         rootTurnId: "root-turn",
         includedTurnCount: 3,
@@ -129,7 +175,7 @@ beforeEach(() => {
 });
 
 describe("CodexTurnUsage", () => {
-  it("shows compact usage and expands into per-child model, token, and cost rows", async () => {
+  it("shows a compact receipt and expands into usage, routing, comparisons and thread totals", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     let renderer: ReactTestRenderer | undefined;
     await act(() => {
@@ -145,17 +191,29 @@ describe("CodexTurnUsage", () => {
     });
 
     const button = renderer!.root.findByProps({ "aria-label": "Codex turn usage" });
-    expect(button.children.join("")).toContain("$0.0637 · 26,701 tokens");
+    const buttonText = renderer!.root
+      .findByProps({ "aria-label": "Codex turn usage" })
+      .findAllByType("span")
+      .map((span) => span.children.join(""))
+      .join(" ");
+    expect(buttonText).toContain("$0.0637 est.");
+    expect(buttonText).toContain("26,701 processed");
+    expect(buttonText).toContain("GPT-6 Astra · Medium → GPT-5.6 Sol · Medium");
+    expect(buttonText).toContain("1 model call");
+    expect(buttonText).toContain("−59% vs before");
+    expect(renderer!.root.findByProps({ role: "img" }).props["aria-label"]).toBe(
+      "Estimated cost comparison: Used $0.0637, Before Jev $0.154",
+    );
 
     await act(() => button.props.onClick());
-    const paragraphs = renderer!.root
-      .findAllByType("p")
-      .map((paragraph) => paragraph.children.join(""));
-    expect(paragraphs).toContain("gpt-5.6-sol · 1 response · 2 children");
-    expect(paragraphs).toContain("Child 1 · gpt-5.6-luna · 1,234 tokens · $0.0123");
-    expect(paragraphs).toContain("Child 2 · gpt-5.6-terra · 3,000 tokens · $0.024");
-    expect(paragraphs).toContain("Family total · $0.1 · 30,935 tokens");
-    expect(renderer!.root.findByType("a").children.join("")).toBe("Open ledger");
+    const text = renderer!.toJSON();
+    expect(JSON.stringify(text)).toContain("Usage this turn");
+    expect(JSON.stringify(text)).toContain("Before Jev");
+    expect(JSON.stringify(text)).toContain("Same observed tokens with");
+    expect(JSON.stringify(text)).toContain("+$0.09 (+141%) vs used");
+    expect(JSON.stringify(text)).toContain("Thread through here");
+    expect(JSON.stringify(text)).toContain("$0.0637 (15.9%)");
+    expect(renderer!.root.findByType("a").children.join("")).toBe("Open full ledger");
 
     await act(() => renderer?.unmount());
   });

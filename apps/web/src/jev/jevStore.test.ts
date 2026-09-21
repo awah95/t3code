@@ -394,7 +394,16 @@ describe("Jev desktop routing lifecycle", () => {
           threadId: "closed-thread",
           sourceScope: "subagent",
         },
-        request: { ...request, requestId: "jev-storage-gap:unique", prompt: "" },
+        request: {
+          ...request,
+          requestId: "jev-storage-gap:unique",
+          prompt: "",
+          context: {
+            ...request.context,
+            currentModel: "gpt-6-astra",
+            currentEffort: "medium",
+          },
+        },
         result: null,
       },
     ]);
@@ -426,6 +435,8 @@ describe("Jev desktop routing lifecycle", () => {
       estimatedCostUsd: null,
     });
     expect(JSON.parse(queued.input.decisionJson)).toMatchObject({
+      beforeModel: "gpt-6-astra",
+      beforeEffort: "medium",
       appliedChoice: null,
       costKind: "unknown",
     });

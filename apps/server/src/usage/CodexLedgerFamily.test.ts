@@ -244,3 +244,114 @@ it.effect("does not create a turn from unbound context before task start", () =>
     }
   }),
 );
+
+it.effect("builds routing comparisons and cumulative thread totals for a linked turn", () =>
+  Effect.gen(function* () {
+    const home = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "codex-ledger-turn-receipt-")),
+    );
+    try {
+      const dir = NodePath.join(home, "sessions", "2026", "09", "20");
+      yield* Effect.promise(() => NodeFSP.mkdir(dir, { recursive: true }));
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(dir, "thread.jsonl"),
+          row("session_meta", { id: "codex-thread", thread_source: "user" }) +
+            row("event_msg", { type: "task_started", turn_id: "turn-1" }) +
+            row("turn_context", {
+              turn_id: "turn-1",
+              root_turn_id: "turn-1",
+              model: "gpt-5.6-luna",
+              effort: "low",
+            }) +
+            receipt("response-1", "codex-thread", "turn-1", "turn-1", 10, 2) +
+            row("event_msg", { type: "task_complete", turn_id: "turn-1" }) +
+            row("event_msg", { type: "task_started", turn_id: "turn-2" }) +
+            row("turn_context", {
+              turn_id: "turn-2",
+              root_turn_id: "turn-2",
+              model: "gpt-5.6-luna",
+              effort: "low",
+            }) +
+            receipt("response-2", "codex-thread", "turn-2", "turn-2", 20, 3) +
+            row("event_msg", { type: "task_complete", turn_id: "turn-2" }),
+        ),
+      );
+      const dbLayer = NodeSqliteClient.layer({ filename: NodePath.join(home, "state.sqlite") });
+      yield* runMigrations().pipe(Effect.provide(dbLayer));
+      const serviceLayer = layerForHome(home).pipe(Layer.provideMerge(dbLayer));
+      const sourceDomain = yield* Effect.gen(function* () {
+        const ledger = yield* CodexLedgerService;
+        yield* ledger.getSummary();
+        return (yield* ledger.listTurns({ limit: 1 })).items[0]!.identity.sourceDomain;
+      }).pipe(Effect.provide(serviceLayer));
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE codex_ledger_turns SET t3_thread_id='t3-thread',
+          t3_turn_id=codex_turn_id WHERE source_domain=${sourceDomain}`;
+      }).pipe(Effect.provide(dbLayer));
+      const result = yield* Effect.gen(function* () {
+        const ledger = yield* CodexLedgerService;
+        yield* ledger.recordJevReceipt({
+          requestId: "route-turn-2",
+          attemptId: "route",
+          rootTurnId: "turn-2",
+          toolUseId: null,
+          environmentId: null,
+          projectId: null,
+          threadId: "t3-thread",
+          messageId: null,
+          turnId: "turn-2",
+          providerThreadId: "codex-thread",
+          providerTurnId: "turn-2",
+          childProviderThreadId: null,
+          parentProviderTurnId: null,
+          dispatchId: null,
+          observedModel: "gpt-5.6-luna",
+          sourceScope: "turn",
+          decisionJson: JSON.stringify({
+            beforeModel: "gpt-6-astra",
+            beforeEffort: "medium",
+          }),
+          dispatchJson: JSON.stringify({ model: "gpt-5.6-luna", effort: "low" }),
+          reportedCostUsd: null,
+          estimatedCostUsd: null,
+          status: "dispatched",
+        });
+        const detail = yield* ledger.getTurn({
+          sourceDomain,
+          codexThreadId: "codex-thread",
+          codexTurnId: "turn-2",
+        });
+        const turns = yield* ledger.listTurns({
+          t3ThreadId: "t3-thread",
+          t3TurnId: "turn-2",
+          limit: 1,
+        });
+        return { detail, turns };
+      }).pipe(Effect.provide(serviceLayer));
+      const { detail } = result;
+      assert.deepEqual(result.turns.items[0]?.routingBefore, {
+        model: "gpt-6-astra",
+        effort: "medium",
+      });
+      assert.equal(result.turns.items[0]?.sameTokenComparisons?.length, 1);
+      assert.equal(result.turns.items[0]?.sameTokenComparisons?.[0]?.reason, "beforeJev");
+      assert.deepEqual(detail?.routing?.before, {
+        model: "gpt-6-astra",
+        effort: "medium",
+      });
+      assert.deepEqual(detail?.routing?.used, {
+        model: "gpt-5.6-luna",
+        effort: "low",
+      });
+      assert.equal(detail?.sameTokenComparisons.length, 1);
+      assert.equal(detail?.sameTokenComparisons[0]?.reason, "beforeJev");
+      assert.notEqual(detail?.sameTokenComparisons[0]?.valuation.completeEstimateUsd, null);
+      assert.equal(detail?.threadThroughTurn?.includedTurnCount, 2);
+      assert.equal(detail?.threadThroughTurn?.tokens.processedTokens, 35);
+    } finally {
+      yield* Effect.promise(() => NodeFSP.rm(home, { recursive: true, force: true }));
+    }
+  }),
+);

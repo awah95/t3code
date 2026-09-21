@@ -8,6 +8,7 @@ import {
   CodexLedgerError,
   CodexSettings,
   type CodexLedgerSummary,
+  type CodexLedgerSameTokenComparison,
   type CodexLedgerTurn,
   type CodexLedgerTurnDetail,
   type CodexLedgerResponse,
@@ -165,6 +166,17 @@ interface TurnRow {
   turn_checkpoint_json: string | null;
   created_at: string;
 }
+interface RoutingReceiptRow {
+  decision_json: string;
+  dispatch_json: string | null;
+  identity_json: string;
+}
+interface RoutingEvidence {
+  beforeModel: string | null;
+  beforeEffort: string | null;
+  dispatchModel: string | null;
+  dispatchEffort: string | null;
+}
 interface SourceRow {
   source_id: string;
   source_domain: string;
@@ -243,6 +255,89 @@ const valuationFromRows = (rows: readonly ResponseRow[]): CodexLedgerValuation =
     missingPriceReasons: reasons,
   };
 };
+const scenarioValuationFromRows = (
+  rows: readonly ResponseRow[],
+  model: string,
+  snapshot: CodexRateSnapshot,
+): CodexLedgerValuation => {
+  if (rows.length === 0) return EMPTY_VALUATION;
+  const values = rows.map((row) => {
+    const tokens = parseTokens(row.tokens_json);
+    return priceCodexResponse(
+      {
+        kind: "response",
+        sourceId: row.source_domain,
+        observationId: row.response_id,
+        origin: row.response_kind === "compaction" ? "compacted" : "token_usage_record",
+        responseId: row.response_id,
+        threadId: row.codex_thread_id,
+        turnId: row.codex_turn_id,
+        rootTurnId: row.root_turn_id,
+        sessionId: null,
+        model,
+        modelProvenance: "turn_context",
+        effort: row.effort,
+        timestampMs: Number.isFinite(Date.parse(row.occurred_at))
+          ? Date.parse(row.occurred_at)
+          : null,
+        usage: {
+          counters: {
+            input_tokens: tokens.inputTokens,
+            cached_input_tokens: tokens.cachedInputTokens,
+            cache_write_input_tokens: tokens.cacheWriteTokens,
+            output_tokens: tokens.outputTokens,
+            reasoning_output_tokens: tokens.reasoningTokens,
+            total_tokens: tokens.processedTokens,
+          },
+          invalid: row.status === "reported" ? [] : ["response_not_reported"],
+          invalidRaw: {},
+        },
+        turnCheckpoint: null,
+        threadCheckpoint: null,
+      },
+      snapshot,
+    );
+  });
+  const sum = sumCodexValuations(values);
+  const reasons = [...new Set(values.flatMap((value) => value.missingReasons))];
+  return {
+    snapshotId: snapshot.id,
+    calculationVersion: "1",
+    estimateKind: "standardApiEquivalent",
+    pricedSubtotalUsd: sum.pricedCount > 0 ? sum.subtotalUsd : null,
+    completeEstimateUsd: sum.unpricedCount === 0 ? sum.subtotalUsd : null,
+    unpricedResponseCount: sum.unpricedCount,
+    missingPriceReasons: reasons,
+  };
+};
+const sameTokenComparisonsFromRows = (
+  rows: readonly ResponseRow[],
+  routing: RoutingEvidence | null,
+  usedModel: string | null,
+  usedEffort: string | null,
+  snapshot: CodexRateSnapshot,
+): CodexLedgerSameTokenComparison[] => {
+  const inputs: Array<{
+    model: string;
+    effort: string | null;
+    reason: "beforeJev" | "astraMedium";
+  }> = [];
+  if (routing?.beforeModel)
+    inputs.push({
+      model: routing.beforeModel,
+      effort: routing.beforeEffort,
+      reason: "beforeJev",
+    });
+  if (
+    !(routing?.beforeModel === "gpt-6-astra" && routing.beforeEffort === "medium") &&
+    !(usedModel === "gpt-6-astra" && usedEffort === "medium")
+  )
+    inputs.push({ model: "gpt-6-astra", effort: "medium", reason: "astraMedium" });
+  return inputs.map((comparison) => ({
+    ...comparison,
+    valuation: scenarioValuationFromRows(rows, comparison.model, snapshot),
+  }));
+};
 const EMPTY_TOKENS: CodexLedgerTokens = {
   inputTokens: null,
   cachedInputTokens: null,
@@ -292,6 +387,14 @@ const decodeCursor = (
   }
 };
 const asRows = <T>(rows: unknown): T[] => rows as T[];
+const parseJsonRecord = (json: string | null | undefined): Record<string, unknown> => {
+  try {
+    const value: unknown = JSON.parse(json ?? "{}");
+    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+};
 const parseTokens = (json: string): CodexLedgerTokens => {
   try {
     const value = JSON.parse(json) as Partial<CodexLedgerTokens>;
@@ -1064,7 +1167,8 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
     );
 
     const readResponses = (domain: string, threadId: string, turnId: string) => sql`
-    SELECT r.*,v.components_json AS valuation_json,v.snapshot_id AS valuation_snapshot_id FROM codex_ledger_responses r
+    SELECT r.*,v.components_json AS valuation_json,v.snapshot_id AS valuation_snapshot_id
+      FROM codex_ledger_responses AS r INDEXED BY codex_ledger_responses_turn
       LEFT JOIN codex_ledger_valuations v ON v.source_domain=r.source_domain AND v.response_id=r.response_id
         AND v.valuation_id='scenario:' || (SELECT active_snapshot_id FROM codex_ledger_settings WHERE id=1)
       WHERE r.source_domain=${domain} AND r.codex_thread_id=${threadId}
@@ -1194,36 +1298,173 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
         return counts[0]?.count ?? 0;
       });
 
+    const routingEvidenceFromReceipt = (receipt: RoutingReceiptRow): RoutingEvidence => {
+      const decision = parseJsonRecord(receipt.decision_json);
+      const dispatch = parseJsonRecord(receipt.dispatch_json);
+      return {
+        beforeModel: typeof decision.beforeModel === "string" ? decision.beforeModel : null,
+        beforeEffort: typeof decision.beforeEffort === "string" ? decision.beforeEffort : null,
+        dispatchModel: typeof dispatch.model === "string" ? dispatch.model : null,
+        dispatchEffort: typeof dispatch.effort === "string" ? dispatch.effort : null,
+      };
+    };
+
+    const readRoutingEvidence = (row: TurnRow) =>
+      Effect.gen(function* () {
+        const receipts = asRows<RoutingReceiptRow>(
+          yield* sql`SELECT decision_json,dispatch_json,identity_json FROM codex_ledger_jev_receipts
+          WHERE root_turn_id=${row.root_turn_id ?? row.codex_turn_id} AND
+            (json_extract(identity_json,'$.providerTurnId')=${row.codex_turn_id} OR
+              (${row.t3_turn_id} IS NOT NULL AND json_extract(identity_json,'$.turnId')=${row.t3_turn_id}))
+          ORDER BY created_at DESC LIMIT 1`,
+        );
+        if (!receipts[0]) return null;
+        return routingEvidenceFromReceipt(receipts[0]);
+      });
+
     const listTurnsRaw = (input: CodexLedgerListTurnsInput) =>
       Effect.gen(function* () {
         const limit = pageLimit(input.limit);
         const cursor = decodeCursor(input.cursor, "turns");
         const snapshotAt = cursor?.snapshotAt ?? now();
         const last = cursor?.last ?? [];
+        const filters = [sql`created_at <= ${snapshotAt}`];
+        if (input.sourceDomain) filters.push(sql`source_domain=${input.sourceDomain}`);
+        if (input.codexThreadId) filters.push(sql`codex_thread_id=${input.codexThreadId}`);
+        if (input.t3ThreadId) filters.push(sql`t3_thread_id=${input.t3ThreadId}`);
+        if (input.t3TurnId) filters.push(sql`t3_turn_id=${input.t3TurnId}`);
+        if (input.rootTurnId) filters.push(sql`root_turn_id=${input.rootTurnId}`);
+        if (input.from) filters.push(sql`started_at >= ${input.from}`);
+        if (input.to) filters.push(sql`started_at <= ${input.to}`);
+        if (last[0])
+          filters.push(
+            sql`(started_at,source_domain,codex_thread_id,codex_turn_id) <
+              (${last[0]},${last[1]},${last[2]},${last[3]})`,
+          );
         const rows = asRows<TurnRow>(
           yield* sql`
-      SELECT * FROM codex_ledger_turns WHERE
-        created_at <= ${snapshotAt} AND
-        (${input.sourceDomain ?? null} IS NULL OR source_domain=${input.sourceDomain ?? null}) AND
-        (${input.codexThreadId ?? null} IS NULL OR codex_thread_id=${input.codexThreadId ?? null}) AND
-        (${input.t3ThreadId ?? null} IS NULL OR t3_thread_id=${input.t3ThreadId ?? null}) AND
-        (${input.t3TurnId ?? null} IS NULL OR t3_turn_id=${input.t3TurnId ?? null}) AND
-        (${input.rootTurnId ?? null} IS NULL OR root_turn_id=${input.rootTurnId ?? null}) AND
-        (${input.from ?? null} IS NULL OR started_at >= ${input.from ?? null}) AND
-        (${input.to ?? null} IS NULL OR started_at <= ${input.to ?? null}) AND
-        (${last[0] ?? null} IS NULL OR
-          (started_at,source_domain,codex_thread_id,codex_turn_id) <
-          (${last[0] ?? null},${last[1] ?? null},${last[2] ?? null},${last[3] ?? null}))
+      SELECT * FROM codex_ledger_turns WHERE ${sql.and(filters)}
       ORDER BY started_at DESC,source_domain DESC,codex_thread_id DESC,codex_turn_id DESC
       LIMIT ${limit + 1}`,
         );
-        const items: CodexLedgerTurn[] = [];
-        for (const row of rows.slice(0, limit)) {
-          const responses = asRows<ResponseRow>(
-            yield* readResponses(row.source_domain, row.codex_thread_id, row.codex_turn_id),
-          );
-          items.push(materializeTurn(row, responses, yield* readChildCount(row)));
+        const pageRows = rows.slice(0, limit);
+        const requestedJson = JSON.stringify(
+          pageRows.map((row) => ({
+            sourceDomain: row.source_domain,
+            codexThreadId: row.codex_thread_id,
+            codexTurnId: row.codex_turn_id,
+            rootTurnId: row.root_turn_id ?? row.codex_turn_id,
+            t3TurnId: row.t3_turn_id,
+          })),
+        );
+        const responseRows = asRows<ResponseRow & { request_index: number }>(
+          pageRows.length === 0
+            ? []
+            : yield* sql`WITH requested AS (
+                SELECT CAST(key AS INTEGER) AS request_index,
+                  json_extract(value,'$.sourceDomain') AS source_domain,
+                  json_extract(value,'$.codexThreadId') AS codex_thread_id,
+                  json_extract(value,'$.codexTurnId') AS codex_turn_id
+                FROM json_each(${requestedJson})
+              )
+              SELECT requested.request_index,r.*,
+                v.components_json AS valuation_json,v.snapshot_id AS valuation_snapshot_id
+              FROM requested JOIN codex_ledger_responses AS r
+                INDEXED BY codex_ledger_responses_turn
+                ON r.source_domain=requested.source_domain
+                AND r.codex_thread_id=requested.codex_thread_id
+                AND r.codex_turn_id=requested.codex_turn_id
+              LEFT JOIN codex_ledger_valuations v
+                ON v.source_domain=r.source_domain AND v.response_id=r.response_id
+                AND v.valuation_id='scenario:' ||
+                  (SELECT active_snapshot_id FROM codex_ledger_settings WHERE id=1)
+              ORDER BY requested.request_index,r.occurred_at,r.response_id`,
+        );
+        const childCountRows = asRows<{ request_index: number; count: number }>(
+          pageRows.length === 0
+            ? []
+            : yield* sql`WITH requested AS (
+                SELECT CAST(key AS INTEGER) AS request_index,
+                  json_extract(value,'$.sourceDomain') AS source_domain,
+                  json_extract(value,'$.codexThreadId') AS codex_thread_id,
+                  json_extract(value,'$.codexTurnId') AS codex_turn_id
+                FROM json_each(${requestedJson})
+              )
+              SELECT requested.request_index,COUNT(child.codex_turn_id) AS count
+              FROM requested LEFT JOIN codex_ledger_turns child
+                ON child.source_domain=requested.source_domain
+                AND child.root_turn_id=requested.codex_turn_id
+                AND (child.codex_thread_id!=requested.codex_thread_id
+                  OR child.codex_turn_id!=requested.codex_turn_id)
+              GROUP BY requested.request_index`,
+        );
+        const receiptRows = asRows<RoutingReceiptRow & { request_index: number }>(
+          pageRows.length === 0
+            ? []
+            : yield* sql`WITH requested AS (
+                SELECT CAST(key AS INTEGER) AS request_index,
+                  json_extract(value,'$.rootTurnId') AS root_turn_id,
+                  json_extract(value,'$.codexTurnId') AS codex_turn_id,
+                  json_extract(value,'$.t3TurnId') AS t3_turn_id
+                FROM json_each(${requestedJson})
+              ), matched AS (
+                SELECT requested.request_index,receipt.decision_json,
+                  receipt.dispatch_json,receipt.identity_json,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY requested.request_index ORDER BY receipt.created_at DESC
+                  ) AS match_rank
+                FROM requested JOIN codex_ledger_jev_receipts receipt
+                  ON receipt.root_turn_id=requested.root_turn_id
+                WHERE json_extract(receipt.identity_json,'$.providerTurnId')=
+                    requested.codex_turn_id
+                  OR (requested.t3_turn_id IS NOT NULL AND
+                    json_extract(receipt.identity_json,'$.turnId')=requested.t3_turn_id)
+              )
+              SELECT request_index,decision_json,dispatch_json,identity_json
+              FROM matched WHERE match_rank=1`,
+        );
+        const responsesByIndex = new Map<number, ResponseRow[]>();
+        for (const response of responseRows) {
+          const group = responsesByIndex.get(response.request_index) ?? [];
+          group.push(response);
+          responsesByIndex.set(response.request_index, group);
         }
+        const childCountByIndex = new Map(
+          childCountRows.map((entry) => [entry.request_index, entry.count] as const),
+        );
+        const receiptByIndex = new Map(
+          receiptRows.map((receipt) => [receipt.request_index, receipt] as const),
+        );
+        const comparisonSnapshotId = responseRows.find(
+          (response) => response.valuation_snapshot_id,
+        )?.valuation_snapshot_id;
+        const comparisonSnapshot = comparisonSnapshotId
+          ? comparisonSnapshotId === CODEX_STANDARD_RATE_SNAPSHOT.id
+            ? CODEX_STANDARD_RATE_SNAPSHOT
+            : yield* readSnapshot(comparisonSnapshotId)
+          : null;
+        const items = pageRows.map((row, index): CodexLedgerTurn => {
+          const receipt = receiptByIndex.get(index);
+          const evidence = receipt ? routingEvidenceFromReceipt(receipt) : null;
+          const responses = responsesByIndex.get(index) ?? [];
+          const turn = materializeTurn(row, responses, childCountByIndex.get(index) ?? 0);
+          return {
+            ...turn,
+            routingBefore:
+              evidence && (evidence.beforeModel !== null || evidence.beforeEffort !== null)
+                ? { model: evidence.beforeModel, effort: evidence.beforeEffort }
+                : null,
+            sameTokenComparisons: comparisonSnapshot
+              ? sameTokenComparisonsFromRows(
+                  responses,
+                  evidence,
+                  turn.model,
+                  turn.effort,
+                  comparisonSnapshot,
+                )
+              : [],
+          };
+        });
         const tail = rows[Math.min(limit, rows.length) - 1];
         return {
           items,
@@ -1538,12 +1779,15 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
               yield* readResponses(input.sourceDomain, input.codexThreadId, input.codexTurnId),
             );
             const rootTurnId = row.root_turn_id ?? row.codex_turn_id;
-            const rootRows = asRows<TurnRow>(
-              yield* sql`SELECT * FROM codex_ledger_turns
-              WHERE source_domain=${input.sourceDomain} AND codex_turn_id=${rootTurnId}
-              ORDER BY CASE WHEN codex_thread_id=${row.codex_thread_id} THEN 0 ELSE 1 END LIMIT 1`,
-            );
-            const root = rootRows[0] ?? null;
+            const root =
+              rootTurnId === row.codex_turn_id
+                ? row
+                : (asRows<TurnRow>(
+                    yield* sql`SELECT * FROM codex_ledger_turns
+                      INDEXED BY codex_ledger_turns_codex_identity
+                      WHERE codex_turn_id=${rootTurnId} AND source_domain=${input.sourceDomain}
+                      LIMIT 1`,
+                  )[0] ?? null);
             const children = asRows<TurnRow>(
               yield* sql`SELECT * FROM codex_ledger_turns WHERE
         source_domain=${input.sourceDomain} AND root_turn_id=${rootTurnId}
@@ -1554,7 +1798,7 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
             const familyResponses = asRows<ResponseRow>(
               yield* sql`
               SELECT r.*,v.components_json AS valuation_json,v.snapshot_id AS valuation_snapshot_id
-              FROM codex_ledger_responses r
+              FROM codex_ledger_responses AS r INDEXED BY codex_ledger_responses_turn
               JOIN codex_ledger_turns t ON t.source_domain=r.source_domain
                 AND t.codex_thread_id=r.codex_thread_id AND t.codex_turn_id=r.codex_turn_id
               LEFT JOIN codex_ledger_valuations v ON v.source_domain=r.source_domain AND v.response_id=r.response_id
@@ -1681,9 +1925,154 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
           source_domain=${input.sourceDomain} AND codex_thread_id=${input.codexThreadId}
           AND codex_turn_id=${input.codexTurnId} ORDER BY occurred_at,call_id LIMIT 200`,
             );
+            const routingEvidence = yield* readRoutingEvidence(row);
+            const routingBefore =
+              routingEvidence &&
+              (routingEvidence.beforeModel !== null || routingEvidence.beforeEffort !== null)
+                ? {
+                    model: routingEvidence.beforeModel,
+                    effort: routingEvidence.beforeEffort,
+                  }
+                : null;
+            const selectedTurn = {
+              ...materializeTurn(row, responses, yield* readChildCount(row)),
+              routingBefore,
+            };
+            const routing = routingEvidence
+              ? {
+                  before: routingBefore,
+                  used: {
+                    model: selectedTurn.model ?? routingEvidence.dispatchModel,
+                    effort: selectedTurn.effort ?? routingEvidence.dispatchEffort,
+                  },
+                }
+              : null;
+            const snapshot = yield* readSnapshot(yield* activeSnapshotId);
+            const sameTokenComparisons = sameTokenComparisonsFromRows(
+              responses,
+              routingEvidence,
+              selectedTurn.model,
+              selectedTurn.effort,
+              snapshot,
+            );
+
+            const threadMembers = row.t3_thread_id
+              ? asRows<TurnRow & { is_linked_root: number }>(
+                  yield* sql`WITH linked_roots AS (
+                      SELECT source_domain,codex_thread_id,codex_turn_id
+                      FROM codex_ledger_turns WHERE t3_thread_id=${row.t3_thread_id} AND
+                        (started_at < ${row.started_at} OR
+                          (started_at=${row.started_at} AND codex_turn_id<=${row.codex_turn_id}))
+                    ), member_ids AS (
+                      SELECT source_domain,codex_thread_id,codex_turn_id FROM linked_roots
+                      UNION
+                      SELECT child.source_domain,child.codex_thread_id,child.codex_turn_id
+                      FROM codex_ledger_turns child JOIN linked_roots root
+                        ON child.source_domain=root.source_domain
+                        AND child.root_turn_id=root.codex_turn_id
+                    )
+                    SELECT member.*,
+                      EXISTS(SELECT 1 FROM linked_roots root
+                        WHERE root.source_domain=member.source_domain
+                        AND root.codex_thread_id=member.codex_thread_id
+                        AND root.codex_turn_id=member.codex_turn_id) AS is_linked_root
+                    FROM codex_ledger_turns member JOIN member_ids ids
+                      ON ids.source_domain=member.source_domain
+                      AND ids.codex_thread_id=member.codex_thread_id
+                      AND ids.codex_turn_id=member.codex_turn_id`,
+                )
+              : [];
+            const threadResponses = row.t3_thread_id
+              ? asRows<ResponseRow>(
+                  yield* sql`WITH linked_roots AS (
+                      SELECT source_domain,codex_thread_id,codex_turn_id
+                      FROM codex_ledger_turns WHERE t3_thread_id=${row.t3_thread_id} AND
+                        (started_at < ${row.started_at} OR
+                          (started_at=${row.started_at} AND codex_turn_id<=${row.codex_turn_id}))
+                    ), member_ids AS (
+                      SELECT source_domain,codex_thread_id,codex_turn_id FROM linked_roots
+                      UNION
+                      SELECT child.source_domain,child.codex_thread_id,child.codex_turn_id
+                      FROM codex_ledger_turns child JOIN linked_roots root
+                        ON child.source_domain=root.source_domain
+                        AND child.root_turn_id=root.codex_turn_id
+                    )
+                    SELECT r.*,v.components_json AS valuation_json,
+                      v.snapshot_id AS valuation_snapshot_id
+                    FROM codex_ledger_responses AS r INDEXED BY codex_ledger_responses_turn
+                    JOIN member_ids member
+                      ON member.source_domain=r.source_domain
+                      AND member.codex_thread_id=r.codex_thread_id
+                      AND member.codex_turn_id=r.codex_turn_id
+                    LEFT JOIN codex_ledger_valuations v ON v.source_domain=r.source_domain
+                      AND v.response_id=r.response_id AND
+                      v.valuation_id='scenario:' ||
+                        (SELECT active_snapshot_id FROM codex_ledger_settings WHERE id=1)`,
+                )
+              : [];
+            const threadResponsesByTurn = new Map<string, ResponseRow[]>();
+            for (const response of threadResponses) {
+              const key = `${response.source_domain}\u0000${response.codex_thread_id}\u0000${response.codex_turn_id}`;
+              const group = threadResponsesByTurn.get(key) ?? [];
+              group.push(response);
+              threadResponsesByTurn.set(key, group);
+            }
+            const threadMaterialized = threadMembers.map((member) =>
+              materializeTurn(
+                member,
+                threadResponsesByTurn.get(
+                  `${member.source_domain}\u0000${member.codex_thread_id}\u0000${member.codex_turn_id}`,
+                ) ?? [],
+              ),
+            );
+            const threadValuation = valuationFromRows(threadResponses);
+            const threadUsageExact =
+              threadMaterialized.length > 0 &&
+              threadMaterialized.every((member) => member.coverage.usage === "exact");
+            const threadThroughTurn = row.t3_thread_id
+              ? {
+                  includedTurnCount: threadMembers.filter((member) => member.is_linked_root).length,
+                  tokens: addTokens(threadMaterialized.map((member) => member.tokens)),
+                  valuation: {
+                    ...threadValuation,
+                    completeEstimateUsd: threadUsageExact
+                      ? threadValuation.completeEstimateUsd
+                      : null,
+                    missingPriceReasons: [
+                      ...new Set([
+                        ...threadValuation.missingPriceReasons,
+                        ...(!threadUsageExact ? ["threadUsageIncomplete"] : []),
+                      ]),
+                    ],
+                  },
+                  coverage: {
+                    usage: threadMaterialized.some((member) => member.coverage.usage === "conflict")
+                      ? ("conflict" as const)
+                      : threadUsageExact
+                        ? ("exact" as const)
+                        : ("partial" as const),
+                    model: threadMaterialized.some((member) => member.coverage.model === "conflict")
+                      ? ("conflict" as const)
+                      : threadMaterialized.every((member) => member.coverage.model === "observed")
+                        ? ("observed" as const)
+                        : ("unknown" as const),
+                    pricing:
+                      threadResponses.length === 0
+                        ? ("notValued" as const)
+                        : threadValuation.unpricedResponseCount === 0
+                          ? ("priced" as const)
+                          : ("partial" as const),
+                    lineage: "partial" as const,
+                    subscription: "unknown" as const,
+                  },
+                }
+              : null;
             return {
-              turn: materializeTurn(row, responses, yield* readChildCount(row)),
+              turn: { ...selectedTurn, sameTokenComparisons },
               responses: responses.map(responseFromRow),
+              routing,
+              sameTokenComparisons,
+              threadThroughTurn,
               family: {
                 rootTurnId,
                 includedTurnCount: familyRows.length,

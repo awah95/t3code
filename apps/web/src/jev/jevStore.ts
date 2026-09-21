@@ -249,6 +249,8 @@ function recordJevReceipt(call: JevCall, dispatchModel?: string, dispatchEffort?
     observedModel: null,
     sourceScope: call.kind === "subagent" ? "subagent" : "turn",
     decisionJson: JSON.stringify({
+      beforeModel: call.request.context.currentModel ?? null,
+      beforeEffort: call.request.context.currentEffort ?? null,
       proposedChoice: result?.proposedChoice ?? result?.recommendedChoice ?? result?.choice ?? null,
       appliedChoice: result?.choice ?? null,
       approvedChoice: call.approvedChoice ?? null,
