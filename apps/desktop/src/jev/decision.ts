@@ -5,6 +5,12 @@ import {
   parseBaselineAssessmentDecision,
 } from "./assessmentBaselineV3.ts";
 import { buildAssessmentQuestions, parseAssessmentDecision } from "./assessment.ts";
+import {
+  compactJevDecisionBody,
+  JEV_REQUEST_BYTE_LIMIT,
+  JEV_STATE_QUESTION_BYTE_LIMIT,
+  measureJevDecisionBody,
+} from "./routingBrief.ts";
 import type { JevRouteRequest, JevRouteResult } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import {
@@ -15,7 +21,6 @@ import {
   JEV_MODEL_PROFILES,
   JEV_POLICY_VERSION,
   JEV_ROUTING_INSTRUCTIONS,
-  JEV_ROUTING_CORE,
   JEV_WORKLOAD_PROFILE,
   sanitizeJevContext,
   sanitizeJevText,
@@ -63,7 +68,7 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
   const budgetTime = context.budget ? Date.parse(context.budget.checkedAt) : Number.NaN;
   const budgetFresh =
     Number.isFinite(budgetTime) && now >= budgetTime && now - budgetTime <= 300_000;
-  return {
+  const body = {
     model: JEV_MODEL,
     state: {
       task: sanitizeJevText(request.prompt),
@@ -74,26 +79,31 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
           : budgetFresh
             ? "fresh"
             : "stale; do not assume these are current limits",
-      routingPolicy: {
-        version: jevEvaluationPolicyVersion(request),
-        ...(request.evaluationPolicy === "baseline-v3"
-          ? {}
-          : { coreRules: baseline41 ? baselineV41.JEV_V41_ROUTING_CORE : JEV_ROUTING_CORE }),
-        sourcesCheckedAt: "2026-09-20",
-        workload: baseline41 ? baselineV41.JEV_WORKLOAD_PROFILE : JEV_WORKLOAD_PROFILE,
-        profiles: (baseline41 ? baselineV41.JEV_MODEL_PROFILES : JEV_MODEL_PROFILES).filter(
-          (profile) => request.candidates.some((candidate) => candidate.model === profile.model),
-        ),
-        effortGuidance: baseline41 ? baselineV41.JEV_EFFORT_GUIDANCE : JEV_EFFORT_GUIDANCE,
-        calibration:
-          "Not yet measured: first-attempt success, task completion latency, tokens per second, and actual allowance use by task. Do not invent these numbers.",
-        priceBasis:
-          "Standard short-context API USD per million tokens, for comparison only. Not subscription billing or a remaining dollar balance. Larger models can finish with fewer steps and tokens.",
-        sources: [
-          "https://learn.chatgpt.com/docs/models",
-          "https://learn.chatgpt.com/docs/pricing",
-        ],
-      },
+      ...(request.evaluationPolicy
+        ? {
+            routingPolicy: {
+              version: jevEvaluationPolicyVersion(request),
+              ...(request.evaluationPolicy === "baseline-v3"
+                ? {}
+                : { coreRules: baselineV41.JEV_V41_ROUTING_CORE }),
+              sourcesCheckedAt: "2026-09-20",
+              workload: baseline41 ? baselineV41.JEV_WORKLOAD_PROFILE : JEV_WORKLOAD_PROFILE,
+              profiles: (baseline41 ? baselineV41.JEV_MODEL_PROFILES : JEV_MODEL_PROFILES).filter(
+                (profile) =>
+                  request.candidates.some((candidate) => candidate.model === profile.model),
+              ),
+              effortGuidance: baseline41 ? baselineV41.JEV_EFFORT_GUIDANCE : JEV_EFFORT_GUIDANCE,
+              calibration:
+                "Not yet measured: first-attempt success, task completion latency, tokens per second, and actual allowance use by task. Do not invent these numbers.",
+              priceBasis:
+                "Standard short-context API USD per million tokens, for comparison only. Not subscription billing or a remaining dollar balance. Larger models can finish with fewer steps and tokens.",
+              sources: [
+                "https://learn.chatgpt.com/docs/models",
+                "https://learn.chatgpt.com/docs/pricing",
+              ],
+            },
+          }
+        : {}),
     },
     questions: (request.evaluationPolicy === "baseline-v3"
       ? buildBaselineAssessmentQuestions(request)
@@ -102,13 +112,18 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
         : buildAssessmentQuestions(request)) ?? {
       route: {
         type: "choice",
-        instructions: baseline41 ? baselineV41.JEV_ROUTING_INSTRUCTIONS : JEV_ROUTING_INSTRUCTIONS,
+        instructions: baseline41
+          ? baselineV41.JEV_ROUTING_INSTRUCTIONS
+          : request.evaluationPolicy
+            ? JEV_ROUTING_INSTRUCTIONS
+            : `${JEV_ROUTING_INSTRUCTIONS}\nWorkload context: ${JEV_WORKLOAD_PROFILE}`,
         criteria: Object.fromEntries(
           request.candidates.map(({ key, description }) => [key, sanitizeJevText(description)]),
         ),
       },
     },
   };
+  return request.evaluationPolicy ? body : compactJevDecisionBody(body);
 }
 
 const nonnegativeNumber = (value: unknown): value is number =>
@@ -211,17 +226,13 @@ async function performJevDecision(
       return failedJevDecision("Jev request cancelled; using the selected model.");
     const payload = JSON.stringify(bodyForSend);
     const requestFingerprint = NodeCrypto.createHash("sha256").update(payload).digest("hex");
-    // Conservative byte bounds: no tokenizer is provided by the endpoint. Refuse, never
-    // truncate, when the UTF-8 upper estimate plus protocol reserve exceeds either budget.
-    const stateBytes = new TextEncoder().encode(JSON.stringify(bodyForSend.state)).length;
-    const longestQuestionBytes = Math.max(
-      ...Object.values(bodyForSend.questions).map(
-        (q) => new TextEncoder().encode(JSON.stringify(q)).length,
-      ),
-    );
+    // Conservative byte bounds: no tokenizer is provided by the endpoint. The routing-brief
+    // compiler has already removed only structurally redundant context; protected overflow
+    // refuses here rather than being silently truncated.
+    const size = measureJevDecisionBody(bodyForSend);
     if (
-      new TextEncoder().encode(payload).length + 1024 > 64_000 ||
-      stateBytes + longestQuestionBytes + 1024 > 32_000
+      size.requestEnvelopeBytes > JEV_REQUEST_BYTE_LIMIT ||
+      size.stateQuestionEnvelopeBytes > JEV_STATE_QUESTION_BYTE_LIMIT
     ) {
       return {
         ...failedJevDecision(

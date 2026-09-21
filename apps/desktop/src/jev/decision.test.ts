@@ -91,7 +91,7 @@ describe("Jev decision validation and accounting", () => {
 });
 
 describe("Jev OpenRouter transport", () => {
-  it("provides full current task, recent context, model profiles and capability-first policy", () => {
+  it("provides full current task and question-scoped model policy without duplicating it in state", () => {
     const body = buildJevDecisionBody(
       {
         ...request,
@@ -119,12 +119,12 @@ describe("Jev OpenRouter transport", () => {
     );
     expect(body.state.task).toHaveLength(13_021);
     expect(body.state.originalTask).toBe("Fix scheduling");
-    expect(body.state.routingPolicy.profiles.map((profile) => profile.model)).toEqual([
-      "gpt-6-astra",
-    ]);
+    expect(body.state).not.toHaveProperty("routingPolicy");
     expect(body.state.budgetStatus).toContain("stale");
     expect(body.state).not.toHaveProperty("hasAttachments");
     expect(body.questions.model!.instructions).toContain("Read-only access");
+    expect(body.questions.model!.instructions).toContain("Recurring work");
+    expect(body.questions.model!.criteria.model_0).toContain("gpt-6-astra");
   });
   it("never sends the agent turn's attachment signal to production Jev", () => {
     const body = buildJevDecisionBody({
@@ -193,7 +193,7 @@ describe("Jev OpenRouter transport", () => {
     expect(transport).not.toHaveBeenCalled();
     expect(result.error).toContain("silently truncated");
   });
-  it("keeps the safe refusal for oversized text history until the compaction follow-up", async () => {
+  it("keeps the safe refusal when protected recent context alone is oversized", async () => {
     const transport = vi.fn<typeof fetch>();
     const result = await requestJevDecision(
       {
@@ -213,6 +213,51 @@ describe("Jev OpenRouter transport", () => {
       reasons: ["context_budget_exceeded"],
       costUsd: 0,
     });
+  });
+  it("compacts old intermediate updates before transport while retaining user and terminal text", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify(responseBody())));
+    const oldProgress = `old progress ${"x".repeat(30_000)}`;
+    const result = await requestJevDecision(
+      {
+        ...request,
+        context: {
+          ...request.context,
+          history: [
+            { role: "user", text: "original requirement" },
+            { role: "assistant", text: oldProgress },
+            { role: "assistant", text: "old terminal result" },
+            { role: "user", text: "second requirement" },
+            { role: "assistant", text: "second terminal result" },
+            { role: "user", text: "recent requirement" },
+            { role: "assistant", text: "recent result" },
+            { role: "user", text: "latest requirement" },
+            { role: "assistant", text: "latest result" },
+          ],
+        },
+      },
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    const sent = JSON.parse(String(transport.mock.calls[0]?.[1]?.body));
+    const serialized = JSON.stringify(sent);
+
+    expect(result.choice).toBe("fast");
+    expect(serialized).not.toContain(oldProgress);
+    for (const text of [
+      "original requirement",
+      "old terminal result",
+      "second requirement",
+      "second terminal result",
+      "recent requirement",
+      "recent result",
+      "latest requirement",
+      "latest result",
+    ])
+      expect(serialized).toContain(text);
+    expect(sent.state.omissions.join(" ")).toContain("intermediate assistant update");
   });
   it("uses the decision endpoint and keeps the key out of the body and result", async () => {
     const transport = vi

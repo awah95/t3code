@@ -6,6 +6,7 @@ import {
   JEV_EFFORT_GUIDANCE,
   JEV_EFFORTS,
   JEV_ROUTING_CORE,
+  JEV_WORKLOAD_PROFILE,
 } from "@t3tools/shared/jevRouting";
 
 type ChoiceQuestion = { type: "choice"; instructions: string; criteria: Record<string, string> };
@@ -110,7 +111,7 @@ export function buildAssessmentQuestions(
       },
     ),
     model: question(
-      `Propose a model whose described capability fits the full task. The application will enforce task-demand constraints separately. Do not predict unmeasured token usage, completion time or subscription multipliers. Use a small model when the procedure and direct check are established; use greater capability for discovery, evidence reconciliation and interacting correctness. Missing context does not imply a small model is sufficient. ${JEV_CONTINUITY_GUIDANCE}`,
+      `Propose a model whose described capability fits the full task. The application will enforce task-demand constraints separately. Do not predict unmeasured token usage, completion time or subscription multipliers. Use a small model when the procedure and direct check are established; use greater capability for discovery, evidence reconciliation and interacting correctness. Missing context does not imply a small model is sufficient. Workload context: ${JEV_WORKLOAD_PROFILE} ${JEV_CONTINUITY_GUIDANCE}`,
       Object.fromEntries(
         models.map(({ key, model }) => {
           const profile = getJevModelProfile(model);

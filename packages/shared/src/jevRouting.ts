@@ -1,6 +1,6 @@
 import type { JevCandidate, JevEffort, JevRoutingContext } from "@t3tools/contracts";
 
-export const JEV_POLICY_VERSION = "2026-09-20.continuity.v5.2";
+export const JEV_POLICY_VERSION = "2026-09-21.routing-brief.v5.3";
 export const JEV_MAX_REQUEST_CHARS = 240_000;
 export const JEV_HISTORY_CHAR_BUDGET = 100_000;
 export const JEV_EFFORTS: readonly JevEffort[] = ["low", "medium", "high", "xhigh"];

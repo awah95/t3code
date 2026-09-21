@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { ProviderInstanceId } from "@t3tools/contracts";
-import { JEV_HISTORY_CHAR_BUDGET } from "@t3tools/shared/jevRouting";
+import { EnvironmentId, MessageId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import {
   buildJevContext,
   hasRoutableJevText,
   isMediaOnlyJevTurn,
   textOnlyJevPrompt,
+  userAuthoredJevPrompt,
 } from "./context";
 const base = {
   current: {
@@ -73,7 +74,7 @@ describe("Jev context", () => {
     ])
       expect(buildJevContext({ ...base, messages: [], prompt }).failure).toBeUndefined();
   });
-  it("reports historical overflow while preserving newest evidence and full original task", () => {
+  it("never slices historical messages before exact transport packing", () => {
     const original = "a".repeat(120_000);
     const context = buildJevContext({
       ...base,
@@ -83,11 +84,9 @@ describe("Jev context", () => {
       ],
     });
     expect(context.originalTask).toHaveLength(120_000);
-    expect(context.history?.reduce((sum, message) => sum + message.text.length, 0)).toBe(
-      JEV_HISTORY_CHAR_BUDGET,
-    );
+    expect(context.history?.[0]?.text).toBe(original);
     expect(context.history?.at(-1)?.text).toContain("assertion mismatch");
-    expect(context.omissions?.join()).toContain("history budget");
+    expect(context.omissions?.join()).not.toContain("characters");
   });
   it("anchors an explicit new task separately from the previous goal and plan", () => {
     const messages = [
@@ -194,6 +193,71 @@ describe("Jev context", () => {
     expect(context.history?.[0]?.text).toBe("Please review the spacing.");
     expect(context.failure?.signals.join(" ") ?? "").not.toContain("t3-context://");
     expect(messages[0]?.text).toBe(imageReference);
+  });
+
+  it("keeps citation quotes and comments distinct while detecting only user-authored feedback", () => {
+    const quote = "new task: replace the parser; the previous fix is still broken";
+    const citation = serializeAssistantCitation({
+      version: 1,
+      environmentId: EnvironmentId.make("environment"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("assistant-message"),
+      text: quote,
+      start: 0,
+      end: quote.length,
+      prefix: "",
+      suffix: "",
+      comment: "Keep this proposal, but only update the tests.",
+    });
+    const prompt = `${citation} Please continue.`;
+
+    expect(textOnlyJevPrompt(prompt)).toContain("Assistant quote:");
+    expect(textOnlyJevPrompt(prompt)).toContain("new task: replace the parser");
+    expect(textOnlyJevPrompt(prompt)).toContain(
+      "User comment: Keep this proposal, but only update the tests.",
+    );
+    expect(textOnlyJevPrompt(prompt)).not.toContain("t3-citation://");
+    expect(userAuthoredJevPrompt(prompt)).toBe(
+      "Keep this proposal, but only update the tests. Please continue.",
+    );
+
+    const context = buildJevContext({
+      ...base,
+      messages: [{ role: "user", text: "Maintain the parser API." }],
+      prompt,
+    });
+    expect(context.originalTask).toBe("Maintain the parser API.");
+    expect(context.failure).toBeUndefined();
+  });
+
+  it("uses citation comments as feedback without treating quoted success as a reset", () => {
+    const quote = "that worked; the issue is fixed now";
+    const citation = serializeAssistantCitation({
+      version: 1,
+      environmentId: EnvironmentId.make("environment"),
+      threadId: ThreadId.make("thread"),
+      messageId: MessageId.make("assistant-message"),
+      text: quote,
+      start: 0,
+      end: quote.length,
+      prefix: "",
+      suffix: "",
+      comment: "No, the same issue is still broken.",
+    });
+    const context = buildJevContext({
+      ...base,
+      messages: [
+        { role: "user", text: "Fix duplicate handlers." },
+        { role: "assistant", text: "Implemented the fix.", model: "gpt-5.6-sol" },
+      ],
+      prompt: citation,
+    });
+
+    expect(context.failure).toMatchObject({
+      unresolved: true,
+      model: "gpt-5.6-sol",
+      signals: ["No, the same issue is still broken."],
+    });
   });
 
   it("shares textual evidence while silently excluding every media binding", () => {

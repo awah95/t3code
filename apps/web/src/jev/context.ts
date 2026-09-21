@@ -4,7 +4,8 @@ import type {
   OrchestrationMessageContext,
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
-import { JEV_HISTORY_CHAR_BUDGET, sanitizeJevText } from "@t3tools/shared/jevRouting";
+import { collectAssistantCitations } from "@t3tools/shared/assistantCitations";
+import { sanitizeJevText } from "@t3tools/shared/jevRouting";
 import { stripInlineContextReferences } from "../lib/composerContextReferences";
 
 type Message = {
@@ -15,6 +16,7 @@ type Message = {
   createdAt?: string;
   turnId?: string | null;
   context?: OrchestrationMessageContext | undefined;
+  feedbackText?: string;
 };
 const newTask = /^(?:please\s+)?(?:new task|different task|start over)\b/i;
 function directFeedback(text: string): string {
@@ -42,7 +44,31 @@ const failure =
 
 /** Jev classifies text only; inline context records travel through the separate evidence channel. */
 export function textOnlyJevPrompt(text: string): string {
-  return sanitizeJevText(stripInlineContextReferences(text)).trim();
+  const withoutInlineContext = stripInlineContextReferences(text);
+  const matches = collectAssistantCitations(withoutInlineContext);
+  let cursor = 0;
+  let projected = "";
+  for (const match of matches) {
+    projected += `${withoutInlineContext.slice(cursor, match.start)}\n\nAssistant quote:\n${match.citation.text}\n`;
+    if (match.citation.comment) projected += `User comment: ${match.citation.comment}\n`;
+    cursor = match.end;
+  }
+  projected += withoutInlineContext.slice(cursor);
+  return sanitizeJevText(projected).trim();
+}
+
+/** Direct feedback excludes quoted assistant prose while retaining the user's citation comments. */
+export function userAuthoredJevPrompt(text: string): string {
+  const matches = collectAssistantCitations(text);
+  let cursor = 0;
+  let authored = "";
+  for (const match of matches) {
+    authored += text.slice(cursor, match.start);
+    if (match.citation.comment) authored += match.citation.comment;
+    cursor = match.end;
+  }
+  authored += text.slice(cursor);
+  return sanitizeJevText(stripInlineContextReferences(authored)).trim();
 }
 
 const jevTextContextKinds = new Set([
@@ -90,15 +116,18 @@ export function buildJevContext(input: {
       return {
         ...message,
         text: textOnlyJevPrompt(message.text),
+        feedbackText: userAuthoredJevPrompt(message.text),
         ...(attempt?.model ? { model: attempt.model } : {}),
         ...(attempt?.effort ? { effort: attempt.effort } : {}),
       };
     });
   const prompt = textOnlyJevPrompt(input.prompt);
+  const promptFeedback = userAuthoredJevPrompt(input.prompt);
   const latestTaskIndex = visibleMessages.findLastIndex(
-    (message) => message.role === "user" && newTask.test(directFeedback(message.text)),
+    (message) =>
+      message.role === "user" && newTask.test(directFeedback(message.feedbackText ?? message.text)),
   );
-  const currentIsNewTask = newTask.test(directFeedback(prompt));
+  const currentIsNewTask = newTask.test(directFeedback(promptFeedback));
   const messages = currentIsNewTask ? [] : visibleMessages.slice(Math.max(0, latestTaskIndex));
   const changedTask = currentIsNewTask || latestTaskIndex >= 0;
   const taskStartedAt = currentIsNewTask ? undefined : messages[0]?.createdAt;
@@ -154,33 +183,28 @@ export function buildJevContext(input: {
       `${exchanges.length - 10} older exchanges omitted; original task retained separately.`,
     );
   const recent = exchanges.slice(-10);
-  let remaining = JEV_HISTORY_CHAR_BUDGET;
-  // Allocate newest-first, but preserve chronological presentation and name every omission.
-  const history: NonNullable<JevRoutingContext["history"]>[number][] = [];
-  for (const message of recent.flat().toReversed()) {
-    const text = sanitizeJevText(message.text);
-    const retained = text.length <= remaining ? text : remaining > 0 ? text.slice(-remaining) : "";
-    if (text.length > remaining)
-      omissions.push(
-        `Historical ${message.role} text omitted ${text.length - remaining} characters to fit history budget.`,
-      );
-    if (retained)
-      history.unshift({
-        role: message.role as "user" | "assistant",
-        text: retained,
-        ...(message.model ? { model: message.model } : {}),
-        ...(message.effort ? { effort: message.effort } : {}),
-      });
-    remaining = Math.max(0, remaining - text.length);
-  }
+  // Preserve complete messages here. The desktop transport owns exact UTF-8 envelope packing and
+  // may only remove old intermediate assistant updates with an explicit omission receipt.
+  const history: NonNullable<JevRoutingContext["history"]>[number][] = recent
+    .flat()
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      text: sanitizeJevText(message.text),
+      ...(message.model ? { model: message.model } : {}),
+      ...(message.effort ? { effort: message.effort } : {}),
+    }));
   let unresolved: JevRoutingContext["failure"];
   let previousAssistant: Message | undefined;
-  for (const message of [...messages, { role: "user", text: prompt }]) {
+  for (const message of [
+    ...messages,
+    { role: "user", text: prompt, feedbackText: promptFeedback },
+  ]) {
     if (message.role === "assistant") {
       previousAssistant = message;
       continue;
     }
-    const feedback = directFeedback(message.text);
+    const feedbackText = message.feedbackText ?? message.text;
+    const feedback = directFeedback(feedbackText);
     const solutionFailed =
       specificFailure.test(feedback) ||
       (failure.test(feedback) && !environmentFailure.test(feedback));
@@ -189,7 +213,7 @@ export function buildJevContext(input: {
     if (solutionFailed)
       unresolved = {
         unresolved: true,
-        signals: [sanitizeJevText(message.text)],
+        signals: [sanitizeJevText(feedbackText)],
         ...(previousAssistant?.model ? { model: previousAssistant.model } : {}),
         ...(previousAssistant?.effort ? { effort: previousAssistant.effort } : {}),
       };
