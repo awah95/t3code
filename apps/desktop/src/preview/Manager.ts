@@ -32,6 +32,13 @@ import type {
   PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import type {
+  JevAutomationAction,
+  JevAutomationCandidate,
+  JevAutomationExecutionResult,
+  JevAutomationInput,
+  JevAutomationObservation,
+} from "@t3tools/shared/jevAutomation";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import {
   BrowserWindow,
@@ -81,6 +88,208 @@ import {
   previewAutomationEditingCommandExpression,
 } from "./PreviewKeyboard.ts";
 import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./FaviconCapture.ts";
+import {
+  buildJevBrowserGuardExpression,
+  buildJevBrowserObservationExpression,
+  buildJevBrowserSelectExpression,
+  buildJevBrowserSetTextExpression,
+} from "./JevBrowserObservation.ts";
+
+const JevBrowserRawControlSchema = Schema.Struct({
+  id: Schema.String,
+  tag: Schema.String,
+  role: Schema.String,
+  name: Schema.String,
+  value: Schema.String,
+  checked: Schema.Boolean,
+  disabled: Schema.Boolean,
+  href: Schema.optionalKey(Schema.String),
+  options: Schema.Array(
+    Schema.Struct({ value: Schema.String, label: Schema.String, disabled: Schema.Boolean }),
+  ),
+  selector: Schema.String,
+  x: Schema.Number,
+  y: Schema.Number,
+  width: Schema.Number,
+  height: Schema.Number,
+});
+const JevBrowserRawObservation = Schema.Struct({
+  revision: Schema.String,
+  documentId: Schema.String,
+  url: Schema.String,
+  title: Schema.String,
+  loading: Schema.Boolean,
+  text: Schema.String,
+  controls: Schema.Array(JevBrowserRawControlSchema),
+  omissions: Schema.Array(Schema.String),
+});
+const JevBrowserGuardResult = Schema.Union([
+  Schema.Struct({ ok: Schema.Literal(false), reason: Schema.String }),
+  Schema.Struct({
+    ok: Schema.Literal(true),
+    selector: Schema.optionalKey(Schema.String),
+    x: Schema.optionalKey(Schema.Number),
+    y: Schema.optionalKey(Schema.Number),
+  }),
+]);
+type JevBrowserRawControl = typeof JevBrowserRawControlSchema.Type;
+
+const makeJevBrowserRevision = (controlGeneration: number, documentRevision: string) =>
+  `${controlGeneration}:${documentRevision}`;
+const JEV_BROWSER_MAX_CANDIDATES = 2_048;
+const JEV_BROWSER_MAX_HOST_INPUTS = 512;
+const JEV_BROWSER_MAX_DESCRIPTION_LENGTH = 1_000;
+const JEV_BROWSER_MAX_VALUE_LENGTH = 20_000;
+const JEV_BROWSER_RESERVED_PREFIX = "__t3_";
+
+const jevBrowserOriginAllowed = (value: string, allowedOrigins: readonly string[]) => {
+  try {
+    const origin = new URL(value).origin;
+    return allowedOrigins.some((allowed) => new URL(allowed).origin === origin);
+  } catch {
+    return false;
+  }
+};
+
+const jevBrowserCandidates = (
+  controls: readonly JevBrowserRawControl[],
+  requestInputs: readonly JevAutomationInput[],
+  allowedOrigins: readonly string[],
+): {
+  readonly inputs: readonly JevAutomationInput[];
+  readonly candidates: readonly JevAutomationCandidate[];
+  readonly truncated: boolean;
+} => {
+  const optionInputs: JevAutomationInput[] = [];
+  const optionInputIds = new Set<string>();
+  const hostOptionTargets = new Map<string, string>();
+  let inputsTruncated = false;
+  for (const control of controls) {
+    for (const option of control.options) {
+      if (option.disabled) continue;
+      if (option.value.length > JEV_BROWSER_MAX_VALUE_LENGTH) {
+        inputsTruncated = true;
+        continue;
+      }
+      if (optionInputs.length >= JEV_BROWSER_MAX_HOST_INPUTS - 7) {
+        inputsTruncated = true;
+        break;
+      }
+      const suffix = NodeCrypto.createHash("sha256")
+        .update(`${control.id}\0${option.value}`)
+        .digest("hex")
+        .slice(0, 20);
+      const id = `__t3_option_${suffix}`;
+      if (optionInputIds.has(id)) continue;
+      optionInputIds.add(id);
+      hostOptionTargets.set(id, control.id);
+      optionInputs.push({
+        id,
+        kind: "option",
+        value: option.value,
+        description: `${option.label} in ${control.name || control.role}`.slice(
+          0,
+          JEV_BROWSER_MAX_DESCRIPTION_LENGTH,
+        ),
+      });
+    }
+  }
+  const inputs: readonly JevAutomationInput[] = [
+    ...optionInputs,
+    { id: "__t3_scroll_up", kind: "scroll", value: "up", description: "viewport up" },
+    { id: "__t3_scroll_down", kind: "scroll", value: "down", description: "viewport down" },
+    { id: "__t3_scroll_left", kind: "scroll", value: "left", description: "viewport left" },
+    { id: "__t3_scroll_right", kind: "scroll", value: "right", description: "viewport right" },
+    { id: "__t3_key_enter", kind: "key", value: "Enter", description: "Enter key" },
+    { id: "__t3_key_tab", kind: "key", value: "Tab", description: "Tab key" },
+    { id: "__t3_key_escape", kind: "key", value: "Escape", description: "Escape key" },
+  ];
+  const activeInputs = [...requestInputs, ...inputs];
+  const candidates: JevAutomationCandidate[] = [];
+  let truncated = false;
+  const add = (candidate: JevAutomationCandidate) => {
+    if (candidates.length >= JEV_BROWSER_MAX_CANDIDATES) {
+      truncated = true;
+      return;
+    }
+    candidates.push({
+      ...candidate,
+      id: `${JEV_BROWSER_RESERVED_PREFIX}candidate_${NodeCrypto.createHash("sha256")
+        .update(candidate.id)
+        .digest("hex")}`,
+      description: candidate.description.slice(0, JEV_BROWSER_MAX_DESCRIPTION_LENGTH),
+    });
+  };
+  for (const control of controls) {
+    if (control.disabled) continue;
+    if (
+      ["button", "checkbox", "radio"].includes(control.role) ||
+      (control.role === "link" &&
+        control.href !== undefined &&
+        jevBrowserOriginAllowed(control.href, allowedOrigins))
+    ) {
+      add({
+        id: `activate:${control.id}`,
+        operation: "activate",
+        targetId: control.id,
+        description: `Activate ${control.role} ${control.name || control.id}`,
+      });
+    }
+    if (["textbox", "searchbox", "spinbutton"].includes(control.role)) {
+      for (const input of activeInputs.filter(({ kind }) => kind === "text")) {
+        add({
+          id: `set-text:${control.id}:${input.id}`,
+          operation: "set-text",
+          targetId: control.id,
+          inputId: input.id,
+          description: `Set ${control.name || control.role} from supplied ${input.description}`,
+        });
+      }
+    }
+    if (control.role === "combobox") {
+      for (const input of activeInputs.filter(
+        ({ id, kind }) =>
+          kind === "option" &&
+          (!id.startsWith("__t3_option_") || hostOptionTargets.get(id) === control.id),
+      )) {
+        const option = control.options.find(({ value }) => value === input.value);
+        if (!option || option.disabled) continue;
+        add({
+          id: `select-option:${control.id}:${input.id}`,
+          operation: "select-option",
+          targetId: control.id,
+          inputId: input.id,
+          description: `Select ${option.label} in ${control.name || control.role}`,
+        });
+      }
+    }
+  }
+  for (const input of activeInputs) {
+    if (input.kind === "url" && jevBrowserOriginAllowed(input.value, allowedOrigins)) {
+      add({
+        id: `navigate:${input.id}`,
+        operation: "navigate",
+        inputId: input.id,
+        description: `Navigate to supplied ${input.description}`,
+      });
+    } else if (input.kind === "scroll" && ["up", "down", "left", "right"].includes(input.value)) {
+      add({
+        id: `scroll:${input.id}`,
+        operation: "scroll",
+        inputId: input.id,
+        description: `Scroll ${input.value}`,
+      });
+    } else if (input.kind === "key") {
+      add({
+        id: `press-key:${input.id}`,
+        operation: "press-key",
+        inputId: input.id,
+        description: `Press supplied ${input.description}`,
+      });
+    }
+  }
+  return { inputs, candidates, truncated: truncated || inputsTruncated };
+};
 
 export type PreviewNavStatus =
   | { kind: "Idle" }
@@ -648,6 +857,24 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     ReadonlyMap<string, ReadonlyArray<ExpectedAgentInput>>
   >(new Map());
   const controlEpochRef = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
+  const jevBrowserRevisionsRef = yield* Ref.make<
+    ReadonlyMap<
+      string,
+      {
+        readonly runId: string;
+        readonly revision: string;
+        readonly documentRevision: string;
+        readonly controlGeneration: number;
+        readonly candidates: readonly JevAutomationCandidate[];
+        readonly inputs: readonly JevAutomationInput[];
+        readonly allowedOrigins: readonly string[];
+        readonly contextId: number;
+      }
+    >
+  >(new Map());
+  const jevBrowserRunsRef = yield* Ref.make<
+    ReadonlyMap<string, { readonly tabId: string; readonly controlGeneration: number }>
+  >(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
   >(new Map());
@@ -950,6 +1177,21 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     // can commit between the modify above and here, and republishing this
     // snapshot would roll the UI back to a value that writer will not send
     // again because it suppresses unchanged audibility.
+    if (Option.isSome(next)) yield* emitIfCurrent(tabId, next.value);
+  });
+
+  const clearAgentController = Effect.fn("PreviewManager.clearAgentController")(function* (
+    tabId: string,
+  ) {
+    const updatedAt = yield* currentIso;
+    const next = yield* SynchronizedRef.modify(tabsRef, (tabs) => {
+      const current = tabs.get(tabId);
+      if (!current || current.controller !== "agent") {
+        return [Option.none<PreviewTabState>(), tabs] as const;
+      }
+      const state: PreviewTabState = { ...current, controller: "none", updatedAt };
+      return [Option.some(state), replaceMap(tabs, (copy) => copy.set(tabId, state))] as const;
+    });
     if (Option.isSome(next)) yield* emitIfCurrent(tabId, next.value);
   });
 
@@ -1509,8 +1751,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           error: errorMessage,
         });
       }
-      const tabs = yield* SynchronizedRef.get(tabsRef);
-      if (tabs.has(tabId)) yield* update(tabId, { controller: "none" });
+      yield* clearAgentController(tabId);
     });
     return yield* control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
   });
@@ -1521,12 +1762,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     expression: string,
     returnByValue: boolean,
     awaitPromise = true,
+    contextId?: number,
   ): Effect.Effect<A, PreviewManagerError> =>
     send("Runtime.evaluate", {
       expression,
       awaitPromise,
       returnByValue,
       userGesture: true,
+      ...(contextId === undefined ? {} : { contextId }),
     }).pipe(
       Effect.flatMap((rawResponse) => {
         const response = rawResponse as CdpEvaluationResult;
@@ -3661,6 +3904,410 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  const evaluateJevBrowserGuard = Effect.fn("PreviewManager.evaluateJevBrowserGuard")(function* (
+    tabId: string,
+    send: SendCommand,
+    contextId: number,
+    revision: string,
+    targetId?: string,
+  ) {
+    const raw = yield* evaluateWithDebugger(
+      tabId,
+      send,
+      buildJevBrowserGuardExpression(revision, targetId),
+      true,
+      true,
+      contextId,
+    );
+    return yield* Schema.decodeUnknownEffect(JevBrowserGuardResult)(raw).pipe(
+      Effect.mapError(
+        (cause) => new PreviewOperationError({ operation: "jevBrowser.guard", tabId, cause }),
+      ),
+    );
+  });
+
+  const jevBrowserObserve = Effect.fn("PreviewManager.jevBrowserObserve")(function* (
+    runId: string,
+    tabId: string,
+    inputs: readonly JevAutomationInput[],
+    allowedOrigins: readonly string[],
+  ) {
+    if (inputs.some(({ id }) => id.startsWith(JEV_BROWSER_RESERVED_PREFIX))) {
+      return yield* new PreviewOperationError({
+        operation: "jevBrowser.observeInputs",
+        tabId,
+        cause: new Error(`Input IDs beginning with ${JEV_BROWSER_RESERVED_PREFIX} are reserved.`),
+      });
+    }
+    const currentGeneration = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+    const runState = yield* Ref.modify(jevBrowserRunsRef, (runs) => {
+      const existing = runs.get(runId);
+      if (existing) return [existing, runs] as const;
+      const created = { tabId, controlGeneration: currentGeneration };
+      return [created, replaceMap(runs, (copy) => copy.set(runId, created))] as const;
+    });
+    if (runState.tabId !== tabId || runState.controlGeneration !== currentGeneration) {
+      return yield* new PreviewOperationError({
+        operation: "jevBrowser.observeGeneration",
+        tabId,
+        cause: new Error("Human control changed during this Jev browser run."),
+      });
+    }
+    const wc = yield* requireWebContents(tabId);
+    return yield* withControlSession<JevAutomationObservation>(
+      tabId,
+      wc,
+      "jevBrowserObserve",
+      (send, _cleanup, check) =>
+        Effect.gen(function* () {
+          yield* send("Page.enable");
+          const frameTree = (yield* send("Page.getFrameTree")) as {
+            frameTree?: { frame?: { id?: unknown } };
+          };
+          const frameId = frameTree.frameTree?.frame?.id;
+          if (typeof frameId !== "string") {
+            return yield* new PreviewOperationError({
+              operation: "jevBrowser.createIsolatedWorld",
+              tabId,
+              cause: new Error("The preview main frame is unavailable."),
+            });
+          }
+          const isolated = (yield* send("Page.createIsolatedWorld", {
+            frameId,
+            worldName: "t3-jev-browser",
+            grantUniveralAccess: false,
+          })) as { executionContextId?: unknown };
+          if (typeof isolated.executionContextId !== "number") {
+            return yield* new PreviewOperationError({
+              operation: "jevBrowser.createIsolatedWorld",
+              tabId,
+              cause: new Error("The Jev browser isolated world is unavailable."),
+            });
+          }
+          const contextId = isolated.executionContextId;
+          const raw = yield* evaluateWithDebugger(
+            tabId,
+            send,
+            buildJevBrowserObservationExpression(),
+            true,
+            true,
+            contextId,
+          );
+          const observed = yield* Schema.decodeUnknownEffect(JevBrowserRawObservation)(raw).pipe(
+            Effect.mapError(
+              (cause) =>
+                new PreviewOperationError({ operation: "jevBrowser.observe", tabId, cause }),
+            ),
+          );
+          yield* check;
+          if (!jevBrowserOriginAllowed(observed.url, allowedOrigins)) {
+            return yield* new PreviewOperationError({
+              operation: "jevBrowser.observeOrigin",
+              tabId,
+              cause: new Error("The preview URL is outside the allowed browser origins."),
+            });
+          }
+          const controlGeneration = runState.controlGeneration;
+          const revision = makeJevBrowserRevision(controlGeneration, observed.revision);
+          const generated = jevBrowserCandidates(observed.controls, inputs, allowedOrigins);
+          const activeInputs = [...inputs, ...generated.inputs];
+          const controls = observed.controls.map((control) => ({
+            id: control.id,
+            role: control.role,
+            ...(control.name ? { name: control.name } : {}),
+            ...(control.name ? { text: control.name } : {}),
+            value:
+              control.role === "checkbox" || control.role === "radio"
+                ? control.checked
+                : control.value,
+            ...(control.role === "checkbox" || control.role === "radio"
+              ? { checked: control.checked }
+              : {}),
+            disabled: control.disabled,
+            ...(control.options.length === 0
+              ? {}
+              : {
+                  options: control.options.map((option) => ({
+                    ...option,
+                    selected: option.value === control.value,
+                  })),
+                }),
+          }));
+          const observation: JevAutomationObservation = {
+            revision,
+            surface: "browser",
+            location: observed.url,
+            title: observed.title,
+            visibleText: observed.text,
+            omissions: [
+              ...observed.omissions,
+              ...(generated.truncated
+                ? ["browser host inputs or action candidates truncated"]
+                : []),
+            ],
+            inputs: generated.inputs,
+            controls,
+            candidates: generated.candidates,
+          };
+          yield* Ref.update(jevBrowserRevisionsRef, (revisions) =>
+            replaceMap(revisions, (copy) => {
+              copy.set(tabId, {
+                runId,
+                revision,
+                documentRevision: observed.revision,
+                controlGeneration,
+                candidates: generated.candidates,
+                inputs: activeInputs,
+                allowedOrigins,
+                contextId,
+              });
+            }),
+          );
+          return observation;
+        }),
+    );
+  });
+
+  const jevBrowserExecute = Effect.fn("PreviewManager.jevBrowserExecute")(function* (
+    runId: string,
+    tabId: string,
+    revision: string,
+    action: JevAutomationAction,
+  ): Effect.fn.Return<JevAutomationExecutionResult, PreviewManagerError> {
+    const state = (yield* Ref.get(jevBrowserRevisionsRef)).get(tabId);
+    const currentGeneration = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+    if (
+      !state ||
+      state.runId !== runId ||
+      state.revision !== revision ||
+      state.controlGeneration !== currentGeneration
+    ) {
+      return { status: "stale", detail: "The browser or human-control generation changed." };
+    }
+    const matches = state.candidates.filter(
+      (candidate) =>
+        candidate.id === action.candidateId &&
+        candidate.operation === action.operation &&
+        candidate.targetId === action.targetId &&
+        candidate.inputId === action.inputId,
+    );
+    if (matches.length !== 1) {
+      return { status: "rejected", detail: "The action was not an exact retained candidate." };
+    }
+    const supplied = action.inputId
+      ? state.inputs.find(({ id }) => id === action.inputId)
+      : undefined;
+    if (action.value !== supplied?.value) {
+      return { status: "rejected", detail: "The action value did not match its retained input." };
+    }
+    const wc = yield* requireWebContents(tabId);
+    return yield* withControlSession<JevAutomationExecutionResult>(
+      tabId,
+      wc,
+      `jevBrowserExecute:${action.operation}`,
+      (send, sendCleanup, checkControl) =>
+        Effect.gen(function* () {
+          const acquiredGeneration = (yield* Ref.get(controlEpochRef)).get(tabId) ?? 0;
+          if (acquiredGeneration !== state.controlGeneration) {
+            return {
+              status: "stale",
+              detail: "Human control changed while browser execution was waiting.",
+            } as const;
+          }
+          const guarded = yield* evaluateJevBrowserGuard(
+            tabId,
+            send,
+            state.contextId,
+            state.documentRevision,
+            action.targetId,
+          );
+          if (!guarded.ok) return { status: "stale", detail: guarded.reason } as const;
+          yield* Ref.update(jevBrowserRevisionsRef, (revisions) =>
+            replaceMap(revisions, (copy) => copy.delete(tabId)),
+          );
+
+          if (action.operation === "select-option") {
+            if (!action.targetId || action.value === undefined) {
+              return { status: "rejected", detail: "Select requires a target and value." } as const;
+            }
+            const selected = yield* evaluateWithDebugger(
+              tabId,
+              send,
+              buildJevBrowserSelectExpression(
+                state.documentRevision,
+                action.targetId,
+                action.value,
+              ),
+              true,
+              true,
+              state.contextId,
+            );
+            const result = yield* Schema.decodeUnknownEffect(JevBrowserGuardResult)(selected).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PreviewOperationError({ operation: "jevBrowser.select", tabId, cause }),
+              ),
+            );
+            return result.ok
+              ? ({ status: "executed" } as const)
+              : ({ status: "stale", detail: result.reason } as const);
+          }
+
+          if (action.operation === "activate") {
+            if (guarded.x === undefined || guarded.y === undefined) {
+              return { status: "rejected", detail: "Activate requires guarded geometry." } as const;
+            }
+            yield* prepareAutomationInput(send, true);
+            const moveSequence = yield* nextCounter(pointerSequenceRef);
+            yield* emitPointerEvent({
+              tabId,
+              phase: "move",
+              x: guarded.x,
+              y: guarded.y,
+              sequence: moveSequence,
+              createdAt: yield* currentIso,
+            });
+            const current = yield* evaluateJevBrowserGuard(
+              tabId,
+              send,
+              state.contextId,
+              state.documentRevision,
+              action.targetId,
+            );
+            if (!current.ok || current.x === undefined || current.y === undefined) {
+              return {
+                status: "stale",
+                detail: current.ok ? "Target geometry disappeared." : current.reason,
+              } as const;
+            }
+            yield* emitPointerEvent({
+              tabId,
+              phase: "click",
+              x: current.x,
+              y: current.y,
+              sequence: yield* nextCounter(pointerSequenceRef),
+              createdAt: yield* currentIso,
+            });
+            yield* expectAgentInput(tabId, {
+              kind: "pointer",
+              x: current.x,
+              y: current.y,
+              button: 0,
+            });
+            yield* send("Input.dispatchMouseEvent", {
+              type: "mousePressed",
+              x: current.x,
+              y: current.y,
+              button: "left",
+              clickCount: 1,
+            });
+            yield* send("Input.dispatchMouseEvent", {
+              type: "mouseReleased",
+              x: current.x,
+              y: current.y,
+              button: "left",
+              clickCount: 1,
+            });
+            return { status: "executed" } as const;
+          }
+
+          if (action.operation === "set-text") {
+            if (!action.targetId || action.value === undefined) {
+              return {
+                status: "rejected",
+                detail: "Text entry requires a guarded target.",
+              } as const;
+            }
+            const inserted = yield* evaluateWithDebugger(
+              tabId,
+              send,
+              buildJevBrowserSetTextExpression(
+                state.documentRevision,
+                action.targetId,
+                action.value,
+              ),
+              true,
+              true,
+              state.contextId,
+            );
+            const result = yield* Schema.decodeUnknownEffect(JevBrowserGuardResult)(inserted).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new PreviewOperationError({ operation: "jevBrowser.setText", tabId, cause }),
+              ),
+            );
+            if (!result.ok) {
+              return yield* new PreviewOperationError({
+                operation: "jevBrowser.setTextUnknownMutation",
+                tabId,
+                cause: new Error(
+                  `Text entry may have partially changed the retained target: ${result.reason}`,
+                ),
+              });
+            }
+            return { status: "executed" } as const;
+          }
+
+          if (action.operation === "navigate") {
+            if (
+              action.value === undefined ||
+              !jevBrowserOriginAllowed(action.value, state.allowedOrigins)
+            ) {
+              return { status: "rejected", detail: "Navigation requires a supplied URL." } as const;
+            }
+            yield* checkControl;
+            yield* navigate(tabId, action.value);
+            return { status: "executed" } as const;
+          }
+
+          if (action.operation === "scroll") {
+            const deltas = {
+              up: { deltaY: -600 },
+              down: { deltaY: 600 },
+              left: { deltaX: -600 },
+              right: { deltaX: 600 },
+            } as const;
+            const delta = action.value ? deltas[action.value as keyof typeof deltas] : undefined;
+            if (!delta) return { status: "rejected", detail: "Unsupported scroll input." } as const;
+            yield* performAutomationScroll(tabId, delta, send);
+            return { status: "executed" } as const;
+          }
+
+          if (action.operation === "press-key") {
+            if (action.value === undefined) {
+              return { status: "rejected", detail: "Key press requires a supplied key." } as const;
+            }
+            yield* performAutomationPress(
+              tabId,
+              wc,
+              { key: action.value },
+              send,
+              sendCleanup,
+              checkControl,
+            );
+            return { status: "executed" } as const;
+          }
+
+          return { status: "rejected", detail: "Unsupported browser action." } as const;
+        }),
+    );
+  });
+
+  const jevBrowserCancel = Effect.fn("PreviewManager.jevBrowserCancel")(function* (runId: string) {
+    const cancelled = yield* Ref.modify(jevBrowserRunsRef, (runs) => [
+      runs.has(runId),
+      replaceMap(runs, (copy) => copy.delete(runId)),
+    ]);
+    yield* Ref.update(jevBrowserRevisionsRef, (revisions) =>
+      replaceMap(revisions, (copy) => {
+        for (const [tabId, state] of copy) {
+          if (state.runId === runId) copy.delete(tabId);
+        }
+      }),
+    );
+    return cancelled;
+  });
+
   const resolveClickPoint = Effect.fn("PreviewManager.resolveClickPoint")(function* (
     tabId: string,
     send: SendCommand,
@@ -4468,6 +5115,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       [
         Ref.set(listenersRef, new Set()),
         Ref.set(expectedAgentInputsRef, new Map()),
+        Ref.set(jevBrowserRevisionsRef, new Map()),
         Ref.set(pointerEventListenersRef, new Set()),
         Ref.set(recordingFrameListenersRef, new Set()),
       ],
@@ -4486,6 +5134,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationStatus,
     automationType,
     automationWaitFor,
+    jevBrowserCancel,
+    jevBrowserExecute,
+    jevBrowserObserve,
     cancelPickElement,
     captureScreenshot,
     closeTab,
@@ -4890,6 +5541,19 @@ export class PreviewManager extends Context.Service<
     readonly automationSnapshot: (
       tabId: string,
     ) => Effect.Effect<PreviewAutomationSnapshot, PreviewManagerError>;
+    readonly jevBrowserObserve: (
+      runId: string,
+      tabId: string,
+      inputs: readonly JevAutomationInput[],
+      allowedOrigins: readonly string[],
+    ) => Effect.Effect<JevAutomationObservation, PreviewManagerError>;
+    readonly jevBrowserExecute: (
+      runId: string,
+      tabId: string,
+      revision: string,
+      action: JevAutomationAction,
+    ) => Effect.Effect<JevAutomationExecutionResult, PreviewManagerError>;
+    readonly jevBrowserCancel: (runId: string) => Effect.Effect<boolean>;
     readonly automationClick: (
       tabId: string,
       input: PreviewAutomationClickInput,
@@ -5002,6 +5666,9 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
     automationSnapshot: operations.automationSnapshot,
+    jevBrowserCancel: operations.jevBrowserCancel,
+    jevBrowserObserve: operations.jevBrowserObserve,
+    jevBrowserExecute: operations.jevBrowserExecute,
     automationClick: operations.automationClick,
     automationType: operations.automationType,
     automationPress: operations.automationPress,

@@ -48,6 +48,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { cn } from "~/lib/utils";
 import { JevControls } from "../../jev/JevControls";
+import { JevBrowserControl } from "../../jevBrowser";
 
 interface ChatHeaderProps {
   activeThreadEnvironmentId: EnvironmentId;
@@ -410,6 +411,9 @@ export const ChatHeader = memo(function ChatHeader({
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        <JevBrowserControl
+          scope={{ environmentId: activeThreadEnvironmentId, threadId: activeThreadId }}
+        />
         <JevControls />
         {activeProjectScripts && (
           <ProjectScriptsControl

@@ -46,3 +46,4 @@ export * from "./codexUsageLedger.ts";
 export * from "./rpc.ts";
 export * from "./worktreeSetup.ts";
 export * from "./jev.ts";
+export * from "./jevBrowser.ts";

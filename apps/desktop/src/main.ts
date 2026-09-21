@@ -28,7 +28,9 @@ import * as ElectronPowerMonitor from "./electron/ElectronPowerMonitor.ts";
 import * as ElectronProtocol from "./electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "./electron/ElectronSafeStorage.ts";
 import * as DesktopJev from "./jev/DesktopJev.ts";
+import * as DesktopJevCredential from "./jev/DesktopJevCredential.ts";
 import * as DesktopJevSubagent from "./jev/DesktopJevSubagent.ts";
+import * as DesktopJevBrowser from "./jevBrowser/DesktopJevBrowser.ts";
 import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
 import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
@@ -126,13 +128,18 @@ const electronLayer = Layer.mergeAll(
   DesktopIpc.layer(Electron.ipcMain),
 );
 
+const desktopJevLayer = Layer.mergeAll(
+  DesktopJevSubagent.layer.pipe(Layer.provideMerge(DesktopJev.layer)),
+  DesktopJevBrowser.layer,
+).pipe(Layer.provideMerge(DesktopJevCredential.layer));
+
 const desktopFoundationLayer = Layer.mergeAll(
   MacPermissions.layer,
   DesktopState.layer,
   DesktopShutdown.layer,
   DesktopAppSettings.layer,
   DesktopClientSettings.layer,
-  DesktopJevSubagent.layer.pipe(Layer.provideMerge(DesktopJev.layer)),
+  desktopJevLayer,
   DesktopConnectionCatalogStore.layer.pipe(Layer.provideMerge(DesktopSavedEnvironments.layer)),
   DesktopAssets.layer,
   DesktopObservability.layer,

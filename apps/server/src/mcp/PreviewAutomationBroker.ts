@@ -49,6 +49,16 @@ export interface PreviewAutomationInvokeInput {
   readonly updateCurrentTab?: boolean;
   /** Capture the routed tab before another request changes the current assignment. */
   readonly onTargetTab?: (tabId: PreviewTabId | undefined) => void;
+  /** All operations the selected connection must support for this live flow. */
+  readonly requiredOperations?: ReadonlySet<PreviewAutomationOperation>;
+  /** Pin this request to the exact connection generation selected earlier in the flow. */
+  readonly hostLease?: PreviewAutomationHostLease;
+  readonly onHostLease?: (lease: PreviewAutomationHostLease) => void;
+}
+
+export interface PreviewAutomationHostLease {
+  readonly clientId: string;
+  readonly connectionId: string;
 }
 
 export class PreviewAutomationBroker extends Context.Service<
@@ -174,6 +184,13 @@ const supportsOperation = (
   connection: ClientConnection,
   operation: PreviewAutomationOperation,
 ): boolean => connection.supportedOperations.has(operation);
+
+const supportsRequiredOperations = (
+  connection: ClientConnection,
+  operations: ReadonlySet<PreviewAutomationOperation> | undefined,
+): boolean =>
+  operations === undefined ||
+  Array.from(operations).every((operation) => supportsOperation(connection, operation));
 
 type RemoteDetailKind = "null" | "array" | "object" | "string" | "number" | "boolean";
 
@@ -492,23 +509,38 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       // operation is not silently moved to a newer client: the caller gets a
       // capability failure and can deliberately start a fresh provider
       // session. A dead lease is pruned above and may fail over.
+      const leasedConnection = input.hostLease
+        ? current.clients.get(input.hostLease.clientId)
+        : undefined;
+      const hasRequestedLease = input.hostLease !== undefined;
       const connection =
-        hasLiveAssignment && supportsOperation(assignedConnection, input.operation)
-          ? assignedConnection
-          : hasLiveAssignment
+        hasRequestedLease &&
+        leasedConnection?.connectionId === input.hostLease.connectionId &&
+        leasedConnection.environmentId === input.scope.environmentId &&
+        supportsOperation(leasedConnection, input.operation) &&
+        supportsRequiredOperations(leasedConnection, input.requiredOperations)
+          ? leasedConnection
+          : hasRequestedLease
             ? undefined
-            : Array.from(current.clients.values())
-                .filter(
-                  (host) =>
-                    host.environmentId === input.scope.environmentId &&
-                    supportsOperation(host, input.operation),
-                )
-                .sort(
-                  (left, right) =>
-                    right.supportedOperations.size - left.supportedOperations.size ||
-                    Number(right.focused) - Number(left.focused) ||
-                    right.focusOrder - left.focusOrder,
-                )[0];
+            : hasLiveAssignment &&
+                supportsOperation(assignedConnection, input.operation) &&
+                supportsRequiredOperations(assignedConnection, input.requiredOperations)
+              ? assignedConnection
+              : hasLiveAssignment
+                ? undefined
+                : Array.from(current.clients.values())
+                    .filter(
+                      (host) =>
+                        host.environmentId === input.scope.environmentId &&
+                        supportsOperation(host, input.operation) &&
+                        supportsRequiredOperations(host, input.requiredOperations),
+                    )
+                    .sort(
+                      (left, right) =>
+                        right.supportedOperations.size - left.supportedOperations.size ||
+                        Number(right.focused) - Number(left.focused) ||
+                        right.focusOrder - left.focusOrder,
+                    )[0];
       if (!connection) {
         if (!hasLiveAssignment) assignments.delete(assignmentKey);
         return [undefined, { ...current, assignments }] as const;
@@ -561,6 +593,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       });
     }
     const { connection, requestId, requestContext, requestSequence } = route;
+    input.onHostLease?.({ clientId: connection.clientId, connectionId: connection.connectionId });
     input.onTargetTab?.(requestContext.tabId);
     const removePending = SynchronizedRef.update(state, (next) => {
       if (!next.pending.has(requestId)) return next;

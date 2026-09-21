@@ -10,6 +10,12 @@ import {
   PreviewViewportSize,
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import {
+  JEV_BROWSER_AUTOMATION_OPERATIONS,
+  JevBrowserRunConflictError,
+  JevBrowserRunError,
+  JevBrowserStatus,
+} from "./jevBrowser.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
@@ -43,6 +49,7 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  ...JEV_BROWSER_AUTOMATION_OPERATIONS,
 ] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
@@ -74,6 +81,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   viewportSetting: Schema.optional(PreviewViewportSetting),
   /** Measured guest-page viewport in CSS pixels when a webview is ready. */
   viewport: Schema.optional(PreviewRenderedViewportSize),
+  /** Present on hosts that support the optional Jev browser executor. */
+  jevBrowser: Schema.optional(JevBrowserStatus),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -915,6 +924,8 @@ export class PreviewAutomationRecordingDeadlineExpiredError extends Schema.Tagge
 }
 
 export const PreviewAutomationError = Schema.Union([
+  JevBrowserRunConflictError,
+  JevBrowserRunError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingTooLargeError,

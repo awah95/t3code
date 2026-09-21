@@ -1106,6 +1106,18 @@ export interface DesktopBridge {
     },
   ) => Promise<import("./jev.ts").JevRouteResult>;
   cancelJevRoute?: (requestId: string) => Promise<void>;
+  observeJevBrowser?: (
+    input: import("./jevBrowser.ts").JevBrowserObserveInput,
+  ) => Promise<import("./jevBrowser.ts").JevBrowserObserveResult>;
+  decideJevBrowser?: (
+    input: import("./jevBrowser.ts").JevBrowserDecideInput,
+  ) => Promise<import("./jevBrowser.ts").JevBrowserDecideResult>;
+  executeJevBrowser?: (
+    input: import("./jevBrowser.ts").JevBrowserExecuteInput,
+  ) => Promise<import("./jevBrowser.ts").JevBrowserExecuteResult>;
+  cancelJevBrowser?: (
+    input: import("./jevBrowser.ts").JevBrowserCancelInput,
+  ) => Promise<import("./jevBrowser.ts").JevBrowserCancelResult>;
   setJevSubagentPolicy?: (policy: import("./jev.ts").JevSubagentPolicy) => Promise<void>;
   clearJevSubagentPolicies?: () => Promise<void>;
   onJevSubagentDecision?: (

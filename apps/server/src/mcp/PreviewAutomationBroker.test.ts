@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  JEV_BROWSER_AUTOMATION_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -934,6 +935,140 @@ it.effect("fails over a pinned provider session only after its host disconnects"
         "second",
       );
       expect(secondRoutedTabId).toBeUndefined();
+    }),
+  ),
+);
+
+it.effect("does not migrate an explicitly leased automation run after its host disconnects", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const operations = [
+        "status",
+        "jevBrowserObserve",
+        "jevBrowserDecide",
+        "jevBrowserExecute",
+        "jevBrowserCancel",
+      ] as const;
+      let firstConnectionId = "";
+      const firstRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({ clientId: "client-first", supportedOperations: [...operations] }),
+        ),
+        (connectionId) => {
+          firstConnectionId = connectionId;
+        },
+      );
+      const secondRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({ clientId: "client-second", supportedOperations: [...operations] }),
+        ),
+      );
+      const firstConsumer = yield* Stream.runForEach(firstRequests, (request) =>
+        broker.respond({
+          clientId: "client-first",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "first",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(secondRequests, (request) =>
+        broker.respond({
+          clientId: "client-second",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "second",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      yield* broker.focusHost({
+        clientId: "client-first",
+        environmentId: scope.environmentId,
+        connectionId: firstConnectionId,
+        focused: true,
+      });
+      let lease: PreviewAutomationBroker.PreviewAutomationHostLease | undefined;
+      expect(
+        yield* broker.invoke<string>({
+          scope,
+          operation: "jevBrowserObserve",
+          input: {},
+          requiredOperations: new Set(operations.slice(1)),
+          onHostLease: (selected) => {
+            lease = selected;
+          },
+        }),
+      ).toBe("first");
+      expect(lease?.clientId).toBe("client-first");
+
+      yield* Fiber.interrupt(firstConsumer);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<string>({
+          scope,
+          operation: "jevBrowserExecute",
+          input: {},
+          requiredOperations: new Set(operations.slice(1)),
+          hostLease: lease!,
+        })
+        .pipe(Effect.flip);
+      expect(error).toBeInstanceOf(PreviewAutomationNoAvailableHostError);
+    }),
+  ),
+);
+
+it.effect("selects only a host that supports the complete required operation set", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const partialRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-partial",
+            supportedOperations: ["jevBrowserObserve"],
+          }),
+        ),
+      );
+      const completeRequests = requestsFrom(
+        yield* broker.connect(
+          makeHost({
+            clientId: "client-complete",
+            supportedOperations: [...JEV_BROWSER_AUTOMATION_OPERATIONS],
+          }),
+        ),
+      );
+      yield* Stream.runForEach(partialRequests, (request) =>
+        broker.respond({
+          clientId: "client-partial",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "partial",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Stream.runForEach(completeRequests, (request) =>
+        broker.respond({
+          clientId: "client-complete",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: true,
+          result: "complete",
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      expect(
+        yield* broker.invoke<string>({
+          scope: { ...scope, providerSessionId: "provider-session-required-operations" },
+          operation: "jevBrowserObserve",
+          input: {},
+          requiredOperations: new Set(JEV_BROWSER_AUTOMATION_OPERATIONS),
+        }),
+      ).toBe("complete");
     }),
   ),
 );

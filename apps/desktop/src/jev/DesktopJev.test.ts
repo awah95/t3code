@@ -3,12 +3,14 @@ import { assert, describe, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 import * as DesktopJev from "./DesktopJev.ts";
+import * as DesktopJevCredential from "./DesktopJevCredential.ts";
 
 vi.mock("electron", () => ({ safeStorage: {} }));
 
@@ -51,6 +53,7 @@ function testLayer(baseDir: string, available: boolean, backend?: string) {
     ),
   );
   return DesktopJev.layer.pipe(
+    Layer.provideMerge(DesktopJevCredential.layer),
     Layer.provideMerge(environment),
     Layer.provide(storage),
     Layer.provideMerge(NodeServices.layer),
@@ -61,7 +64,10 @@ function withJev<A, E>(
   effect: Effect.Effect<
     A,
     E,
-    DesktopJev.DesktopJev | DesktopEnvironment.DesktopEnvironment | FileSystem.FileSystem
+    | DesktopJev.DesktopJev
+    | DesktopJevCredential.DesktopJevCredential
+    | DesktopEnvironment.DesktopEnvironment
+    | FileSystem.FileSystem
   >,
   available = true,
   backend?: string,
@@ -153,6 +159,41 @@ describe("DesktopJev credential storage", () => {
         const invalid = yield* service.decide({ ...request, candidates: [] });
         assert.isNull(invalid.choice);
         assert.include(invalid.error ?? "", "Invalid routing request");
+      }),
+    ),
+  );
+
+  it.effect("aborts every active credential consumer before removing the shared key", () =>
+    withJev(
+      Effect.gen(function* () {
+        const jev = yield* DesktopJev.DesktopJev;
+        const credential = yield* DesktopJevCredential.DesktopJevCredential;
+        let markStarted!: () => void;
+        let markAborted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          markStarted = resolve;
+        });
+        const aborted = new Promise<void>((resolve) => {
+          markAborted = resolve;
+        });
+        yield* jev.setKey("test-private-key");
+        const fiber = yield* credential
+          .useKey((_key, signal) =>
+            Effect.callback<void>((resume) => {
+              markStarted();
+              const onAbort = () => {
+                markAborted();
+                resume(Effect.void);
+              };
+              signal.addEventListener("abort", onAbort, { once: true });
+              return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+            }),
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.promise(() => started);
+        yield* jev.setKey(null);
+        yield* Effect.promise(() => aborted);
+        yield* Fiber.join(fiber);
       }),
     ),
   );

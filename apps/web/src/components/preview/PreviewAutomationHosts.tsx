@@ -6,6 +6,11 @@ import {
   FILL_PREVIEW_VIEWPORT,
   PREVIEW_AUTOMATION_OPERATIONS,
   type EnvironmentId,
+  type JevBrowserCancelInput,
+  type JevBrowserDecideInput,
+  type JevBrowserExecuteInput,
+  type JevBrowserExecuteResult,
+  type JevBrowserObserveInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
   type PreviewAutomationResizeInput,
@@ -59,6 +64,12 @@ import { useEnvironments } from "~/state/environments";
 import { previewEnvironment } from "~/state/preview";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useAtomCommand } from "~/state/use-atom-command";
+import {
+  getJevBrowserExecutionMode,
+  getJevBrowserStatus,
+  jevBrowserDecisionCost,
+  jevBrowserHandlerBridge,
+} from "~/jevBrowser";
 
 import { previewBridge } from "./previewBridge";
 import {
@@ -91,6 +102,23 @@ import { isPreviewViewportReady } from "./previewViewportReadiness";
 import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
+
+const hasJevBrowserHost = () =>
+  window.desktopBridge?.getJevStatus !== undefined &&
+  window.desktopBridge.observeJevBrowser !== undefined &&
+  window.desktopBridge.decideJevBrowser !== undefined &&
+  window.desktopBridge.executeJevBrowser !== undefined &&
+  window.desktopBridge.cancelJevBrowser !== undefined;
+
+const readJevBrowserStatus = async (threadRef: ScopedThreadRef) => {
+  const credential = hasJevBrowserHost()
+    ? await window.desktopBridge!.getJevStatus!().catch(() => null)
+    : null;
+  return getJevBrowserStatus(
+    threadRef,
+    credential?.hasKey === true && credential.secureStorageAvailable,
+  );
+};
 
 const waitForPreviewPresentation = async (runtimeTabId: string): Promise<void> => {
   const deadline = Date.now() + PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS;
@@ -246,7 +274,13 @@ const currentStatus = async (
   };
   if (runtimeTabId && tabId && previewBridge && state.desktopByTabId[tabId]) {
     const status = await previewBridge.automation.status(runtimeTabId);
-    return { ...status, tabId, visible, ...viewportStatus };
+    return {
+      ...status,
+      tabId,
+      visible,
+      ...viewportStatus,
+      jevBrowser: await readJevBrowserStatus(threadRef),
+    };
   }
   const navStatus = snapshot?.navStatus;
   return {
@@ -256,6 +290,7 @@ const currentStatus = async (
     url: navStatus && navStatus._tag !== "Idle" ? navStatus.url : null,
     title: navStatus && navStatus._tag !== "Idle" ? navStatus.title : null,
     loading: navStatus?._tag === "Loading",
+    jevBrowser: await readJevBrowserStatus(threadRef),
     ...viewportStatus,
   };
 };
@@ -326,6 +361,22 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
   const presentationSuppressedRuntimeTabsRef = useRef(new Map<string, Set<string>>());
+
+  useEffect(
+    () => () => {
+      const runIds = jevBrowserHandlerBridge.cancelEnvironmentRuns(
+        environmentId,
+        "Stopped because the environment host disconnected.",
+      );
+      for (const runId of runIds) {
+        void window.desktopBridge?.cancelJevBrowser?.({
+          runId,
+          reason: "failed",
+        });
+      }
+    },
+    [environmentId],
+  );
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -402,9 +453,156 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             runtimeTabId,
           };
         };
+        const requireJevBrowserAuthority = () => {
+          if (getJevBrowserExecutionMode(threadRef) === "disabled") {
+            throw new Error("Jev browser automation is disabled for this environment and thread.");
+          }
+          if (!hasJevBrowserHost()) {
+            throw new Error("This client does not provide the Jev browser host bridge.");
+          }
+        };
+        const runJevBrowserOperation = async <A,>(input: {
+          readonly runId: string;
+          readonly label: string;
+          readonly execute: (signal: AbortSignal) => Promise<A>;
+          readonly cost?: (result: A) => ReturnType<typeof jevBrowserDecisionCost>;
+          readonly detail?: (result: A) => string | undefined;
+          readonly failed?: (result: A) => boolean;
+        }): Promise<A> => {
+          requireJevBrowserAuthority();
+          let landedCost: ReturnType<typeof jevBrowserDecisionCost> | null = null;
+          const signal = jevBrowserHandlerBridge.begin(threadRef, {
+            id: request.requestId,
+            runId: input.runId,
+            label: input.label,
+            startedAt: new Date().toISOString(),
+          });
+          if (!signal) {
+            throw new Error("Jev browser automation is off or its active-run limit was reached.");
+          }
+          try {
+            requireJevBrowserAuthority();
+            if (signal.aborted) throw new Error("Jev browser automation was cancelled.");
+            const result = await input.execute(signal);
+            landedCost = input.cost?.(result) ?? null;
+            if (signal.aborted || getJevBrowserExecutionMode(threadRef) === "disabled") {
+              throw new Error("Jev browser automation was cancelled before the result landed.");
+            }
+            const failed = input.failed?.(result) ?? false;
+            const detail = input.detail?.(result);
+            jevBrowserHandlerBridge.complete(threadRef, request.requestId, {
+              status: failed ? "failed" : "succeeded",
+              cost: landedCost ?? { kind: "none" },
+              completedAt: new Date().toISOString(),
+              ...(detail === undefined ? {} : { detail }),
+            });
+            return result;
+          } catch (cause) {
+            jevBrowserHandlerBridge.complete(threadRef, request.requestId, {
+              status: signal.aborted ? "cancelled" : "failed",
+              // A decision may have reached the paid provider even when the
+              // response failed or cancellation won the renderer race.
+              cost: landedCost ?? (input.cost ? { kind: "unknown" } : { kind: "none" }),
+              completedAt: new Date().toISOString(),
+              detail: cause instanceof Error ? cause.message : "Jev browser operation failed.",
+            });
+            throw cause;
+          }
+        };
         switch (request.operation) {
           case "status":
             return await currentStatus(threadRef, tabId);
+          case "jevBrowserObserve": {
+            const input = request.input as JevBrowserObserveInput;
+            return await runJevBrowserOperation({
+              runId: input.runId,
+              label: "Observe browser",
+              execute: async (signal) => {
+                requireJevBrowserAuthority();
+                const ready = await requireReadyTab();
+                if (signal.aborted) throw new Error("Jev browser observation was cancelled.");
+                requireJevBrowserAuthority();
+                return await window.desktopBridge!.observeJevBrowser!({
+                  ...input,
+                  tabId: ready.runtimeTabId,
+                });
+              },
+            });
+          }
+          case "jevBrowserDecide": {
+            const input = request.input as JevBrowserDecideInput;
+            return await runJevBrowserOperation({
+              runId: input.runId,
+              label: "Choose browser action",
+              cost: jevBrowserDecisionCost,
+              detail: (result) =>
+                result.decision.outcome === "unavailable" ? result.decision.reason : undefined,
+              failed: (result) => result.decision.outcome === "unavailable",
+              execute: async (signal) => {
+                requireJevBrowserAuthority();
+                const cancel = () => {
+                  void window.desktopBridge?.cancelJevBrowser?.({
+                    runId: input.runId,
+                    ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+                    reason: "policy-disabled",
+                  });
+                };
+                signal.addEventListener("abort", cancel, { once: true });
+                try {
+                  return await window.desktopBridge!.decideJevBrowser!(input);
+                } finally {
+                  signal.removeEventListener("abort", cancel);
+                }
+              },
+            });
+          }
+          case "jevBrowserExecute": {
+            const input = request.input as JevBrowserExecuteInput;
+            return await runJevBrowserOperation({
+              runId: input.runId,
+              label: input.action.operation,
+              detail: (result: JevBrowserExecuteResult) => result.detail,
+              failed: (result: JevBrowserExecuteResult) => result.status !== "executed",
+              execute: async (signal) => {
+                requireJevBrowserAuthority();
+                const ready = await requireReadyTab();
+                if (signal.aborted) throw new Error("Jev browser action was cancelled.");
+                requireJevBrowserAuthority();
+                const cancelInput: JevBrowserCancelInput = {
+                  runId: input.runId,
+                  tabId: ready.runtimeTabId,
+                  reason: "policy-disabled",
+                };
+                const cancel = () => {
+                  void window.desktopBridge?.cancelJevBrowser?.(cancelInput);
+                };
+                signal.addEventListener("abort", cancel, { once: true });
+                if (signal.aborted) {
+                  cancel();
+                  signal.removeEventListener("abort", cancel);
+                  throw new Error("Jev browser action was cancelled.");
+                }
+                try {
+                  return await window.desktopBridge!.executeJevBrowser!({
+                    ...input,
+                    tabId: ready.runtimeTabId,
+                  });
+                } finally {
+                  signal.removeEventListener("abort", cancel);
+                }
+              },
+            });
+          }
+          case "jevBrowserCancel": {
+            const input = request.input as JevBrowserCancelInput;
+            const cancelledLocally = jevBrowserHandlerBridge.cancelRun(
+              threadRef,
+              input.runId,
+              `Cancelled: ${input.reason}.`,
+            );
+            const result = await window.desktopBridge?.cancelJevBrowser?.(input);
+            return { cancelled: cancelledLocally || result?.cancelled === true };
+          }
           case "open": {
             const input = request.input as PreviewAutomationOpenInput;
             const resolvedInputUrl = input.url

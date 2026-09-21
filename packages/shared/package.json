@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jevAutomation": {
+      "types": "./src/jevAutomation.ts",
+      "import": "./src/jevAutomation.ts"
+    },
+    "./jevAutomationDecision": {
+      "types": "./src/jevAutomationDecision.ts",
+      "import": "./src/jevAutomationDecision.ts"
+    },
     "./jevRouting": {
       "types": "./src/jevRouting.ts",
       "import": "./src/jevRouting.ts"

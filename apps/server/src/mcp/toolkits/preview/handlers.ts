@@ -29,6 +29,7 @@ import { resolveAttachmentRelativePath } from "../../../attachmentPaths.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
+import { runJevBrowserTask } from "../../JevBrowserCoordinator.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
 /**
@@ -227,6 +228,18 @@ const handlers = {
       );
       const artifact = yield* claimPreviewRecording(scope.threadId, response.result);
       return { ...artifact, ...(response.toolIcon ? { toolIcon: response.toolIcon } : {}) };
+    }),
+  preview_run_task: (input) =>
+    runJevBrowserTask({
+      task: input.task,
+      ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+      ...(input.inputs === undefined ? {} : { inputs: input.inputs }),
+      ...(input.assertions === undefined ? {} : { assertions: input.assertions }),
+      ...(input.allowedOrigins === undefined ? {} : { allowedOrigins: input.allowedOrigins }),
+      ...(input.maxSteps === undefined ? {} : { maxSteps: input.maxSteps }),
+      ...(input.maxDecisionCalls === undefined ? {} : { maxDecisionCalls: input.maxDecisionCalls }),
+      ...(input.maxDurationMs === undefined ? {} : { maxDurationMs: input.maxDurationMs }),
+      ...(input.maxCostUsd === undefined ? {} : { maxCostUsd: input.maxCostUsd }),
     }),
 } satisfies Parameters<typeof PreviewToolkit.toLayer>[0];
 

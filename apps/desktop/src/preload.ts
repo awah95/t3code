@@ -67,6 +67,10 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   decideJevRoute: (request, receiptContext) =>
     ipcRenderer.invoke(IpcChannels.DECIDE_JEV_ROUTE_CHANNEL, { request, receiptContext }),
   cancelJevRoute: (id) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_ROUTE_CHANNEL, id),
+  observeJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.OBSERVE_JEV_BROWSER_CHANNEL, input),
+  decideJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.DECIDE_JEV_BROWSER_CHANNEL, input),
+  executeJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.EXECUTE_JEV_BROWSER_CHANNEL, input),
+  cancelJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_BROWSER_CHANNEL, input),
   setJevSubagentPolicy: (policy) =>
     ipcRenderer.invoke(IpcChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
   clearJevSubagentPolicies: () =>

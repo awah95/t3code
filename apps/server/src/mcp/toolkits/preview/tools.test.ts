@@ -75,3 +75,8 @@ it("exports exact object result schemas for preview actions", () => {
     });
   }
 });
+
+it("exposes semantic selected-option assertions for Jev browser tasks", () => {
+  const schema = Tool.getJsonSchema(PreviewToolkit.tools.preview_run_task);
+  expect(JSON.stringify(schema)).toContain("selectedLabel");
+});

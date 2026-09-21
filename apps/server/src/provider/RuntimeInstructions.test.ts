@@ -2,6 +2,18 @@ import { describe, expect, it } from "vite-plus/test";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
+  it("offers Jev delegation with an explicit ordinary-tool fallback", () => {
+    const instructions = buildRuntimeInstructions({ harness: "Cursor" });
+    expect(instructions).toContain("preview_run_task");
+    expect(instructions).toContain(
+      "If Jev is disabled or unavailable, use the ordinary preview tools",
+    );
+    expect(instructions).toContain("A needs-agent result is a handoff, not success");
+    expect(
+      buildRuntimeInstructions({ harness: "Codex", browserToolsAvailable: false }),
+    ).not.toContain("preview_status");
+  });
+
   it("requires explicit registration of every PR and stack layer", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
     expect(instructions).toContain("When the t3-code MCP server exposes link_pull_request");

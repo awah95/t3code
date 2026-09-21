@@ -51,6 +51,7 @@ on each selected environment, and reset returns to the environment's shared list
 
 For workspace mode, a project's `t3.json` preference applies when the project has no override.
 Browser access changes apply when an agent session next starts.
+For optional Jev-driven browser tasks, see [browser automation with Jev](browser-automation.md).
 
 ## Storage cleanup
 

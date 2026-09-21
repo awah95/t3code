@@ -18,14 +18,20 @@ import {
   PreviewAutomationTabTargetInput,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
+  JevBrowserRunTaskInput,
+  JevBrowserRunTaskResult,
+  PreviewTabId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
+import * as Crypto from "effect/Crypto";
 import { Tool, Toolkit } from "effect/unstable/ai";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
+import * as CodexLedgerService from "../../../usage/CodexLedgerService.ts";
+import * as JevBrowserRunRegistry from "../../JevBrowserRunRegistry.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -33,6 +39,20 @@ const dependencies = [
 ];
 
 const presentationFields = { toolIcon: Schema.optional(ToolActivityIcon) };
+
+const PreviewRunTaskParameters = Schema.Struct({
+  ...JevBrowserRunTaskInput.fields,
+  // Effect's optionalKey JSON Schema projection currently drops annotations on scalar fields.
+  tabId: Schema.optional(
+    PreviewTabId.annotate({
+      description:
+        "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+    }),
+  ).annotate({
+    description:
+      "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+  }),
+});
 
 const PreviewActionResult = Schema.Struct(presentationFields).annotate({
   description: "The preview action completed successfully.",
@@ -241,6 +261,22 @@ const PreviewRecordingStopTool = safeBrowserTool(
   }).annotate(Tool.Title, "Stop browser recording"),
 );
 
+export const PreviewRunTaskTool = browserTool(
+  Tool.make("preview_run_task", {
+    description:
+      "Run one bounded natural-language browser task with the opt-in Jev executor. The server observes, decides, and executes all steps without returning control between actions. Put caller-supplied exact text and destination URLs in inputs; URL inputs authorize their HTTP(S) origins by default. Control assertions may target a unique semantic role plus exact accessible name. Use property=value for a control's raw submitted value, or property=selectedLabel for the human-readable label of its single selected option. Assertions are optional; without independently verifiable assertions, apparent completion returns a needs-agent verification handoff instead of claiming success. If the tab is blank and no URL input is supplied, open or navigate it first.",
+    parameters: PreviewRunTaskParameters,
+    success: JevBrowserRunTaskResult,
+    failure: PreviewAutomationError,
+    dependencies: [
+      ...dependencies,
+      Crypto.Crypto,
+      CodexLedgerService.CodexLedgerService,
+      JevBrowserRunRegistry.JevBrowserRunRegistry,
+    ],
+  }).annotate(Tool.Title, "Run browser task with Jev"),
+);
+
 export const PreviewToolkit = Toolkit.make(
   PreviewStatusTool,
   PreviewOpenTool,
@@ -256,6 +292,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
+  PreviewRunTaskTool,
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
@@ -272,6 +309,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
+  PreviewRunTaskTool,
 );
 
 export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool);
