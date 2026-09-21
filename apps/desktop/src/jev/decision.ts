@@ -52,9 +52,14 @@ export function failedJevDecision(error: string, latencyMs = 0): JevRouteResult 
 // @effect-diagnostics-next-line globalDate:off -- Payload construction is a plain async transport boundary; tests supply the clock.
 export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now()) {
   const baseline41 = request.evaluationPolicy === "baseline-v4.1";
-  const context = (baseline41 ? baselineV41.sanitizeJevContext : sanitizeJevContext)(
+  const sanitizedContext = (baseline41 ? baselineV41.sanitizeJevContext : sanitizeJevContext)(
     request.context,
   );
+  // Keep the frozen v4.1 comparison byte-for-byte stable. Production Jev receives text only;
+  // whether the actual agent turn carries media is not part of its routing state.
+  const context = baseline41
+    ? sanitizedContext
+    : (({ hasAttachments: _hasAttachments, ...textContext }) => textContext)(sanitizedContext);
   const budgetTime = context.budget ? Date.parse(context.budget.checkedAt) : Number.NaN;
   const budgetFresh =
     Number.isFinite(budgetTime) && now >= budgetTime && now - budgetTime <= 300_000;

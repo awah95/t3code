@@ -5,6 +5,7 @@ import type {
   ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import { JEV_HISTORY_CHAR_BUDGET, sanitizeJevText } from "@t3tools/shared/jevRouting";
+import { stripInlineContextReferences } from "../lib/composerContextReferences";
 
 type Message = {
   role: string;
@@ -39,6 +40,36 @@ const specificFailure =
 const failure =
   /\b(?:still (?:not fixed|broken|failing|wrong|doesn['’]t work)|(?:this|that) (?:didn['’]t fix it|didn['’]t work|is wrong)|you (?:missed|failed to)|your (?:fix|solution|implementation|answer) (?:fails|is wrong|doesn['’]t work)|tests? (?:still )?fail(?:ing)? (?:after|with) (?:your|the) (?:fix|change))\b/i;
 
+/** Jev classifies text only; inline context records travel through the separate evidence channel. */
+export function textOnlyJevPrompt(text: string): string {
+  return sanitizeJevText(stripInlineContextReferences(text)).trim();
+}
+
+const jevTextContextKinds = new Set([
+  "terminal",
+  "element",
+  "preview-annotation",
+  "review-comment",
+  "mention",
+  "skill",
+]);
+
+export function hasRoutableJevText(context: OrchestrationMessageContext | undefined): boolean {
+  return (context?.records ?? []).some((record) => jevTextContextKinds.has(record.kind));
+}
+
+export function isMediaOnlyJevTurn(input: {
+  attachmentCount: number;
+  context: OrchestrationMessageContext | undefined;
+  prompt: string;
+}): boolean {
+  return (
+    input.attachmentCount > 0 &&
+    textOnlyJevPrompt(input.prompt).length === 0 &&
+    !hasRoutableJevText(input.context)
+  );
+}
+
 /** Uses the outgoing send snapshot and visible history, with explicit evidence omissions. */
 export function buildJevContext(input: {
   messages: readonly Message[];
@@ -46,7 +77,6 @@ export function buildJevContext(input: {
   prompt: string;
   current: ModelSelection;
   existingSession: boolean;
-  hasAttachments?: boolean;
   interactionMode: string;
   plans?: readonly { planMarkdown: string; implementedAt: string | null }[];
   usageLimits?: ServerProviderUsageLimits;
@@ -57,18 +87,18 @@ export function buildJevContext(input: {
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message) => {
       const attempt = input.priorAttempts?.find((entry) => entry.turnId === message.turnId);
-      return attempt
-        ? {
-            ...message,
-            ...(attempt.model ? { model: attempt.model } : {}),
-            ...(attempt.effort ? { effort: attempt.effort } : {}),
-          }
-        : message;
+      return {
+        ...message,
+        text: textOnlyJevPrompt(message.text),
+        ...(attempt?.model ? { model: attempt.model } : {}),
+        ...(attempt?.effort ? { effort: attempt.effort } : {}),
+      };
     });
+  const prompt = textOnlyJevPrompt(input.prompt);
   const latestTaskIndex = visibleMessages.findLastIndex(
     (message) => message.role === "user" && newTask.test(directFeedback(message.text)),
   );
-  const currentIsNewTask = newTask.test(directFeedback(input.prompt));
+  const currentIsNewTask = newTask.test(directFeedback(prompt));
   const messages = currentIsNewTask ? [] : visibleMessages.slice(Math.max(0, latestTaskIndex));
   const changedTask = currentIsNewTask || latestTaskIndex >= 0;
   const taskStartedAt = currentIsNewTask ? undefined : messages[0]?.createdAt;
@@ -94,13 +124,12 @@ export function buildJevContext(input: {
     sourceTurnId?: string | null,
   ) => {
     for (const record of context?.records ?? []) {
-      if (record.kind === "image" || record.kind === "file") {
-        missingContext.push(
-          `${record.kind} ${record.contextId}: attachment contents unavailable to routing.`,
-        );
-        continue;
-      }
-      const text = sanitizeJevText(JSON.stringify(record));
+      if (!jevTextContextKinds.has(record.kind)) continue;
+      const textRecord =
+        record.kind === "preview-annotation" && "screenshotContextId" in record
+          ? (({ screenshotContextId: _screenshotContextId, ...rest }) => rest)(record)
+          : record;
+      const text = sanitizeJevText(JSON.stringify(textRecord));
       if (text.length > evidenceBudget) {
         missingContext.push(
           `${record.kind} ${record.contextId}: evidence omitted to fit routing budget.`,
@@ -119,11 +148,6 @@ export function buildJevContext(input: {
   appendEvidence(input.outgoingContext);
   for (const message of messages.slice(-30).toReversed())
     appendEvidence(message.context, message.turnId);
-  if (
-    input.hasAttachments &&
-    !missingContext.some((entry) => entry.includes("attachment contents"))
-  )
-    missingContext.push("Attachment contents unavailable to routing.");
   if (changedTask) omissions.push("Context before the explicit new task was excluded.");
   if (exchanges.length > 10)
     omissions.push(
@@ -140,7 +164,7 @@ export function buildJevContext(input: {
       omissions.push(
         `Historical ${message.role} text omitted ${text.length - remaining} characters to fit history budget.`,
       );
-    if (remaining > 0)
+    if (retained)
       history.unshift({
         role: message.role as "user" | "assistant",
         text: retained,
@@ -151,7 +175,7 @@ export function buildJevContext(input: {
   }
   let unresolved: JevRoutingContext["failure"];
   let previousAssistant: Message | undefined;
-  for (const message of [...messages, { role: "user", text: input.prompt }]) {
+  for (const message of [...messages, { role: "user", text: prompt }]) {
     if (message.role === "assistant") {
       previousAssistant = message;
       continue;
@@ -184,14 +208,15 @@ export function buildJevContext(input: {
   const usage = input.usageLimits;
   return {
     existingSession: input.existingSession,
-    hasAttachments: input.hasAttachments ?? false,
+    // Retained for the internal schema only; the desktop transport removes it from Jev's state.
+    hasAttachments: false,
     interactionMode: input.interactionMode,
     currentModel: input.current.model,
     ...(currentEffort ? { currentEffort } : {}),
     originalTask: sanitizeJevText(
-      messages.find((message) => message.role === "user")?.text ?? input.prompt,
+      messages.find((message) => message.role === "user")?.text ?? prompt,
     ),
-    ...(plan ? { activePlan: sanitizeJevText(plan.planMarkdown) } : {}),
+    ...(plan ? { activePlan: textOnlyJevPrompt(plan.planMarkdown) } : {}),
     objectiveProvenance:
       changedTask || historyCompleteness === "complete" ? "user_message" : "first_available",
     historyCompleteness,

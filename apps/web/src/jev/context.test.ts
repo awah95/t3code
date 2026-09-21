@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { JEV_HISTORY_CHAR_BUDGET } from "@t3tools/shared/jevRouting";
-import { buildJevContext } from "./context";
+import {
+  buildJevContext,
+  hasRoutableJevText,
+  isMediaOnlyJevTurn,
+  textOnlyJevPrompt,
+} from "./context";
 const base = {
   current: {
     instanceId: ProviderInstanceId.make("codex"),
@@ -154,12 +159,159 @@ describe("Jev context", () => {
     });
     expect(context.failure?.unresolved).toBe(true);
   });
-  it("shares outgoing terminal evidence and explicitly names unavailable attachment bodies", () => {
+  it("projects prompts and history to prose without changing the source messages", () => {
+    const imageReference =
+      "![Screenshot.png](t3-context://v1/image/image-shot) Please review the spacing.";
+    const messages = [
+      {
+        role: "user",
+        text: imageReference,
+        context: {
+          version: 1 as const,
+          records: [
+            {
+              version: 1 as const,
+              kind: "image" as const,
+              contextId: "image-shot" as import("@t3tools/contracts").ComposerContextId,
+              label: "Screenshot.png",
+              attachmentId: "attachment-secret",
+              name: "Screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 100,
+            },
+          ],
+        },
+      },
+    ];
+    const context = buildJevContext({
+      ...base,
+      messages,
+      prompt: "[mockup.mov](t3-context://v1/file/file-movie) Ship the approved layout.",
+    });
+
+    expect(textOnlyJevPrompt(imageReference)).toBe("Please review the spacing.");
+    expect(context.originalTask).toBe("Please review the spacing.");
+    expect(context.history?.[0]?.text).toBe("Please review the spacing.");
+    expect(context.failure?.signals.join(" ") ?? "").not.toContain("t3-context://");
+    expect(messages[0]?.text).toBe(imageReference);
+  });
+
+  it("shares textual evidence while silently excluding every media binding", () => {
+    const outgoingContext = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "image" as const,
+          contextId: "image-one" as import("@t3tools/contracts").ComposerContextId,
+          label: "Screenshot.png",
+          attachmentId: "image-upload-secret",
+          name: "Screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 100,
+        },
+        {
+          version: 1 as const,
+          kind: "file" as const,
+          contextId: "file-one" as import("@t3tools/contracts").ComposerContextId,
+          label: "Walkthrough.mov",
+          attachmentId: "file-upload-secret",
+          name: "Walkthrough.mov",
+          mimeType: "video/quicktime",
+          sizeBytes: 200,
+        },
+        {
+          version: 1 as const,
+          kind: "terminal" as const,
+          contextId: "terminal-one" as import("@t3tools/contracts").ComposerContextId,
+          label: "Failure",
+          terminalId: "one",
+          terminalLabel: "Tests",
+          lineStart: 1,
+          lineEnd: 1,
+          text: "Assertion failed: expected one handler, received two",
+        },
+        {
+          version: 1 as const,
+          kind: "preview-annotation" as const,
+          contextId: "preview-one" as import("@t3tools/contracts").ComposerContextId,
+          label: "Spacing note",
+          annotationId: "annotation-one",
+          pageUrl: "http://localhost",
+          pageTitle: "Preview",
+          comment: "Increase the card spacing",
+          targetSummary: "1 marked region",
+          styleChanges: [],
+          screenshotContextId: "image-one" as import("@t3tools/contracts").ComposerContextId,
+        },
+      ],
+    };
     const context = buildJevContext({
       ...base,
       messages: [],
-      hasAttachments: true,
-      outgoingContext: {
+      outgoingContext,
+    });
+    const serialized = JSON.stringify(context);
+
+    expect(hasRoutableJevText(outgoingContext)).toBe(true);
+    expect(context.evidence).toHaveLength(2);
+    expect(context.evidence?.[0]).toMatchObject({ id: "terminal-one", kind: "terminal" });
+    expect(context.evidence?.[0]?.text).toContain("expected one handler");
+    expect(context.evidence?.[1]?.text).toContain("Increase the card spacing");
+    expect(context.missingContext).toEqual([]);
+    expect(context.hasAttachments).toBe(false);
+    for (const value of [
+      "image-one",
+      "file-one",
+      "image-upload-secret",
+      "file-upload-secret",
+      "Screenshot.png",
+      "Walkthrough.mov",
+      "image/png",
+      "video/quicktime",
+      "screenshotContextId",
+    ])
+      expect(serialized).not.toContain(value);
+    expect(outgoingContext.records).toHaveLength(4);
+  });
+
+  it("distinguishes media-only sends from turns with prose or textual records", () => {
+    const imageContext = {
+      version: 1 as const,
+      records: [
+        {
+          version: 1 as const,
+          kind: "image" as const,
+          contextId: "image-one" as import("@t3tools/contracts").ComposerContextId,
+          label: "Screenshot.png",
+          attachmentId: "attachment-one",
+          name: "Screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 100,
+        },
+      ],
+    };
+    expect(textOnlyJevPrompt("![Screenshot.png](t3-context://v1/image/image-one)")).toBe("");
+    expect(hasRoutableJevText(imageContext)).toBe(false);
+    expect(
+      isMediaOnlyJevTurn({
+        attachmentCount: 1,
+        context: imageContext,
+        prompt: "![Screenshot.png](t3-context://v1/image/image-one)",
+      }),
+    ).toBe(true);
+    expect(textOnlyJevPrompt("![Screenshot.png](t3-context://v1/image/image-one) Explain it")).toBe(
+      "Explain it",
+    );
+    expect(
+      isMediaOnlyJevTurn({
+        attachmentCount: 1,
+        context: imageContext,
+        prompt: "![Screenshot.png](t3-context://v1/image/image-one) Explain it",
+      }),
+    ).toBe(false);
+    expect(
+      hasRoutableJevText({
         version: 1,
         records: [
           {
@@ -171,15 +323,11 @@ describe("Jev context", () => {
             terminalLabel: "Tests",
             lineStart: 1,
             lineEnd: 1,
-            text: "Assertion failed: expected one handler, received two",
+            text: "failed",
           },
         ],
-      },
-    });
-    expect(context.evidence).toHaveLength(1);
-    expect(context.evidence?.[0]).toMatchObject({ id: "terminal-one", kind: "terminal" });
-    expect(context.evidence?.[0]?.text).toContain("expected one handler");
-    expect(context.missingContext).toEqual(["Attachment contents unavailable to routing."]);
+      }),
+    ).toBe(true);
   });
   it("includes timestamped remaining usage only when a snapshot exists", () => {
     expect(buildJevContext({ ...base, messages: [] }).budget).toBeUndefined();

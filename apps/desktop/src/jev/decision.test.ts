@@ -123,7 +123,16 @@ describe("Jev OpenRouter transport", () => {
       "gpt-6-astra",
     ]);
     expect(body.state.budgetStatus).toContain("stale");
+    expect(body.state).not.toHaveProperty("hasAttachments");
     expect(body.questions.model!.instructions).toContain("Read-only access");
+  });
+  it("never sends the agent turn's attachment signal to production Jev", () => {
+    const body = buildJevDecisionBody({
+      ...request,
+      context: { ...request.context, hasAttachments: true },
+    });
+    expect(body.state).not.toHaveProperty("hasAttachments");
+    expect(JSON.stringify(body)).not.toContain("hasAttachments");
   });
   it("blocks an unresolved failure downgrade while retaining charged usage", async () => {
     const transport = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
@@ -183,6 +192,27 @@ describe("Jev OpenRouter transport", () => {
     );
     expect(transport).not.toHaveBeenCalled();
     expect(result.error).toContain("silently truncated");
+  });
+  it("keeps the safe refusal for oversized text history until the compaction follow-up", async () => {
+    const transport = vi.fn<typeof fetch>();
+    const result = await requestJevDecision(
+      {
+        ...request,
+        context: {
+          ...request.context,
+          history: [{ role: "assistant", text: "x".repeat(30_000) }],
+        },
+      },
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(transport).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      policyOutcome: "needs_context",
+      reasons: ["context_budget_exceeded"],
+      costUsd: 0,
+    });
   });
   it("uses the decision endpoint and keeps the key out of the body and result", async () => {
     const transport = vi

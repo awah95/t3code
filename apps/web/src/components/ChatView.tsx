@@ -128,7 +128,7 @@ import {
   useJevStore,
 } from "../jev/jevStore";
 import { setJevLedgerReceiptWriter } from "../jev/jevLedgerReceipts";
-import { buildJevContext } from "../jev/context";
+import { buildJevContext, isMediaOnlyJevTurn, textOnlyJevPrompt } from "../jev/context";
 import { isJevCandidateAllowed } from "@t3tools/shared/jevRouting";
 import { eligibleJevModels } from "../jev/routing";
 import { readLocalApi } from "../localApi";
@@ -7831,6 +7831,12 @@ export default function ChatView(props: ChatViewProps) {
     const outgoingMessageContext = buildOutgoingMessageContext(
       composerAttachmentsSnapshot.map((attachment) => attachment.id),
     );
+    const jevPrompt = textOnlyJevPrompt(messageTextForSend);
+    const mediaOnlyJevBypass = isMediaOnlyJevTurn({
+      attachmentCount: composerAttachmentsSnapshot.length,
+      context: outgoingMessageContext,
+      prompt: messageTextForSend,
+    });
     let jevRequestId: string | undefined;
     const jev = useJevStore.getState();
     if (isElectron && jev.enabled) {
@@ -7845,10 +7851,13 @@ export default function ChatView(props: ChatViewProps) {
           ? "Jev Auto skipped: multiple models were explicitly selected."
           : trimmed.startsWith("/")
             ? "Jev Auto skipped: provider commands use the selected model."
-            : null;
+            : mediaOnlyJevBypass
+              ? "Jev Auto skipped: media-only turns use the selected model."
+              : null;
       if (bypassReason) {
         useJevStore.setState({ notice: bypassReason });
-        toastManager.add({ type: "info", title: "Jev Auto", description: bypassReason });
+        if (!mediaOnlyJevBypass)
+          toastManager.add({ type: "info", title: "Jev Auto", description: bypassReason });
       } else {
         const routingProvider = providerInstanceEntries.find(
           (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
@@ -7856,12 +7865,11 @@ export default function ChatView(props: ChatViewProps) {
         const routingContext = buildJevContext({
           priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
           messages: activeThread.messages,
-          prompt: messageTextForSend,
+          prompt: jevPrompt,
           outgoingContext: outgoingMessageContext,
           historyCompleteness: threadHasOlderTurns(routeThreadState) ? "windowed" : "complete",
           current: ctxSelectedModelSelection,
           existingSession: activeThread.session !== null,
-          hasAttachments: composerImages.length + composerFiles.length > 0,
           interactionMode: sendInteractionMode,
           plans: activeThread.proposedPlans,
           ...(routingProvider?.snapshot.usageLimits
@@ -7899,7 +7907,7 @@ export default function ChatView(props: ChatViewProps) {
             decision = await decideWithJev(
               {
                 requestId: jevRequestId,
-                prompt: sanitizeJevPrompt(messageTextForSend),
+                prompt: jevPrompt,
                 candidates: candidates.map(({ key, description, model, effort }) => ({
                   key,
                   model,
@@ -8089,7 +8097,7 @@ export default function ChatView(props: ChatViewProps) {
                 context: buildJevContext({
                   priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
                   messages: activeThread.messages,
-                  prompt: messageTextForSend,
+                  prompt: jevPrompt,
                   outgoingContext: outgoingMessageContext,
                   historyCompleteness: threadHasOlderTurns(routeThreadState)
                     ? "windowed"
