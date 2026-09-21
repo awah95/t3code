@@ -1939,7 +1939,6 @@ function MessageAuthorHeading({ children }: { children: string }) {
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const activity = use(TimelineRowActivityCtx);
   const { onImageExpand, onFileOpen } = ctx;
   const resources = useMemo(
     () => selectMessageImageResources(row.message.attachments),
@@ -2209,15 +2208,6 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           />
         </div>
       </div>
-      {ctx.showCodexTurnUsage && ctx.threadRef && row.message.turnId ? (
-        <CodexTurnUsage
-          environmentId={ctx.activeThreadEnvironmentId}
-          threadId={ctx.threadRef.threadId}
-          turnId={row.message.turnId}
-          isLatestTurn={activity.latestTurnId === row.message.turnId}
-          isUnsettled={activity.unsettledTurnId === row.message.turnId}
-        />
-      ) : null}
       <div className="flex w-full max-w-[80%] items-center justify-end pe-1 text-xs tabular-nums opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover:opacity-100">
         <div className="flex shrink-0 items-center gap-2">
           <Tooltip>
@@ -2385,6 +2375,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
 
   return (
@@ -2423,6 +2414,17 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             showCopyButton={row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
           />
+        ) : null}
+        {ctx.showCodexTurnUsage && ctx.threadRef && row.message.turnId ? (
+          <div className="mt-1 flex justify-start">
+            <CodexTurnUsage
+              environmentId={ctx.activeThreadEnvironmentId}
+              threadId={ctx.threadRef.threadId}
+              turnId={row.message.turnId}
+              isLatestTurn={activity.latestTurnId === row.message.turnId}
+              isUnsettled={activity.unsettledTurnId === row.message.turnId}
+            />
+          </div>
         ) : null}
       </div>
     </>

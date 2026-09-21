@@ -1,8 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
+import { UsageBucket } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { UsageAggregator } from "./usageAggregation.ts";
 import type { RateTable } from "./usagePricing.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
+
+const decodeUsageBucket = Schema.decodeUnknownSync(UsageBucket);
 
 const rates: RateTable = new Map([
   [
@@ -163,6 +167,18 @@ describe("UsageAggregator", () => {
     expect(result.buckets[0]?.costSource).toBe("unpriced");
     expect(result.buckets[0]?.unpricedRecords).toBe(1);
     expect(result.buckets[0]?.totals.outputTokens).toBe(50);
+  });
+
+  it("keeps model-unknown records in a contract-valid unpriced bucket", () => {
+    const result = aggregate([record({ provider: "codex", model: "" })]);
+    const bucket = result.buckets[0];
+
+    expect(bucket?.model).toBe("codex-unknown-model");
+    expect(bucket?.costUsd).toBe(0);
+    expect(bucket?.costSource).toBe("unpriced");
+    expect(bucket?.unpricedRecords).toBe(1);
+    expect(bucket?.totals.outputTokens).toBe(50);
+    expect(() => decodeUsageBucket(bucket)).not.toThrow();
   });
 
   it("prefers a reported cost over the rate table", () => {

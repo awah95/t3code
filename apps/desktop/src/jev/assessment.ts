@@ -2,6 +2,7 @@ import type { JevRouteRequest, JevRouteResult, JevEffort } from "@t3tools/contra
 import {
   getJevModelProfile,
   isJevCandidateAllowed,
+  JEV_CONTINUITY_GUIDANCE,
   JEV_EFFORT_GUIDANCE,
   JEV_EFFORTS,
   JEV_ROUTING_CORE,
@@ -33,6 +34,20 @@ export function buildAssessmentQuestions(
   if (request.candidates.some((candidate) => !candidate.model || !candidate.effort)) return null;
   const models = assessmentModels(request);
   const questions: Record<string, ChoiceQuestion> = {
+    ...(request.context.existingSession && request.context.target?.kind !== "independent_child"
+      ? {
+          task_relation: question(
+            "How does the current requested action relate to the ongoing task? Use recent exchanges and the accepted plan to resolve short replies. Small revisions, clarification and the next agreed step are continuations even when their difficulty changes. A substantial new phase has a distinct deliverable or workstream that warrants a fresh model assessment, not merely a change in effort. A new session or independent child is a fresh task for routing. Choose unclear when the relationship cannot be established; do not guess from prompt length or the selected model.",
+            {
+              new_phase:
+                "A new independent task or substantial new phase warrants fresh model selection.",
+              continuation: "A clarification, revision or next step of the same ongoing task.",
+              unclear:
+                "The available context does not establish whether this continues the same task.",
+            },
+          ),
+        }
+      : {}),
     context_status: question(
       "Is the intended action and its scope identifiable enough to assess its reasoning demands? Do NOT require the evidence needed to SOLVE the task to be pasted into this packet. An executor can inspect the current repository, dirty review files, records, or named systems as part of an explicit investigation. Such requests are assessable even before reading those sources. Missing means the intended action or scope itself cannot be identified: an unspecified next step, an absent screenshot with no described issue, or an unavailable agreement defining what to implement. Do not assume missing context just because concrete source paths or file contents are absent.",
       {
@@ -95,7 +110,7 @@ export function buildAssessmentQuestions(
       },
     ),
     model: question(
-      "Propose a model whose described capability fits the full task. The application will enforce task-demand constraints separately. Do not predict unmeasured token usage, completion time or subscription multipliers. Use a small model when the procedure and direct check are established; use greater capability for discovery, evidence reconciliation and interacting correctness. Missing context does not imply a small model is sufficient.",
+      `Propose a model whose described capability fits the full task. The application will enforce task-demand constraints separately. Do not predict unmeasured token usage, completion time or subscription multipliers. Use a small model when the procedure and direct check are established; use greater capability for discovery, evidence reconciliation and interacting correctness. Missing context does not imply a small model is sufficient. ${JEV_CONTINUITY_GUIDANCE}`,
       Object.fromEntries(
         models.map(({ key, model }) => {
           const profile = getJevModelProfile(model);
@@ -256,8 +271,8 @@ export function parseAssessmentDecision(
       candidate.effort !== undefined &&
       JEV_EFFORTS.indexOf(candidate.effort) >= JEV_EFFORTS.indexOf(effort),
   );
-  // Select the least provisioned admissible default. Model identity is a deterministic tie break,
-  // so reordering provider catalogs cannot silently change the policy recommendation.
+  // Fresh work starts with the least provisioned admissible default. Continuity
+  // can prefer an eligible current model, never one below the capability floor.
   const sorted = [...allowed].sort(
     (a, b) =>
       getJevModelProfile(a.model!)!.capabilityRank - getJevModelProfile(b.model!)!.capabilityRank ||
@@ -267,7 +282,17 @@ export function parseAssessmentDecision(
   // A raw stronger proposal is not evidence that its extra capacity is necessary.
   // Keep it visible and review large disagreements instead of silently overspending.
   const minimum = sorted[0];
-  const selectedModel = models.find((model) => model.model === minimum?.model);
+  // Fresh sessions and independent children are known routing boundaries, not
+  // model judgments. Do not fabricate a classifier assessment for those cases.
+  const relation = assessments.task_relation;
+  const relationChoice = relation?.choice ?? "new_phase";
+  const current =
+    request.context.existingSession && request.context.target?.kind !== "independent_child"
+      ? sorted.find((candidate) => candidate.model === request.context.currentModel)
+      : undefined;
+  const preferCurrent = current !== undefined && relationChoice !== "new_phase";
+  const preferred = preferCurrent ? current : minimum;
+  const selectedModel = models.find((model) => model.model === preferred?.model);
   const effortAssessment = selectedModel ? decoded[`effort_${selectedModel.key}`] : undefined;
   const conditionalEffort =
     selectedModel && effortAssessment
@@ -280,12 +305,13 @@ export function parseAssessmentDecision(
   // Model-specific effort judgments carry information beyond the coarse task floors.
   // Economize model capability without discarding the effort needed by that model.
   const minimumEffort = Math.max(
-    JEV_EFFORTS.indexOf(minimum?.effort ?? "low"),
+    JEV_EFFORTS.indexOf(preferred?.effort ?? "low"),
     JEV_EFFORTS.indexOf(conditionalEffort?.effort ?? "low"),
   );
   const selected = sorted.find(
     (candidate) =>
-      candidate.model === minimum?.model && JEV_EFFORTS.indexOf(candidate.effort!) >= minimumEffort,
+      candidate.model === preferred?.model &&
+      JEV_EFFORTS.indexOf(candidate.effort!) >= minimumEffort,
   );
   if (!selected)
     return {
@@ -296,6 +322,23 @@ export function parseAssessmentDecision(
       error: "No available pair meets the task requirements. Choose explicitly before sending.",
     };
   if (selected.key !== proposal.key) reasons.push("proposal_adjusted_by_capability_policy");
+  if (preferCurrent) {
+    reasons.push(
+      relationChoice === "continuation"
+        ? "continuation_retained_model"
+        : "unclear_continuity_retained_model",
+    );
+    if (request.context.currentEffort && selected.effort !== request.context.currentEffort)
+      reasons.push("current_model_effort_adjusted");
+  } else if (request.context.target?.kind === "independent_child") {
+    reasons.push("independent_child_selected_model");
+  } else if (!request.context.existingSession) {
+    reasons.push("new_task_selected_model");
+  } else if (relationChoice === "new_phase") {
+    reasons.push("new_phase_reassessed_model");
+  } else {
+    reasons.push("current_model_below_requirements_or_unavailable");
+  }
   const demandConfidence = Math.min(...demandKeys.map((key) => decoded[key]!.confidence ?? 0));
   const uncertaintyAlternatives: Record<string, string[]> = {};
   let scenarios: Demand[] = [values];
@@ -339,7 +382,24 @@ export function parseAssessmentDecision(
   const effortStable = effortAlternatives.every(
     (alternative) => selectedEffort >= JEV_EFFORTS.indexOf(alternative as JevEffort),
   );
-  const decisionStable = demandsStable && effortStable;
+  // Relationship uncertainty matters only when it would change model selection.
+  // Keep it separate from uncertainty about capability or the selected effort.
+  const relationAlternatives =
+    relation && relation.confidence < 0.5
+      ? Object.entries(relation.probabilities)
+          .filter(([label, score]) => label === relation.choice || score >= ALTERNATIVE_SCORE_FLOOR)
+          .map(([label]) => label)
+      : [relationChoice];
+  const continuityStable =
+    !current ||
+    current.model === minimum?.model ||
+    relationAlternatives.every(
+      (alternative) =>
+        alternative !== "unclear" &&
+        (alternative === "continuation" ? current.model : minimum?.model) === selected.model,
+    );
+  if (!continuityStable) uncertaintyAlternatives.task_relation = relationAlternatives;
+  const decisionStable = demandsStable && effortStable && continuityStable;
   const proposalRank = getJevModelProfile(proposal.model!)?.capabilityRank ?? 0;
   const substantialDisagreement = base.confidence! >= 0.5 && proposalRank >= selectedRank + 2;
   const unresolvedAttribution =
@@ -347,8 +407,9 @@ export function parseAssessmentDecision(
   const incompleteEvidence = (request.context.missingContext?.length ?? 0) > 0;
   const needsReview =
     !decisionStable || substantialDisagreement || unresolvedAttribution || incompleteEvidence;
-  if (!decisionStable) reasons.push("uncertainty_changes_required_capability");
+  if (!demandsStable || !effortStable) reasons.push("uncertainty_changes_required_capability");
   else if (demandConfidence < 0.5) reasons.push("uncertainty_within_selected_capability");
+  if (!continuityStable) reasons.push("uncertainty_changes_model_continuity");
   if (substantialDisagreement) reasons.push("model_demand_disagreement");
   if (unresolvedAttribution) reasons.push("failed_attempt_model_unknown");
   if (incompleteEvidence) reasons.push("context_omissions_require_review");
@@ -365,6 +426,6 @@ export function parseAssessmentDecision(
     reasons,
     admissibleCandidateKeys: allowed.map((candidate) => candidate.key),
     error: needsReview ? "Review the task assessment and recommended pair before sending." : null,
-    explanation: `Capability policy requires tier ${rank} or higher and ${effort} effort or higher: ${reasons.join(", ")}. This uses the least provisioned compatible model meeting those requirements, with at least its proposed effort and the policy effort floor; it is not measured expected cost or success. Low-confidence alternatives scoring at least 0.20 (and any scored missing-context alternative) were checked jointly; stability means only that they fit this pair. Raw assessment confidence is unchanged.`,
+    explanation: `Capability policy requires tier ${rank} or higher and ${effort} effort or higher: ${reasons.join(", ")}. ${preferCurrent ? "The current model meets those requirements and is preferred for task continuity." : "The least provisioned compatible model meeting those requirements is selected."} Effort meets that model's assessment and the policy floor. This is not measured expected cost or success. Low-confidence task-demand alternatives scoring at least 0.20 (and any scored missing-context alternative) were checked jointly; continuity uncertainty is reviewed when it changes model selection. Raw assessment confidence is unchanged.`,
   };
 }

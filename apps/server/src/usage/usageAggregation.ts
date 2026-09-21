@@ -146,7 +146,12 @@ export class UsageAggregator {
             this.#hourlyWindow.sinceTimeMs +
               Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS) * HOUR_MS,
           ).toISOString();
-    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${record.model}`;
+    // Exact Codex receipts can survive compaction without their turn context,
+    // leaving the model unknown until the ledger finds stronger evidence. The
+    // legacy Usage contract requires a non-empty model, so retain those tokens
+    // in an explicitly unpriced bucket instead of invalidating the whole RPC.
+    const model = record.model.trim() || `${record.provider}-unknown-model`;
+    const key = `${day}\u0000${hourStart}\u0000${record.provider}\u0000${model}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
       bucket = {
@@ -163,7 +168,7 @@ export class UsageAggregator {
 
     const priced = priceUsage(
       this.#options.rates,
-      record.model,
+      model,
       record.totals,
       record.reportedCostUsd,
       this.#options.priceOverrides,
@@ -173,7 +178,7 @@ export class UsageAggregator {
     bucket.costUsd += priced.costUsd;
     bucket.cacheSavingsUsd += cacheSavingsUsd(
       this.#options.rates,
-      record.model,
+      model,
       record.totals,
       this.#options.priceOverrides,
     );

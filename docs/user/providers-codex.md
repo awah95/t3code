@@ -38,7 +38,7 @@ are included with source labels. Internal reasoning and attachment bodies are ex
 Missing evidence and history omissions are disclosed; oversized requests pause without
 silently shortening the prompt. Historical model attribution is recovered only from exact
 acknowledged dispatch records in this session; otherwise it is explicitly unknown.
-Routing favors sufficient capability before quota. The recommendation uses the least provisioned compatible model meeting the assessed requirements, with at least that model's proposed effort; this is a provisional preference, not measured optimal cost. A low task-classifier confidence can still route when the checked competing interpretations fit that pair. Material uncertainty or substantial disagreement with Jev's raw proposal pauses for review. Profile guidance is
+Routing favors sufficient capability before quota. For a continuation of the same task, it prefers your current model when that model remains capable and adjusts effort to the work. New tasks, substantial new phases and independent subtasks get a fresh model assessment. If the current model cannot meet the requirements, routing can recommend a stronger model immediately. These preferences are not guarantees of lowest cost. A low task-classifier confidence can still route when the checked competing interpretations fit the selected pair; uncertainty about whether to retain or change the model pauses for review when it affects the choice. Material uncertainty or substantial disagreement with Jev's raw proposal also pauses for review. Profile guidance is
 not a measured success rate or speed benchmark. Common credential
 patterns are redacted, but this is not a guarantee that all sensitive text is removed.
 

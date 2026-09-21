@@ -48,6 +48,24 @@ describe("independent Jev task assessment", () => {
     expect(Object.keys(q.effort_model_0!.criteria)).toEqual(["low", "high"]);
     expect(Object.keys(q.effort_model_1!.criteria)).toEqual(["low"]);
   });
+  it("only asks for continuity when an existing parent turn can benefit from it", () => {
+    expect(buildAssessmentQuestions(request)?.task_relation).toBeDefined();
+    expect(
+      buildAssessmentQuestions({
+        ...request,
+        context: { ...request.context, existingSession: false },
+      })?.task_relation,
+    ).toBeUndefined();
+    expect(
+      buildAssessmentQuestions({
+        ...request,
+        context: {
+          ...request.context,
+          target: { kind: "independent_child", inheritedContext: "bounded" },
+        },
+      })?.task_relation,
+    ).toBeUndefined();
+  });
   it("combines model with its effort and accounts cost once", () => {
     const result = parseAssessmentDecision(response(), request, 100, parseJevDecision);
     expect(result).toMatchObject({
@@ -96,6 +114,16 @@ describe("independent Jev task assessment", () => {
     expect(
       parseAssessmentDecision(raw, request, 100, parseJevDecision).recommendedChoice,
     ).toBeNull();
+  });
+  it("does not silently choose a new model when a required continuity answer is missing", () => {
+    const raw = response();
+    delete raw.answers.task_relation;
+    expect(parseAssessmentDecision(raw, request, 100, parseJevDecision)).toMatchObject({
+      choice: null,
+      recommendedChoice: null,
+      policyOutcome: "review",
+      reasons: ["invalid_assessment"],
+    });
   });
 });
 
@@ -316,5 +344,168 @@ describe("capability policy controls execution", () => {
       confidence: 0.9,
     });
     expect(result.uncertaintyAlternatives).toEqual({ effort_model_2: ["medium", "high"] });
+  });
+
+  const continuing: JevRouteRequest = {
+    ...pool,
+    prompt: "Add the agreed regression test for the fix.",
+    context: {
+      ...pool.context,
+      currentModel: "gpt-5.6-sol",
+      currentEffort: "high",
+      target: { kind: "turn", inheritedContext: "bounded" },
+      history: [{ role: "assistant", text: "The fix is complete; next add its regression test." }],
+    },
+  };
+
+  it("retains a capable current model for a continuation and uses that model's effort assessment", () => {
+    const result = assess({ task_relation: "continuation" }, continuing);
+    expect(result).toMatchObject({
+      choice: "sol_medium",
+      proposedChoice: "luna_low",
+      policyOutcome: "route",
+      conditionalEffort: { model: "gpt-5.6-sol", effort: "medium" },
+    });
+    expect(result.reasons).toContain("continuation_retained_model");
+    expect(result.reasons).toContain("current_model_effort_adjusted");
+  });
+
+  it("can increase effort on the retained model", () => {
+    expect(
+      assess(
+        { task_relation: "continuation", effort_model_2: "high" },
+        { ...continuing, context: { ...continuing.context, currentEffort: "medium" } },
+      ),
+    ).toMatchObject({ choice: "sol_high", policyOutcome: "route" });
+  });
+
+  it("reassesses a new phase instead of retaining an expensive current model", () => {
+    const result = assess({ task_relation: "new_phase" }, continuing);
+    expect(result).toMatchObject({ choice: "luna_low", policyOutcome: "route" });
+    expect(result.reasons).toContain("new_phase_reassessed_model");
+  });
+
+  it("does not treat a new session's selected model as warm context", () => {
+    expect(
+      assess(
+        { task_relation: "continuation" },
+        { ...continuing, context: { ...continuing.context, existingSession: false } },
+      ),
+    ).toMatchObject({ choice: "luna_low", policyOutcome: "route" });
+  });
+
+  it("assesses independent children without preferring their parent's model", () => {
+    const result = assess(
+      { task_relation: "continuation" },
+      {
+        ...continuing,
+        context: {
+          ...continuing.context,
+          target: { kind: "independent_child", inheritedContext: "bounded" },
+        },
+      },
+    );
+    expect(result).toMatchObject({ choice: "luna_low", policyOutcome: "route" });
+    expect(result.reasons).toContain("independent_child_selected_model");
+  });
+
+  it("escalates capability immediately when the current model cannot meet the task floor", () => {
+    const result = assess(
+      { task_relation: "continuation", correctness: "interacting_invariant" },
+      {
+        ...continuing,
+        context: { ...continuing.context, currentModel: "gpt-5.6-luna", currentEffort: "high" },
+      },
+    );
+    expect(result).toMatchObject({ choice: "sol_high", policyOutcome: "route" });
+    expect(result.reasons).toContain("current_model_below_requirements_or_unavailable");
+  });
+
+  it("switches when the current model has no available effort meeting the floor", () => {
+    expect(
+      assess(
+        { task_relation: "continuation", correctness: "interacting_invariant" },
+        { ...continuing, candidates: continuing.candidates.filter((c) => c.key !== "sol_high") },
+      ),
+    ).toMatchObject({ choice: "astra_high", policyOutcome: "route" });
+  });
+
+  it("does not retain an unavailable model", () => {
+    expect(
+      assess(
+        { task_relation: "continuation" },
+        { ...continuing, context: { ...continuing.context, currentModel: "unavailable" } },
+      ),
+    ).toMatchObject({ choice: "luna_low", policyOutcome: "route" });
+  });
+
+  it("does not lower effort during an unresolved failure on the retained model", () => {
+    expect(
+      assess(
+        { task_relation: "continuation" },
+        {
+          ...continuing,
+          context: {
+            ...continuing.context,
+            failure: {
+              unresolved: true,
+              model: "gpt-5.6-sol",
+              effort: "high",
+              signals: ["The same defect remains"],
+            },
+          },
+        },
+      ),
+    ).toMatchObject({ choice: "sol_high", policyOutcome: "route" });
+  });
+
+  it("keeps a reviewable current-model recommendation when task continuity is unclear", () => {
+    const result = assess({ task_relation: "unclear" }, continuing);
+    expect(result).toMatchObject({
+      choice: null,
+      recommendedChoice: "sol_medium",
+      policyOutcome: "review",
+      decisionStable: false,
+      uncertaintyAlternatives: { task_relation: ["unclear"] },
+    });
+    expect(result.reasons).toContain("uncertainty_changes_model_continuity");
+    expect(result.reasons).not.toContain("uncertainty_changes_required_capability");
+  });
+
+  it.each(["continuation", "new_phase"])(
+    "reviews an uncertain %s assessment when the alternative would change models",
+    (task_relation) => {
+      expect(
+        assess({ task_relation }, continuing, {
+          task_relation: {
+            confidence: 0.3,
+            probabilities: { continuation: 0.5, new_phase: 0.5, unclear: 0 },
+          },
+        }),
+      ).toMatchObject({ choice: null, policyOutcome: "review", decisionStable: false });
+    },
+  );
+
+  it("does not pause over relationship uncertainty when both interpretations select the same model", () => {
+    expect(
+      assess(
+        { task_relation: "unclear" },
+        { ...continuing, context: { ...continuing.context, currentModel: "gpt-5.6-luna" } },
+      ),
+    ).toMatchObject({ choice: "luna_low", policyOutcome: "route", decisionStable: true });
+  });
+
+  it("still reviews uncertain effort on the retained model", () => {
+    expect(
+      assess({ task_relation: "continuation" }, continuing, {
+        effort_model_2: { confidence: 0.3, probabilities: { medium: 0.55, high: 0.45 } },
+      }),
+    ).toMatchObject({ choice: null, recommendedChoice: "sol_medium", policyOutcome: "review" });
+  });
+
+  it("does not bypass missing-context safeguards to retain a model", () => {
+    expect(
+      assess({ task_relation: "continuation", context_status: "missing" }, continuing),
+    ).toMatchObject({ choice: null, recommendedChoice: null, policyOutcome: "needs_context" });
   });
 });

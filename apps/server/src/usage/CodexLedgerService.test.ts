@@ -675,6 +675,10 @@ it.effect(
         }).pipe(Effect.provide(layer));
         assert.equal(provisional.items[0]?.tokens.inputTokens, 20);
         assert.equal(provisional.items[0]?.coverage.usage, "provisional");
+        assert.equal(provisional.items[0]?.responseCount, 0);
+        assert.equal(provisional.items[0]?.valuation.pricedSubtotalUsd, null);
+        assert.equal(provisional.items[0]?.valuation.completeEstimateUsd, null);
+        assert.equal(provisional.items[0]?.coverage.pricing, "notValued");
         yield* Effect.promise(() =>
           NodeFSP.appendFile(
             transcript,
@@ -703,6 +707,39 @@ it.effect(
         assert.equal(exact.summaries[1]?.responseCount, 2);
         assert.equal(exact.summaries[0]?.tokens.inputTokens, 20);
         assert.equal(exact.turns.items[0]?.tokens.inputTokens, 20);
+        const zeroUsage = usage(0);
+        yield* Effect.promise(() =>
+          NodeFSP.appendFile(
+            transcript,
+            row("event_msg", { type: "task_started", turn_id: "zero-turn" }) +
+              row("turn_context", {
+                turn_id: "zero-turn",
+                root_turn_id: "zero-turn",
+                model: "gpt-5.6-luna",
+              }) +
+              row("token_usage_record", {
+                response_id: "zero-response",
+                thread_id: "codex-thread",
+                turn_id: "zero-turn",
+                root_turn_id: "zero-turn",
+                usage: zeroUsage,
+                turn_token_usage: zeroUsage,
+              }) +
+              row("event_msg", { type: "task_complete", turn_id: "zero-turn" }),
+          ),
+        );
+        const pricedZero = yield* Effect.gen(function* () {
+          const ledger = yield* CodexLedgerService;
+          yield* ledger.getSummary();
+          return yield* ledger.getTurn({
+            sourceDomain: exact.turns.items[0]!.identity.sourceDomain,
+            codexThreadId: "codex-thread",
+            codexTurnId: "zero-turn",
+          });
+        }).pipe(Effect.provide(layer));
+        assert.equal(pricedZero?.turn.valuation.pricedSubtotalUsd, "0");
+        assert.equal(pricedZero?.turn.valuation.completeEstimateUsd, "0");
+        assert.equal(pricedZero?.turn.coverage.pricing, "priced");
       } finally {
         yield* Effect.promise(() => NodeFSP.rm(home, { recursive: true, force: true }));
       }
@@ -878,6 +915,9 @@ it.effect(
         );
         assert.equal(initial.summary.responseCount, 1);
         assert.equal(initial.summary.valuation.unpricedResponseCount, 1);
+        assert.equal(initial.summary.valuation.pricedSubtotalUsd, null);
+        assert.equal(initial.summary.valuation.completeEstimateUsd, null);
+        assert.equal(initial.turns.items[0]?.valuation.pricedSubtotalUsd, null);
         const domain = initial.turns.items[0]!.identity.sourceDomain;
         const repeated = JSON.parse(receipt("response-shared", 10)) as { payload: object };
         yield* Effect.promise(() =>

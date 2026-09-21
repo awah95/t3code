@@ -1,8 +1,8 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { Link } from "@tanstack/react-router";
-import type { EnvironmentId, ThreadId, TurnId } from "@t3tools/contracts";
+import type { CodexLedgerTurn, EnvironmentId, ThreadId, TurnId } from "@t3tools/contracts";
 import {
-  ledgerEstimate,
+  ledgerCompactEstimate,
   ledgerTokenCount,
 } from "@t3tools/client-runtime/state/codex-ledger-presentation";
 import * as Option from "effect/Option";
@@ -47,7 +47,7 @@ export function CodexTurnUsage({
   }, [isLatestTurn, isUnsettled, refresh]);
   if (!turn) return null;
   return (
-    <span className="ms-auto text-xs text-muted-foreground" data-scroll-anchor-ignore>
+    <div className="text-left text-xs text-muted-foreground" data-scroll-anchor-ignore>
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -55,19 +55,68 @@ export function CodexTurnUsage({
         aria-expanded={expanded}
         aria-label="Codex turn usage"
       >
-        Own turn {ledgerEstimate(turn.valuation)} · {ledgerTokenCount(turn.tokens.processedTokens)}{" "}
+        {ledgerCompactEstimate(turn.valuation)} · {ledgerTokenCount(turn.tokens.processedTokens)}{" "}
         tokens
       </button>
       {expanded ? (
-        <span className="block text-right">
-          {turn.model ?? "Model unknown"} · {turn.responseCount} responses · {turn.childTurnCount}{" "}
-          children · {turn.coverage.usage} usage · {turn.coverage.pricing} pricing. Child work is
-          excluded.{" "}
-          <Link to="/usage" className="underline hover:text-foreground">
+        <div className="mt-1 space-y-1 px-1">
+          <p>
+            {turn.model ?? "Model unknown"} · {countLabel(turn.responseCount, "response")} ·{" "}
+            {countLabel(turn.childTurnCount, "child", "children")}
+          </p>
+          {turn.childTurnCount > 0 ? (
+            <CodexTurnFamilyDetails environmentId={environmentId} turn={turn} />
+          ) : null}
+          <Link to="/usage" className="inline-block underline hover:text-foreground">
             Open ledger
           </Link>
-        </span>
+        </div>
       ) : null}
-    </span>
+    </div>
+  );
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function CodexTurnFamilyDetails({
+  environmentId,
+  turn,
+}: {
+  environmentId: EnvironmentId;
+  turn: CodexLedgerTurn;
+}) {
+  const result = useAtomValue(
+    serverEnvironment.codexLedgerTurn({
+      environmentId,
+      input: {
+        sourceDomain: turn.identity.sourceDomain,
+        codexThreadId: turn.identity.codexThreadId,
+        codexTurnId: turn.identity.codexTurnId,
+      },
+    }),
+  );
+  const detail = Option.getOrNull(AsyncResult.value(result));
+  if (!detail) {
+    return <p>{result._tag === "Failure" ? "Child details unavailable" : "Loading children…"}</p>;
+  }
+  return (
+    <div className="space-y-1 border-s border-border ps-2">
+      {detail.childTurns.map((child, index) => (
+        <p key={`${child.identity.codexThreadId}:${child.identity.codexTurnId}`}>
+          Child {index + 1} · {child.model ?? "Model unknown"} ·{" "}
+          {ledgerTokenCount(child.tokens.processedTokens)} tokens ·{" "}
+          {ledgerCompactEstimate(child.valuation)}
+        </p>
+      ))}
+      <p>
+        Family total · {ledgerCompactEstimate(detail.family.valuation)} ·{" "}
+        {ledgerTokenCount(detail.family.tokens.processedTokens)} tokens
+      </p>
+      {detail.family.childPreviewTruncated ? (
+        <p>More children are available in the ledger.</p>
+      ) : null}
+    </div>
   );
 }

@@ -135,6 +135,12 @@ vi.mock("../DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children,
 }));
 
+vi.mock("./CodexTurnUsage", () => ({
+  CodexTurnUsage: ({ turnId }: { turnId: string }) => (
+    <span data-testid="codex-turn-usage">{turnId}</span>
+  ),
+}));
+
 function matchMedia() {
   return {
     matches: false,
@@ -285,6 +291,33 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("renders Codex turn usage on the assistant message that owns the turn ID", () => {
+    const turnId = TurnId.make("turn-with-usage");
+    const userEntry = buildUserTimelineEntry("Prompt");
+    const assistantBase = buildAssistantTimelineEntry("Answer");
+    const assistantEntry = {
+      ...assistantBase,
+      id: "assistant-entry",
+      message: {
+        ...assistantBase.message,
+        id: MessageId.make("assistant-message"),
+        turnId,
+      },
+    };
+
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        showCodexTurnUsage
+        timelineEntries={[userEntry, assistantEntry]}
+      />,
+    );
+
+    expect(markup.match(/data-testid="codex-turn-usage"/g)).toHaveLength(1);
+    expect(markup).toContain(`data-testid="codex-turn-usage">${turnId}`);
+    expect(markup).toContain('class="mt-1 flex justify-start"');
+  });
+
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");

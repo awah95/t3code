@@ -213,6 +213,7 @@ const EMPTY_VALUATION: CodexLedgerValuation = {
   missingPriceReasons: ["rateSnapshotUnavailable"],
 };
 const valuationFromRows = (rows: readonly ResponseRow[]): CodexLedgerValuation => {
+  if (rows.length === 0) return EMPTY_VALUATION;
   const reportedRows = rows.filter((row) => row.status === "reported");
   const vals = reportedRows.map((row) => {
     try {
@@ -236,8 +237,8 @@ const valuationFromRows = (rows: readonly ResponseRow[]): CodexLedgerValuation =
     snapshotId: snapshots.length === 1 ? snapshots[0]! : null,
     calculationVersion: "1",
     estimateKind: "standardApiEquivalent",
-    pricedSubtotalUsd: sum.subtotalUsd,
-    completeEstimateUsd: unpriced === 0 ? sum.subtotalUsd : null,
+    pricedSubtotalUsd: sum.pricedCount > 0 ? sum.subtotalUsd : null,
+    completeEstimateUsd: unpriced === 0 && sum.pricedCount > 0 ? sum.subtotalUsd : null,
     unpricedResponseCount: unpriced,
     missingPriceReasons: reasons,
   };
@@ -930,16 +931,19 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
       if (!ownershipReconciled || newOwnershipEvidence) {
         yield* sql`UPDATE codex_ledger_tools SET codex_thread_id=(
         SELECT MIN(r.codex_thread_id) FROM codex_ledger_responses r
+          INDEXED BY codex_ledger_responses_owner
         WHERE r.source_domain=codex_ledger_tools.source_domain
           AND r.codex_turn_id=codex_ledger_tools.codex_turn_id
           AND r.codex_thread_id IS NOT NULL
       ) WHERE codex_turn_id IS NOT NULL AND (
         SELECT COUNT(DISTINCT r.codex_thread_id) FROM codex_ledger_responses r
+          INDEXED BY codex_ledger_responses_owner
         WHERE r.source_domain=codex_ledger_tools.source_domain
           AND r.codex_turn_id=codex_ledger_tools.codex_turn_id
           AND r.codex_thread_id IS NOT NULL
       )=1 AND codex_thread_id IS NOT (
         SELECT MIN(r.codex_thread_id) FROM codex_ledger_responses r
+          INDEXED BY codex_ledger_responses_owner
         WHERE r.source_domain=codex_ledger_tools.source_domain
           AND r.codex_turn_id=codex_ledger_tools.codex_turn_id
           AND r.codex_thread_id IS NOT NULL
@@ -947,6 +951,7 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
         yield* sql`UPDATE codex_ledger_tools SET codex_thread_id=NULL
       WHERE codex_thread_id IS NOT NULL AND codex_turn_id IS NOT NULL AND (
         SELECT COUNT(DISTINCT r.codex_thread_id) FROM codex_ledger_responses r
+          INDEXED BY codex_ledger_responses_owner
         WHERE r.source_domain=codex_ledger_tools.source_domain
           AND r.codex_turn_id=codex_ledger_tools.codex_turn_id
           AND r.codex_thread_id IS NOT NULL
@@ -1007,20 +1012,45 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
         WHERE owner.source_domain=codex_ledger_turns.source_domain
           AND owner.codex_turn_id=codex_ledger_turns.codex_turn_id
           AND owner.codex_thread_id!=codex_ledger_turns.codex_thread_id)`;
-      // T3's Codex adapter persists the provider thread ID. Provider turn IDs are the
-      // projection turn IDs for accepted starts, so require both exact IDs to link.
-      yield* sql`UPDATE codex_ledger_turns SET
-      t3_thread_id=(SELECT s.thread_id FROM projection_thread_sessions s
-        WHERE s.provider_thread_id=codex_ledger_turns.codex_thread_id LIMIT 1)
-      WHERE t3_thread_id IS NULL AND EXISTS(SELECT 1 FROM projection_thread_sessions s
-        WHERE s.provider_thread_id=codex_ledger_turns.codex_thread_id)`;
-      yield* sql`UPDATE codex_ledger_turns SET
-      t3_project_id=(SELECT p.project_id FROM projection_threads p WHERE p.thread_id=codex_ledger_turns.t3_thread_id),
-      t3_turn_id=(SELECT t.turn_id FROM projection_turns t WHERE t.thread_id=codex_ledger_turns.t3_thread_id
-        AND t.turn_id=codex_ledger_turns.codex_turn_id LIMIT 1),
-      t3_message_id=(SELECT t.pending_message_id FROM projection_turns t WHERE t.thread_id=codex_ledger_turns.t3_thread_id
-        AND t.turn_id=codex_ledger_turns.codex_turn_id LIMIT 1)
-      WHERE t3_thread_id IS NOT NULL AND t3_turn_id IS NULL`;
+      // Codex's native thread ID survives restarts in the runtime resume cursor.
+      // Older projections also have provider_thread_id. Require an exact projected
+      // turn and one owner across both sources before attaching a T3 identity.
+      yield* sql`WITH thread_candidates AS (
+        SELECT thread_id,provider_thread_id AS codex_thread_id
+        FROM projection_thread_sessions
+        WHERE provider_name='codex' AND provider_thread_id IS NOT NULL
+        UNION
+        SELECT r.thread_id,
+          CASE WHEN json_valid(r.resume_cursor_json)
+            THEN json_extract(r.resume_cursor_json,'$.threadId') END AS codex_thread_id
+        FROM provider_session_runtime r
+        JOIN projection_thread_sessions s ON s.thread_id=r.thread_id AND s.provider_name='codex'
+        WHERE r.provider_name='codex'
+      ), unique_codex_threads AS (
+        SELECT codex_thread_id FROM codex_ledger_turns
+        GROUP BY codex_thread_id HAVING COUNT(DISTINCT source_domain)=1
+      ), exact_matches AS (
+        SELECT l.source_domain,l.codex_thread_id,l.codex_turn_id,
+          MIN(t.thread_id) AS t3_thread_id,MIN(t.turn_id) AS t3_turn_id,
+          MIN(t.pending_message_id) AS t3_message_id
+        FROM codex_ledger_turns l
+        JOIN unique_codex_threads u ON u.codex_thread_id=l.codex_thread_id
+        JOIN thread_candidates c ON c.codex_thread_id=l.codex_thread_id
+        JOIN projection_turns t ON t.thread_id=c.thread_id AND t.turn_id=l.codex_turn_id
+        WHERE l.t3_turn_id IS NULL AND l.codex_turn_id IS NOT NULL
+        GROUP BY l.source_domain,l.codex_thread_id,l.codex_turn_id
+        HAVING COUNT(DISTINCT t.thread_id)=1
+      )
+      UPDATE codex_ledger_turns AS l SET
+        t3_thread_id=m.t3_thread_id,
+        t3_turn_id=m.t3_turn_id,
+        t3_message_id=m.t3_message_id,
+        t3_project_id=(SELECT p.project_id FROM projection_threads p
+          WHERE p.thread_id=m.t3_thread_id)
+      FROM exact_matches m
+      WHERE l.source_domain=m.source_domain
+        AND l.codex_thread_id=m.codex_thread_id AND l.codex_turn_id=m.codex_turn_id
+        AND (l.t3_thread_id IS NULL OR l.t3_thread_id=m.t3_thread_id)`;
       yield* reconcileJevReceipts();
     });
     const scan = scanLock.withPermits(1)(scanRaw);

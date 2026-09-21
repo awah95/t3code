@@ -29,6 +29,15 @@ export function ledgerEstimate(valuation: CodexLedgerValuation): string {
   return valuation.completeEstimateUsd === null ? `${formatted} priced subtotal` : formatted;
 }
 
+/** Compact chat presentation: retain three significant digits without currency-style zeroing. */
+export function ledgerCompactEstimate(valuation: CodexLedgerValuation): string {
+  const amount = valuation.completeEstimateUsd ?? valuation.pricedSubtotalUsd;
+  if (amount === null) return "Unknown";
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return `$${amount}`;
+  return `$${new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 }).format(numeric)}`;
+}
+
 export function ledgerCoverageLabel(coverage: CodexLedgerCoverage): string {
   const gaps = [
     coverage.usage !== "exact" && `${coverage.usage} usage`,

@@ -9,19 +9,76 @@ import { listenForJevSubagents, useJevStore, type JevCall } from "./jevStore";
 
 export function JevControls() {
   const { enabled, setEnabled, panelOpen, setPanelOpen, calls, mode } = useJevStore();
+  const [checkingStatus, setCheckingStatus] = useState(false);
   useEffect(listenForJevSubagents, []);
+  useEffect(() => {
+    if (!isElectron || !enabled) return;
+    let active = true;
+    void window.desktopBridge
+      ?.getJevStatus?.()
+      .then((status) => {
+        if (!active || status.hasKey) return;
+        setEnabled(false);
+        useJevStore.setState({
+          panelOpen: true,
+          notice: status.secureStorageAvailable
+            ? "Add an OpenRouter key in Settings > General > Jev Auto routing before enabling Jev."
+            : "Jev was turned off because secure OS credential storage is unavailable.",
+        });
+      })
+      .catch(() => {
+        if (!active) return;
+        setEnabled(false);
+        useJevStore.setState({
+          panelOpen: true,
+          notice: "Jev was turned off because its OpenRouter credential could not be verified.",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [enabled, setEnabled]);
   if (!isElectron) return null;
   const pending = calls.some((call) => call.status === "pending");
+  const toggleEnabled = async () => {
+    if (enabled) {
+      setEnabled(false);
+      return;
+    }
+    setCheckingStatus(true);
+    try {
+      const status = await window.desktopBridge?.getJevStatus?.();
+      if (!status?.hasKey) {
+        useJevStore.setState({
+          panelOpen: true,
+          notice: status?.secureStorageAvailable
+            ? "Add an OpenRouter key in Settings > General > Jev Auto routing before enabling Jev."
+            : "Jev cannot be enabled because secure OS credential storage is unavailable.",
+        });
+        return;
+      }
+      setEnabled(true);
+    } catch {
+      useJevStore.setState({
+        panelOpen: true,
+        notice: "Could not verify Jev's OpenRouter credential. Jev remains off.",
+      });
+    } finally {
+      setCheckingStatus(false);
+    }
+  };
   return (
     <>
       <button
         type="button"
         aria-pressed={enabled}
-        onClick={() => setEnabled(!enabled)}
+        disabled={checkingStatus}
+        onClick={() => void toggleEnabled()}
         aria-label="Jev Auto: choose a compatible model within the selected provider. Task text, recent chat history and plan context are sent to OpenRouter."
         className={`rounded-md border px-2 py-1 text-xs ${enabled ? "border-primary text-primary" : "text-muted-foreground"}`}
       >
-        Jev {mode === "guided" ? "Guided" : "Auto"} {enabled ? "On" : "Off"}
+        Jev {mode === "guided" ? "Guided" : "Auto"}{" "}
+        {checkingStatus ? "Checking…" : enabled ? "On" : "Off"}
       </button>
       <button
         type="button"
@@ -95,41 +152,59 @@ function JevReviewCard({ call }: { call: JevCall }) {
   const { resolveReview, cancelPending } = useJevStore();
   const suggestedKey = call.result?.recommendedChoice ?? call.result?.choice;
   const suggested = call.request.candidates.find((candidate) => candidate.key === suggestedKey);
+  const unavailable = call.result?.policyOutcome === "unavailable";
+  const missingKey = call.result?.error?.includes("OpenRouter key") ?? false;
   return (
     <section
       aria-label="Review Jev recommendation"
       className="space-y-3 rounded-md border border-primary/50 p-3 text-xs"
     >
-      <p className="font-medium">Review before sending</p>
+      <p className="font-medium">
+        {unavailable ? "Jev routing unavailable" : "Review before sending"}
+      </p>
       <p className="whitespace-pre-wrap">
         {call.request.prompt.slice(0, 240)}
         {call.request.prompt.length > 240 ? "… (full prompt in log)" : ""}
       </p>
-      <p>
-        Suggested:{" "}
-        {suggested
-          ? `${suggested.model ?? suggested.description} · ${suggested.effort ?? "default effort"}`
-          : "No valid recommendation"}
-      </p>
-      <p>
-        Raw model-proposal confidence: {call.result?.modelConfidence?.toFixed(2) ?? "unavailable"};
-        raw effort-proposal confidence: {call.result?.effortConfidence?.toFixed(2) ?? "unavailable"}
-        . This is not task success probability.
-      </p>
-      <p>Task-assessment confidence: {call.result?.confidence?.toFixed(2) ?? "unavailable"}</p>
-      {call.result?.conditionalEffort && (
-        <p>
-          For {call.result.conditionalEffort.model}, Jev proposed{" "}
-          {call.result.conditionalEffort.effort} effort (confidence{" "}
-          {call.result.conditionalEffort.confidence.toFixed(2)}). The policy can raise this to meet
-          the task requirements.
-        </p>
+      {unavailable ? (
+        <div role="alert" className="space-y-2 rounded border border-warning/40 bg-warning/10 p-2">
+          <p>{call.result?.error ?? "Jev could not produce a routing decision."}</p>
+          {missingKey && (
+            <p>
+              Add the key in Settings &gt; General &gt; Jev Auto routing, then enable Jev again.
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          <p>
+            Suggested:{" "}
+            {suggested
+              ? `${suggested.model ?? suggested.description} · ${suggested.effort ?? "default effort"}`
+              : "No valid recommendation"}
+          </p>
+          <p>
+            Raw model-proposal confidence:{" "}
+            {call.result?.modelConfidence?.toFixed(2) ?? "unavailable"}; raw effort-proposal
+            confidence: {call.result?.effortConfidence?.toFixed(2) ?? "unavailable"}. This is not
+            task success probability.
+          </p>
+          <p>Task-assessment confidence: {call.result?.confidence?.toFixed(2) ?? "unavailable"}</p>
+          {call.result?.conditionalEffort && (
+            <p>
+              For {call.result.conditionalEffort.model}, Jev proposed{" "}
+              {call.result.conditionalEffort.effort} effort (confidence{" "}
+              {call.result.conditionalEffort.confidence.toFixed(2)}). The policy can raise this to
+              meet the task requirements.
+            </p>
+          )}
+          <p>Policy outcome: {call.result?.policyOutcome ?? "unknown"}</p>
+          <p>Model proposal: {proposalLabel(call)}</p>
+          {call.result?.reasons?.map((reason) => (
+            <p key={reason}>{reasonLabel(reason)}</p>
+          ))}
+        </>
       )}
-      <p>Policy outcome: {call.result?.policyOutcome ?? "unknown"}</p>
-      <p>Model proposal: {proposalLabel(call)}</p>
-      {call.result?.reasons?.map((reason) => (
-        <p key={reason}>{reasonLabel(reason)}</p>
-      ))}
       {call.request.context.missingContext?.map((missing) => (
         <p key={missing}>Missing: {missing}</p>
       ))}
@@ -139,25 +214,24 @@ function JevReviewCard({ call }: { call: JevCall }) {
         {call.request.context.currentEffort ?? "default effort"}
       </p>
       <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          disabled={
-            !suggested ||
-            Boolean(
+        {suggested && (
+          <Button
+            size="sm"
+            disabled={Boolean(
               call.result?.admissibleCandidateKeys &&
               !call.result.admissibleCandidateKeys.includes(suggested.key),
-            )
-          }
-          onClick={() => resolveReview(call.id, "suggestion")}
-        >
-          Use suggestion
-        </Button>
+            )}
+            onClick={() => resolveReview(call.id, "suggestion")}
+          >
+            Use suggestion
+          </Button>
+        )}
         <Button size="sm" variant="outline" onClick={() => resolveReview(call.id, "current")}>
           Use current selection
         </Button>
       </div>
       <label className="flex flex-col gap-1">
-        Choose another model and effort
+        {unavailable ? "Choose a model and effort manually" : "Choose another model and effort"}
         <select
           className="min-w-0 rounded border bg-background p-2"
           value={alternative}
@@ -260,6 +334,11 @@ export function JevPanel() {
           <option value="auto">Automatic</option>
         </select>
       </label>
+      {notice && (
+        <p role="status" className="text-xs">
+          {notice}
+        </p>
+      )}
       {calls
         .filter((call) => call.status === "awaiting-review")
         .map((call) => (
@@ -318,11 +397,6 @@ export function JevPanel() {
         </dl>
         <p className="text-xs text-muted-foreground">Session totals survive clearing the log.</p>
       </div>
-      {notice && (
-        <p role="status" className="text-xs">
-          {notice}
-        </p>
-      )}
       <div className="flex gap-3 text-xs">
         {pending && (
           <button
