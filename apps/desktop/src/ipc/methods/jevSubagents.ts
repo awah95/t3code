@@ -4,10 +4,10 @@ import * as Schema from "effect/Schema";
 import * as DesktopJevSubagent from "../../jev/DesktopJevSubagent.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
-import * as IpcChannels from "../channels.ts";
+import * as JevChannels from "../jevChannels.ts";
 
 export const setJevSubagentPolicy = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL,
+  channel: JevChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL,
   payload: JevSubagentPolicy,
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.jevSubagents.setPolicy")(function* (policy) {
@@ -17,7 +17,7 @@ export const setJevSubagentPolicy = DesktopIpc.makeIpcMethod({
 });
 
 export const clearJevSubagentPolicies = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL,
+  channel: JevChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL,
   payload: Schema.Void,
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.jevSubagents.clearPolicies")(function* () {
@@ -27,7 +27,7 @@ export const clearJevSubagentPolicies = DesktopIpc.makeIpcMethod({
 });
 
 export const listJevSubagentReceipts = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL,
+  channel: JevChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL,
   payload: Schema.Void,
   result: Schema.Array(JevSubagentDecision),
   handler: Effect.fn("desktop.ipc.jevSubagents.listReceipts")(function* () {
@@ -37,7 +37,7 @@ export const listJevSubagentReceipts = DesktopIpc.makeIpcMethod({
 });
 
 export const ackJevSubagentReceipt = DesktopIpc.makeIpcMethod({
-  channel: IpcChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL,
+  channel: JevChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL,
   payload: Schema.Struct({ requestId: Schema.String, attemptId: Schema.String }),
   result: Schema.Void,
   handler: Effect.fn("desktop.ipc.jevSubagents.ackReceipt")(function* (identity) {
@@ -51,7 +51,7 @@ export const installJevSubagentEvents = Effect.fn("desktop.ipc.jevSubagents.subs
     const service = yield* DesktopJevSubagent.DesktopJevSubagent;
     const windows = yield* ElectronWindow.ElectronWindow;
     yield* service.subscribeDecisions((event) =>
-      windows.sendAll(IpcChannels.JEV_SUBAGENT_DECISION_CHANNEL, event),
+      windows.sendAll(JevChannels.JEV_SUBAGENT_DECISION_CHANNEL, event),
     );
   },
 );

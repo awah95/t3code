@@ -10,6 +10,7 @@ import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
+import * as JevChannels from "./ipc/jevChannels.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -63,29 +64,29 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 }
 
 contextBridge.exposeInMainWorld("desktopBridge", {
-  getJevStatus: () => ipcRenderer.invoke(IpcChannels.GET_JEV_STATUS_CHANNEL),
-  setJevApiKey: (key) => ipcRenderer.invoke(IpcChannels.SET_JEV_API_KEY_CHANNEL, key),
+  getJevStatus: () => ipcRenderer.invoke(JevChannels.GET_JEV_STATUS_CHANNEL),
+  setJevApiKey: (key) => ipcRenderer.invoke(JevChannels.SET_JEV_API_KEY_CHANNEL, key),
   decideJevRoute: (request, receiptContext) =>
-    ipcRenderer.invoke(IpcChannels.DECIDE_JEV_ROUTE_CHANNEL, { request, receiptContext }),
-  cancelJevRoute: (id) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_ROUTE_CHANNEL, id),
-  observeJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.OBSERVE_JEV_BROWSER_CHANNEL, input),
-  decideJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.DECIDE_JEV_BROWSER_CHANNEL, input),
-  executeJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.EXECUTE_JEV_BROWSER_CHANNEL, input),
-  cancelJevBrowser: (input) => ipcRenderer.invoke(IpcChannels.CANCEL_JEV_BROWSER_CHANNEL, input),
+    ipcRenderer.invoke(JevChannels.DECIDE_JEV_ROUTE_CHANNEL, { request, receiptContext }),
+  cancelJevRoute: (id) => ipcRenderer.invoke(JevChannels.CANCEL_JEV_ROUTE_CHANNEL, id),
+  observeJevBrowser: (input) => ipcRenderer.invoke(JevChannels.OBSERVE_JEV_BROWSER_CHANNEL, input),
+  decideJevBrowser: (input) => ipcRenderer.invoke(JevChannels.DECIDE_JEV_BROWSER_CHANNEL, input),
+  executeJevBrowser: (input) => ipcRenderer.invoke(JevChannels.EXECUTE_JEV_BROWSER_CHANNEL, input),
+  cancelJevBrowser: (input) => ipcRenderer.invoke(JevChannels.CANCEL_JEV_BROWSER_CHANNEL, input),
   setJevSubagentPolicy: (policy) =>
-    ipcRenderer.invoke(IpcChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
+    ipcRenderer.invoke(JevChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
   clearJevSubagentPolicies: () =>
-    ipcRenderer.invoke(IpcChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL),
-  listJevSubagentReceipts: () => ipcRenderer.invoke(IpcChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL),
+    ipcRenderer.invoke(JevChannels.CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL),
+  listJevSubagentReceipts: () => ipcRenderer.invoke(JevChannels.LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL),
   ackJevSubagentReceipt: (identity) =>
-    ipcRenderer.invoke(IpcChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL, identity),
+    ipcRenderer.invoke(JevChannels.ACK_JEV_SUBAGENT_RECEIPT_CHANNEL, identity),
   onJevSubagentDecision: (listener) => {
     const handler = (
       _event: Electron.IpcRendererEvent,
       value: import("@t3tools/contracts").JevSubagentDecision,
     ) => listener(value);
-    ipcRenderer.on(IpcChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
-    return () => ipcRenderer.removeListener(IpcChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
+    ipcRenderer.on(JevChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(JevChannels.JEV_SUBAGENT_DECISION_CHANNEL, handler);
   },
   getAppBranding: () => {
     const result = ipcRenderer.sendSync(IpcChannels.GET_APP_BRANDING_CHANNEL);

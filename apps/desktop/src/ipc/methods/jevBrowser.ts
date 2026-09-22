@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { DesktopJevBrowser } from "../../jevBrowser/DesktopJevBrowser.ts";
 import { PreviewManager } from "../../preview/Manager.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
-import * as Channels from "../channels.ts";
+import * as JevChannels from "../jevChannels.ts";
 
 class JevBrowserDesktopTargetError extends Schema.TaggedError<JevBrowserDesktopTargetError>()(
   "JevBrowserDesktopTargetError",
@@ -30,7 +30,7 @@ const requireTabId = (tabId: string | undefined) =>
     : Effect.succeed(tabId);
 
 export const observeJevBrowser = DesktopIpc.makeIpcMethod({
-  channel: Channels.OBSERVE_JEV_BROWSER_CHANNEL,
+  channel: JevChannels.OBSERVE_JEV_BROWSER_CHANNEL,
   payload: JevBrowserObserveInput,
   result: JevBrowserObserveResult,
   handler: Effect.fn("desktop.ipc.jevBrowser.observe")(function* (input) {
@@ -45,7 +45,7 @@ export const observeJevBrowser = DesktopIpc.makeIpcMethod({
 });
 
 export const decideJevBrowser = DesktopIpc.makeIpcMethod({
-  channel: Channels.DECIDE_JEV_BROWSER_CHANNEL,
+  channel: JevChannels.DECIDE_JEV_BROWSER_CHANNEL,
   payload: JevBrowserDecideInput,
   result: JevBrowserDecideResult,
   handler: Effect.fn("desktop.ipc.jevBrowser.decide")(function* (input) {
@@ -55,7 +55,7 @@ export const decideJevBrowser = DesktopIpc.makeIpcMethod({
 });
 
 export const executeJevBrowser = DesktopIpc.makeIpcMethod({
-  channel: Channels.EXECUTE_JEV_BROWSER_CHANNEL,
+  channel: JevChannels.EXECUTE_JEV_BROWSER_CHANNEL,
   payload: JevBrowserExecuteInput,
   result: JevBrowserExecuteResult,
   handler: Effect.fn("desktop.ipc.jevBrowser.execute")(function* (input) {
@@ -75,7 +75,7 @@ export const executeJevBrowser = DesktopIpc.makeIpcMethod({
 });
 
 export const cancelJevBrowser = DesktopIpc.makeIpcMethod({
-  channel: Channels.CANCEL_JEV_BROWSER_CHANNEL,
+  channel: JevChannels.CANCEL_JEV_BROWSER_CHANNEL,
   payload: JevBrowserCancelInput,
   result: JevBrowserCancelResult,
   handler: Effect.fn("desktop.ipc.jevBrowser.cancel")(function* (input) {
