@@ -91,6 +91,7 @@ import { captureFavicon, safeHttpOrigin, selectFaviconCandidates } from "./Favic
 import {
   buildJevBrowserGuardExpression,
   buildJevBrowserObservationExpression,
+  buildJevBrowserReadyObservationExpression,
   buildJevBrowserSelectExpression,
   buildJevBrowserSetTextExpression,
 } from "./JevBrowserObservation.ts";
@@ -141,6 +142,25 @@ const JEV_BROWSER_MAX_HOST_INPUTS = 512;
 const JEV_BROWSER_MAX_DESCRIPTION_LENGTH = 1_000;
 const JEV_BROWSER_MAX_VALUE_LENGTH = 20_000;
 const JEV_BROWSER_RESERVED_PREFIX = "__t3_";
+const JEV_BROWSER_ACTIVATABLE_ROLES = new Set([
+  "button",
+  "checkbox",
+  "combobox",
+  "menuitem",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "option",
+  "radio",
+  "switch",
+  "tab",
+]);
+const JEV_BROWSER_CHECKED_ROLES = new Set([
+  "checkbox",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "radio",
+  "switch",
+]);
 
 const jevBrowserOriginAllowed = (value: string, allowedOrigins: readonly string[]) => {
   try {
@@ -222,11 +242,13 @@ const jevBrowserCandidates = (
   };
   for (const control of controls) {
     if (control.disabled) continue;
+    const allowedLink =
+      control.href !== undefined && jevBrowserOriginAllowed(control.href, allowedOrigins);
     if (
-      ["button", "checkbox", "radio"].includes(control.role) ||
-      (control.role === "link" &&
-        control.href !== undefined &&
-        jevBrowserOriginAllowed(control.href, allowedOrigins))
+      (JEV_BROWSER_ACTIVATABLE_ROLES.has(control.role) &&
+        control.tag !== "select" &&
+        (control.href === undefined || allowedLink)) ||
+      (control.role === "link" && allowedLink)
     ) {
       add({
         id: `activate:${control.id}`,
@@ -873,7 +895,14 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     >
   >(new Map());
   const jevBrowserRunsRef = yield* Ref.make<
-    ReadonlyMap<string, { readonly tabId: string; readonly controlGeneration: number }>
+    ReadonlyMap<
+      string,
+      {
+        readonly tabId: string;
+        readonly controlGeneration: number;
+        readonly needsReadyObservation: boolean;
+      }
+    >
   >(new Map());
   const actionTimelineRef = yield* Ref.make<
     ReadonlyMap<string, ReadonlyArray<PreviewAutomationActionEvent>>
@@ -3943,7 +3972,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     const runState = yield* Ref.modify(jevBrowserRunsRef, (runs) => {
       const existing = runs.get(runId);
       if (existing) return [existing, runs] as const;
-      const created = { tabId, controlGeneration: currentGeneration };
+      const created = { tabId, controlGeneration: currentGeneration, needsReadyObservation: false };
       return [created, replaceMap(runs, (copy) => copy.set(runId, created))] as const;
     });
     if (runState.tabId !== tabId || runState.controlGeneration !== currentGeneration) {
@@ -3988,7 +4017,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           const raw = yield* evaluateWithDebugger(
             tabId,
             send,
-            buildJevBrowserObservationExpression(),
+            runState.needsReadyObservation
+              ? buildJevBrowserReadyObservationExpression()
+              : buildJevBrowserObservationExpression(),
             true,
             true,
             contextId,
@@ -4000,12 +4031,28 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             ),
           );
           yield* check;
+          if ((yield* Ref.get(jevBrowserRunsRef)).get(runId) !== runState) {
+            return yield* new PreviewOperationError({
+              operation: "jevBrowser.observeGeneration",
+              tabId,
+              cause: new Error("The Jev browser run ended while observation was waiting."),
+            });
+          }
           if (!jevBrowserOriginAllowed(observed.url, allowedOrigins)) {
             return yield* new PreviewOperationError({
               operation: "jevBrowser.observeOrigin",
               tabId,
               cause: new Error("The preview URL is outside the allowed browser origins."),
             });
+          }
+          if (runState.needsReadyObservation) {
+            yield* Ref.update(jevBrowserRunsRef, (runs) =>
+              runs.get(runId) === runState
+                ? replaceMap(runs, (copy) =>
+                    copy.set(runId, { ...runState, needsReadyObservation: false }),
+                  )
+                : runs,
+            );
           }
           const controlGeneration = runState.controlGeneration;
           const revision = makeJevBrowserRevision(controlGeneration, observed.revision);
@@ -4016,13 +4063,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             role: control.role,
             ...(control.name ? { name: control.name } : {}),
             ...(control.name ? { text: control.name } : {}),
-            value:
-              control.role === "checkbox" || control.role === "radio"
-                ? control.checked
-                : control.value,
-            ...(control.role === "checkbox" || control.role === "radio"
-              ? { checked: control.checked }
-              : {}),
+            value: JEV_BROWSER_CHECKED_ROLES.has(control.role) ? control.checked : control.value,
+            ...(JEV_BROWSER_CHECKED_ROLES.has(control.role) ? { checked: control.checked } : {}),
             disabled: control.disabled,
             ...(control.options.length === 0
               ? {}
@@ -4100,6 +4142,12 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     if (action.value !== supplied?.value) {
       return { status: "rejected", detail: "The action value did not match its retained input." };
     }
+    const markExecuted = Ref.update(jevBrowserRunsRef, (runs) => {
+      const run = runs.get(runId);
+      return !run || run.needsReadyObservation
+        ? runs
+        : replaceMap(runs, (copy) => copy.set(runId, { ...run, needsReadyObservation: true }));
+    });
     const wc = yield* requireWebContents(tabId);
     return yield* withControlSession<JevAutomationExecutionResult>(
       tabId,
@@ -4148,9 +4196,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                   new PreviewOperationError({ operation: "jevBrowser.select", tabId, cause }),
               ),
             );
-            return result.ok
-              ? ({ status: "executed" } as const)
-              : ({ status: "stale", detail: result.reason } as const);
+            if (!result.ok) return { status: "stale", detail: result.reason } as const;
+            yield* markExecuted;
+            return { status: "executed" } as const;
           }
 
           if (action.operation === "activate") {
@@ -4208,6 +4256,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               button: "left",
               clickCount: 1,
             });
+            yield* markExecuted;
             return { status: "executed" } as const;
           }
 
@@ -4245,6 +4294,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
                 ),
               });
             }
+            yield* markExecuted;
             return { status: "executed" } as const;
           }
 
@@ -4257,6 +4307,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             }
             yield* checkControl;
             yield* navigate(tabId, action.value);
+            yield* markExecuted;
             return { status: "executed" } as const;
           }
 
@@ -4270,6 +4321,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
             const delta = action.value ? deltas[action.value as keyof typeof deltas] : undefined;
             if (!delta) return { status: "rejected", detail: "Unsupported scroll input." } as const;
             yield* performAutomationScroll(tabId, delta, send);
+            yield* markExecuted;
             return { status: "executed" } as const;
           }
 
@@ -4285,6 +4337,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               sendCleanup,
               checkControl,
             );
+            yield* markExecuted;
             return { status: "executed" } as const;
           }
 

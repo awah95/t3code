@@ -225,9 +225,12 @@ function JevReviewCard({ call }: { call: JevCall }) {
   return (
     <section
       aria-label="Review Jev recommendation"
-      className="overflow-hidden rounded-xl border border-primary/35 bg-muted/15 shadow-xs"
+      className="flex max-h-[calc(100dvh-var(--workspace-topbar-height,3rem)-8rem)] min-h-0 flex-col overflow-hidden rounded-xl border border-primary/35 bg-muted/15 shadow-xs"
     >
-      <div className="space-y-4 p-4">
+      <div
+        data-testid="jev-review-scroll-body"
+        className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain p-4"
+      >
         <div className="flex items-center gap-2 text-warning-foreground">
           <CircleAlertIcon className="size-4 shrink-0" />
           <p className="text-sm font-semibold">
@@ -288,32 +291,6 @@ function JevReviewCard({ call }: { call: JevCall }) {
           </div>
         )}
 
-        <div className="flex flex-col gap-2">
-          {suggested && (
-            <Button
-              size="sm"
-              disabled={Boolean(
-                call.result?.admissibleCandidateKeys &&
-                !call.result.admissibleCandidateKeys.includes(suggested.key),
-              )}
-              onClick={() => resolveReview(call.id, "suggestion")}
-            >
-              Send with {pairLabel(suggested.model, suggested.effort)}
-            </Button>
-          )}
-          <Button size="sm" variant="outline" onClick={() => resolveReview(call.id, "current")}>
-            Keep {pairLabel(currentModel, currentEffort)}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost-muted"
-            aria-expanded={choosingAlternative}
-            onClick={() => setChoosingAlternative(!choosingAlternative)}
-          >
-            {unavailable ? "Choose a model and effort" : "Choose another model and effort"}
-          </Button>
-        </div>
-
         {choosingAlternative && (
           <div className="space-y-2 rounded-lg bg-muted/35 p-3">
             <Select
@@ -373,10 +350,44 @@ function JevReviewCard({ call }: { call: JevCall }) {
           </div>
         </details>
       </div>
-      <div className="flex justify-end border-t border-border/60 bg-background/55 px-4 py-2.5">
-        <Button size="sm" variant="ghost-muted" onClick={cancelPending}>
-          Cancel send
+      <div
+        data-testid="jev-review-actions"
+        className="shrink-0 space-y-2 border-t border-border/60 bg-background px-4 py-3 shadow-[0_-8px_20px_-16px_rgba(0,0,0,0.8)]"
+      >
+        {suggested && (
+          <Button
+            className="w-full"
+            size="sm"
+            disabled={Boolean(
+              call.result?.admissibleCandidateKeys &&
+              !call.result.admissibleCandidateKeys.includes(suggested.key),
+            )}
+            onClick={() => resolveReview(call.id, "suggestion")}
+          >
+            Send with {pairLabel(suggested.model, suggested.effort)}
+          </Button>
+        )}
+        <Button
+          className="w-full"
+          size="sm"
+          variant="outline"
+          onClick={() => resolveReview(call.id, "current")}
+        >
+          Keep {pairLabel(currentModel, currentEffort)}
         </Button>
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            size="sm"
+            variant="ghost-muted"
+            aria-expanded={choosingAlternative}
+            onClick={() => setChoosingAlternative(!choosingAlternative)}
+          >
+            {unavailable ? "Choose model" : "Choose another"}
+          </Button>
+          <Button size="sm" variant="ghost-muted" onClick={cancelPending}>
+            Cancel send
+          </Button>
+        </div>
       </div>
     </section>
   );

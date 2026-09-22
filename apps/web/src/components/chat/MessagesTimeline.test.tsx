@@ -318,6 +318,179 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('class="mt-1 flex justify-start"');
   });
 
+  it("renders one Codex receipt below the turn fold for a multi-message subagent turn", () => {
+    const turnId = TurnId.make("turn-with-subagents");
+    const assistantMessage = (id: string, text: string, createdAt: string) => ({
+      id: `${id}-entry`,
+      kind: "message" as const,
+      createdAt,
+      message: {
+        id: MessageId.make(id),
+        role: "assistant" as const,
+        text,
+        turnId,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      },
+    });
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        showCodexTurnUsage
+        latestTurn={{
+          turnId,
+          state: "completed",
+          startedAt: "2026-03-17T19:12:20.000Z",
+          completedAt: "2026-03-17T19:12:35.000Z",
+        }}
+        timelineEntries={[
+          buildUserTimelineEntry("Investigate in parallel."),
+          assistantMessage(
+            "assistant-commentary",
+            "I’m checking this.",
+            "2026-03-17T19:12:21.000Z",
+          ),
+          {
+            id: "work-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:23.000Z",
+            entry: {
+              id: "work",
+              createdAt: "2026-03-17T19:12:23.000Z",
+              turnId,
+              label: "Read files",
+              tone: "tool",
+              toolLifecycleStatus: "completed",
+            },
+          },
+          {
+            id: "spawn-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:25.000Z",
+            entry: {
+              id: "spawn",
+              createdAt: "2026-03-17T19:12:25.000Z",
+              turnId,
+              label: "Ran 1 subagent",
+              tone: "tool",
+              agentSpawn: { workflowId: null, agentTaskIds: ["agent-1"] },
+            },
+          },
+          assistantMessage(
+            "assistant-final",
+            "The investigation is complete.",
+            "2026-03-17T19:12:35.000Z",
+          ),
+        ]}
+      />,
+    );
+
+    const foldIndex = markup.indexOf(`data-timeline-row-id="turn-fold:${turnId}"`);
+    const usageIndex = markup.indexOf('data-testid="codex-turn-usage"');
+    const finalMessageIndex = markup.indexOf('data-message-id="assistant-final"');
+    expect(markup.match(/data-testid="codex-turn-usage"/g)).toHaveLength(1);
+    expect(markup).toContain('class="mt-1 px-1"');
+    expect(foldIndex).toBeGreaterThanOrEqual(0);
+    expect(usageIndex).toBeGreaterThan(foldIndex);
+    expect(finalMessageIndex).toBeGreaterThan(usageIndex);
+  });
+
+  it("opens the Agents panel focused on the selected spawned agent", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 0;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    const onOpenAgents = vi.fn();
+    const agent = {
+      id: "agent-1",
+      kind: "subagent" as const,
+      title: "Researcher",
+      role: "research",
+      model: "gpt-5.6-sol",
+      effort: "medium",
+      status: "running" as const,
+      activationCount: 1,
+      usage: { totalTokens: 1_200 },
+      progress: "Reading timeline code",
+      lastToolName: "rg",
+      result: null,
+      error: null,
+      outputFile: null,
+      parentAgentId: null,
+      agentIndex: 0,
+      phaseIndex: null,
+      phaseTitle: null,
+      attempt: 1,
+      workflowName: null,
+      phases: [],
+      runHandles: null,
+      recentActivity: [],
+      firstSeenAt: MESSAGE_CREATED_AT,
+      startedAt: MESSAGE_CREATED_AT,
+      completedAt: null,
+      updatedAt: MESSAGE_CREATED_AT,
+    };
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(() => {
+        renderer = create(
+          <MessagesTimeline
+            {...buildProps()}
+            onOpenAgents={onOpenAgents}
+            agentPanelModel={{
+              workflows: [],
+              directAgents: [agent],
+              runningCount: 1,
+              waitingCount: 0,
+              idleCount: 0,
+              settledCount: 0,
+              totalTokens: 1_200,
+              hasAgents: true,
+              liveCount: 1,
+            }}
+            timelineEntries={[
+              {
+                id: "spawn-entry",
+                kind: "work",
+                createdAt: MESSAGE_CREATED_AT,
+                entry: {
+                  id: "spawn",
+                  createdAt: MESSAGE_CREATED_AT,
+                  label: "Ran 1 subagent",
+                  tone: "tool",
+                  agentSpawn: { workflowId: null, agentTaskIds: [agent.id] },
+                },
+              },
+            ]}
+          />,
+        );
+      });
+      const spawnToggle = renderer!.root
+        .findAllByType("button")
+        .find((button) => button.props["aria-expanded"] === false);
+      expect(spawnToggle).toBeDefined();
+      await act(() => spawnToggle!.props.onClick());
+
+      const inspect = renderer!.root.findByProps({
+        "aria-label": "Inspect Researcher in Agents panel",
+      });
+      expect(inspect.parent?.type).toBe("div");
+      expect(inspect.parent?.props.role).toBeUndefined();
+      expect(renderer!.root.findByProps({ "aria-label": "Researcher, Working" }).type).toBe(
+        "button",
+      );
+      await act(() => inspect.props.onClick({ stopPropagation: vi.fn() }));
+
+      expect(onOpenAgents).toHaveBeenCalledWith(agent.id);
+    } finally {
+      await act(() => renderer?.unmount());
+    }
+  });
+
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");
@@ -1495,6 +1668,7 @@ describe("MessagesTimeline", () => {
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
+        showCodexTurnUsage
         latestTurn={{
           turnId,
           state: "error",
@@ -1542,6 +1716,8 @@ describe("MessagesTimeline", () => {
     expect(messageIndex).toBeGreaterThanOrEqual(0);
     expect(toolIndex).toBeGreaterThan(messageIndex);
     expect(metaIndex).toBeGreaterThan(toolIndex);
+    expect(markup.match(/data-testid="codex-turn-usage"/g)).toHaveLength(1);
+    expect(markup.indexOf('data-testid="codex-turn-usage"')).toBeGreaterThan(metaIndex);
     expect(markup.match(/I’ll search for it now\./gu)).toHaveLength(1);
   });
 

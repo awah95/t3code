@@ -3039,6 +3039,15 @@ export default function ChatView(props: ChatViewProps) {
       }),
     [agentSessionLive, threadActivities],
   );
+  const [focusedAgentTarget, setFocusedAgentTarget] = useState<{
+    threadId: ThreadId;
+    agentId: string;
+    requestId: number;
+  } | null>(null);
+  const focusedAgentId =
+    focusedAgentTarget?.threadId === activeThreadId ? focusedAgentTarget.agentId : null;
+  const focusedAgentRequestId =
+    focusedAgentTarget?.threadId === activeThreadId ? focusedAgentTarget.requestId : 0;
   const { approvals: pendingApprovals, userInputs: pendingUserInputs } = useMemo(
     () => derivePendingRequests(threadActivities),
     [threadActivities],
@@ -4670,10 +4679,22 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().open(activeThreadRef, "files");
   }, [activeProject, activeThreadRef]);
-  const addAgentsSurface = useCallback(() => {
-    if (!activeThreadRef) return;
-    useRightPanelStore.getState().open(activeThreadRef, "agents");
-  }, [activeThreadRef]);
+  const addAgentsSurface = useCallback(
+    (agentId?: string) => {
+      if (!activeThreadRef) return;
+      setFocusedAgentTarget((current) =>
+        agentId
+          ? {
+              threadId: activeThreadRef.threadId,
+              agentId,
+              requestId: (current?.requestId ?? 0) + 1,
+            }
+          : null,
+      );
+      useRightPanelStore.getState().open(activeThreadRef, "agents");
+    },
+    [activeThreadRef],
+  );
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -10135,6 +10156,8 @@ export default function ChatView(props: ChatViewProps) {
         model={agentPanelModel}
         environmentId={activeThreadRef?.environmentId ?? null}
         threadId={activeThreadRef?.threadId ?? null}
+        focusedAgentId={focusedAgentId}
+        focusedAgentRequestId={focusedAgentRequestId}
       />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>

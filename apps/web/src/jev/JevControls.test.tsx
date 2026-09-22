@@ -174,5 +174,12 @@ describe("Jev review presentation", () => {
     expect(rendered).toContain("Show more");
     expect(rendered).not.toContain("continuation_retained_model");
     expect(root.findAllByProps({ "aria-label": "Review Jev recommendation" })).toHaveLength(1);
+    expect(root.findByProps({ "data-testid": "jev-review-scroll-body" }).props.className).toContain(
+      "overflow-y-auto",
+    );
+    expect(root.findByProps({ "data-testid": "jev-review-actions" }).props.className).toContain(
+      "shrink-0",
+    );
+    expect(rendered).toContain("Cancel send");
   });
 });

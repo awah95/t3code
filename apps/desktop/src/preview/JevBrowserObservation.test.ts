@@ -1,10 +1,11 @@
 import { runJevAutomation, type JevAutomationObservation } from "@t3tools/shared/jevAutomation";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   buildJevBrowserGuardExpression,
   buildJevBrowserObservationExpression,
   buildJevBrowserPrepareTextExpression,
+  buildJevBrowserReadyObservationExpression,
   buildJevBrowserSetTextExpression,
 } from "./JevBrowserObservation.ts";
 
@@ -76,7 +77,12 @@ class FakeElement {
   matches(selector: string) {
     if (selector === ":disabled") return this.disabled;
     if (selector === "optgroup:disabled") return this.tagName === "OPTGROUP" && this.disabled;
+    if (selector.includes("button") && this.tagName === "BUTTON") return true;
     return false;
+  }
+
+  querySelector() {
+    return null;
   }
 
   closest(selector: string) {
@@ -142,6 +148,14 @@ const makeHarness = (initialControls: FakeElement[]) => {
     hasCanvas: false,
     treeWalks: 0,
     active: null as FakeElement | null,
+    frameCount: 0,
+    onFrame: undefined as ((frame: number) => void) | undefined,
+    animations: [] as Array<{ playState: string; effect: { target: FakeElement } }>,
+    framesPaused: false,
+    cancelledFrames: [] as number[],
+    observerDisconnects: 0,
+    pagehideListeners: new Set<unknown>(),
+    failQueries: false,
   };
   const attach = () => {
     root.children.splice(0, root.children.length, ...state.controls);
@@ -162,6 +176,7 @@ const makeHarness = (initialControls: FakeElement[]) => {
       return state.active;
     },
     querySelectorAll(selector: string) {
+      if (state.failQueries) throw new Error("document unavailable");
       if (selector.startsWith("#"))
         return state.controls.filter((control) => control.id === selector.slice(1));
       return state.controls;
@@ -179,6 +194,9 @@ const makeHarness = (initialControls: FakeElement[]) => {
       const nodes = [root, ...state.controls];
       let index = 0;
       return { nextNode: () => nodes[++index] ?? null };
+    },
+    getAnimations() {
+      return state.animations;
     },
     execCommand(command: string, _showUi: boolean, value: string) {
       if (command !== "insertText" || !state.active) return false;
@@ -208,6 +226,10 @@ const makeHarness = (initialControls: FakeElement[]) => {
       "scrollY",
       "Event",
       "InputEvent",
+      "MutationObserver",
+      "requestAnimationFrame",
+      "cancelAnimationFrame",
+      "window",
       `return (${expression});`,
     )(
       page,
@@ -226,6 +248,30 @@ const makeHarness = (initialControls: FakeElement[]) => {
       0,
       FakeEvent,
       FakeEvent,
+      class {
+        observe() {}
+        disconnect() {
+          state.observerDisconnects++;
+        }
+      },
+      (callback: () => void) => {
+        const frame = ++state.frameCount;
+        if (state.framesPaused) return frame;
+        queueMicrotask(() => {
+          state.onFrame?.(frame);
+          callback();
+        });
+        return frame;
+      },
+      (frame: number) => state.cancelledFrames.push(frame),
+      {
+        addEventListener(type: string, listener: unknown) {
+          if (type === "pagehide") state.pagehideListeners.add(listener);
+        },
+        removeEventListener(type: string, listener: unknown) {
+          if (type === "pagehide") state.pagehideListeners.delete(listener);
+        },
+      },
     );
   return { page, root, state, attach, evaluate };
 };
@@ -276,6 +322,154 @@ describe("JevBrowserObservation", () => {
 
   it("serializes a standalone expression after TypeScript transformation", () => {
     expect(() => Function(`return (${buildJevBrowserObservationExpression()});`)).not.toThrow();
+    expect(() =>
+      Function(`return (${buildJevBrowserReadyObservationExpression()});`),
+    ).not.toThrow();
+  });
+
+  it("observes controls that appear during a bounded post-action transition", async () => {
+    const trigger = new FakeElement("BUTTON", rect(), "sort");
+    trigger.textContent = "Sort";
+    const menu = new FakeElement("DIV", rect(0, 40), "sort-menu");
+    menu.attributes.set("role", "presentation");
+    const harness = makeHarness([trigger, menu]);
+    harness.evaluate(buildJevBrowserObservationExpression());
+    const option = new FakeElement("DIV", rect(0, 70), "regex");
+    option.attributes.set("role", "menuitemradio");
+    option.textContent = "Regular expression";
+    harness.state.onFrame = (frame) => {
+      if (frame !== 2) return;
+      harness.state.controls = [trigger, menu, option];
+      harness.attach();
+    };
+
+    const observation = (await harness.evaluate(buildJevBrowserReadyObservationExpression())) as {
+      controls: Array<{ role: string; name: string }>;
+    };
+
+    expect(observation.controls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "menuitemradio", name: "Regular expression" }),
+      ]),
+    );
+    expect(harness.state.frameCount).toBeLessThanOrEqual(8);
+  });
+
+  it("bounds post-action readiness when the page does not change", async () => {
+    const button = new FakeElement("BUTTON", rect(), "save");
+    const harness = makeHarness([button]);
+    const initial = harness.evaluate(buildJevBrowserObservationExpression()) as {
+      revision: string;
+    };
+
+    const observation = (await harness.evaluate(buildJevBrowserReadyObservationExpression())) as {
+      revision: string;
+    };
+
+    expect(observation.revision).toBe(initial.revision);
+    expect(harness.state.frameCount).toBe(8);
+  });
+
+  it("uses the wall bound and cleans up when animation frames are throttled", async () => {
+    vi.useFakeTimers();
+    try {
+      const button = new FakeElement("BUTTON", rect(), "save");
+      const harness = makeHarness([button]);
+      harness.evaluate(buildJevBrowserObservationExpression());
+      harness.state.framesPaused = true;
+
+      const pending = harness.evaluate(buildJevBrowserReadyObservationExpression()) as Promise<{
+        revision: string;
+      }>;
+      expect(harness.state.pagehideListeners.size).toBe(1);
+      expect(harness.state.observerDisconnects).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(750);
+      await expect(pending).resolves.toMatchObject({ revision: "document:1" });
+      expect(harness.state.cancelledFrames).toEqual([1]);
+      expect(harness.state.observerDisconnects).toBe(1);
+      expect(harness.state.pagehideListeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects and cleans up instead of observing a departing document", async () => {
+    vi.useFakeTimers();
+    try {
+      const button = new FakeElement("BUTTON", rect(), "leave");
+      const harness = makeHarness([button]);
+      harness.evaluate(buildJevBrowserObservationExpression());
+      harness.state.framesPaused = true;
+
+      const pending = harness.evaluate(buildJevBrowserReadyObservationExpression()) as Promise<{
+        revision: string;
+      }>;
+      const pagehide = [...harness.state.pagehideListeners][0] as () => void;
+      pagehide();
+
+      await expect(pending).rejects.toThrow(
+        "The document changed before the browser observation became ready.",
+      );
+      expect(harness.state.cancelledFrames).toEqual([1]);
+      expect(harness.state.observerDisconnects).toBe(1);
+      expect(harness.state.pagehideListeners.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects and cleans up when the final semantic observation fails", async () => {
+    const button = new FakeElement("BUTTON", rect(), "save");
+    const harness = makeHarness([button]);
+    harness.evaluate(buildJevBrowserObservationExpression());
+    harness.state.failQueries = true;
+
+    const pending = harness.evaluate(buildJevBrowserReadyObservationExpression()) as Promise<{
+      revision: string;
+    }>;
+
+    await expect(pending).rejects.toThrow("document unavailable");
+    expect(harness.state.cancelledFrames).toEqual([8]);
+    expect(harness.state.observerDisconnects).toBe(1);
+    expect(harness.state.pagehideListeners.size).toBe(0);
+  });
+
+  it("waits for a relevant control animation to finish", async () => {
+    const button = new FakeElement("BUTTON", rect(), "menu");
+    const harness = makeHarness([button]);
+    const animation = { playState: "running", effect: { target: button } };
+    harness.state.animations = [animation];
+    harness.evaluate(buildJevBrowserObservationExpression());
+    harness.state.onFrame = (frame) => {
+      if (frame === 10) animation.playState = "finished";
+    };
+
+    await harness.evaluate(buildJevBrowserReadyObservationExpression());
+
+    expect(harness.state.frameCount).toBe(10);
+  });
+
+  it("reads contenteditable text as the editor value", () => {
+    const editor = new FakeElement("DIV", rect(), "pattern");
+    editor.attributes.set("contenteditable", "plaintext-only");
+    editor.textContent = "^products\\/(.+)$";
+    const richEditor = new FakeElement("DIV", rect(0, 40), "heading");
+    richEditor.attributes.set("contenteditable", "");
+    richEditor.textContent = "Heading";
+    const harness = makeHarness([editor, richEditor]);
+
+    const observation = harness.evaluate(buildJevBrowserObservationExpression()) as {
+      controls: Array<{ role: string; value: string }>;
+    };
+
+    expect(observation.controls[0]).toMatchObject({
+      role: "textbox",
+      value: "^products\\/(.+)$",
+    });
+    expect(observation.controls[1]).toMatchObject({ role: "textbox", value: "Heading" });
   });
 
   it("prioritizes viewport controls and reports unsupported or bounded content", () => {

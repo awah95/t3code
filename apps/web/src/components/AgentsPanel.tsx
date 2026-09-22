@@ -22,7 +22,15 @@ import {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { Bot, Braces, Check, ChevronDown, ChevronRight, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { cn } from "~/lib/utils";
 import { orchestrationEnvironment } from "~/state/orchestration";
@@ -136,8 +144,69 @@ function agentActivityText(agent: RuntimeSubagent): string | null {
   );
 }
 
-/** Flat, non-interactive agent status line. No unfold. */
+const AgentSelectionContext = createContext<{
+  selectedAgentId: string | null;
+  setSelectedAgentId: (agentId: string | null) => void;
+  focusedAgentId: string | null;
+  focusedAgentRequestId: number;
+} | null>(null);
+
+function AgentDetails({ agent }: { agent: RuntimeSubagent }) {
+  const usage = agent.usage;
+  return (
+    <div className="mx-1.5 mb-1.5 space-y-3 rounded-md border border-border/60 bg-background/60 p-3 text-xs">
+      <section aria-label="Agent status">
+        <p className="font-medium">What’s happening</p>
+        <p className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">
+          {agent.error ?? agent.result ?? agent.progress ?? "No detailed update yet."}
+        </p>
+      </section>
+      {agent.recentActivity.length > 0 ? (
+        <section aria-label="Recent agent activity">
+          <p className="font-medium">Recent activity</p>
+          <ol className="mt-1 space-y-1 border-s border-border/70 ps-2 text-muted-foreground">
+            {agent.recentActivity.map((entry) => (
+              <li key={`${entry.at}:${entry.summary}`} className="break-words">
+                {entry.summary}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1 border-t border-border/60 pt-2 text-muted-foreground">
+        <dt>Model</dt>
+        <dd className="text-right text-foreground/85">
+          {formatSubagentModelLabel(agent.model, agent.effort)}
+        </dd>
+        <dt>Tokens</dt>
+        <dd className="text-right tabular-nums text-foreground/85">
+          {usage ? formatSubagentTokenCount(usage.totalTokens) : "Unavailable"}
+        </dd>
+        <dt>Tool uses</dt>
+        <dd className="text-right tabular-nums text-foreground/85">
+          {usage?.toolUses ?? "Unavailable"}
+        </dd>
+      </dl>
+      {agent.outputFile ? (
+        <p className="break-all font-mono text-[.7rem] text-muted-foreground">
+          Output: {agent.outputFile}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Stable agent status line with an opt-in detail disclosure. */
 function AgentRow({ agent }: { agent: RuntimeSubagent }) {
+  const selection = useContext(AgentSelectionContext);
+  const selected = selection?.selectedAgentId === agent.id;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const focusRequestId =
+    selection?.focusedAgentId === agent.id ? selection.focusedAgentRequestId : null;
+  useEffect(() => {
+    if (focusRequestId === null) return;
+    rowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [focusRequestId]);
   const visuals = STATUS_VISUALS[agent.status];
   const statusLabel =
     agent.kind === "subagent_batch" && agent.status === "idle" ? "Idle" : visuals.label;
@@ -155,38 +224,47 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
   ].filter((value): value is string => value !== null);
 
   return (
-    <div className="grid h-[3.875rem] grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1">
-      <span className="col-start-1 row-start-1 flex items-center">
-        <StatusDot status={agent.status} />
-      </span>
-      <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
-        <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
-        {role ? (
-          <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-            {role}
-          </span>
-        ) : null}
-      </span>
-      <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
-        <span className="inline-flex items-center gap-1">
-          <AgentElapsed agent={agent} />
-          {agent.status === "completed" ? (
-            <Check aria-hidden className="size-3 text-success" />
+    <div ref={rowRef} data-agent-id={agent.id}>
+      <button
+        type="button"
+        aria-expanded={selected}
+        aria-label={`Inspect ${agent.title}`}
+        onClick={() => selection?.setSelectedAgentId(selected ? null : agent.id)}
+        className="grid h-[3.875rem] w-full grid-cols-[0.375rem_minmax(0,1fr)_auto] grid-rows-[1.25rem_1.125rem_1rem] items-center gap-x-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+      >
+        <span className="col-start-1 row-start-1 flex items-center">
+          <StatusDot status={agent.status} />
+        </span>
+        <span className="col-start-2 row-start-1 flex min-w-0 items-baseline gap-2">
+          <span className="min-w-0 truncate text-sm font-medium">{agent.title}</span>
+          {role ? (
+            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+              {role}
+            </span>
           ) : null}
         </span>
-      </span>
-      <span
-        className={cn(
-          "col-start-2 col-end-4 row-start-2 block truncate text-xs",
-          agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
-        )}
-      >
-        {activity ?? statusLabel}
-      </span>
-      <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
-        {metadata.join(" · ")}
-      </span>
-      <span className="sr-only">{statusLabel}</span>
+        <span className="col-start-3 row-start-1 min-w-14 text-right font-mono text-[.7rem] text-muted-foreground/80">
+          <span className="inline-flex items-center gap-1">
+            <AgentElapsed agent={agent} />
+            {agent.status === "completed" ? (
+              <Check aria-hidden className="size-3 text-success" />
+            ) : null}
+          </span>
+        </span>
+        <span
+          className={cn(
+            "col-start-2 col-end-4 row-start-2 block truncate text-xs",
+            agent.status === "failed" ? "text-destructive-foreground" : "text-muted-foreground",
+          )}
+        >
+          {activity ?? statusLabel}
+        </span>
+        <span className="col-start-2 col-end-4 row-start-3 truncate font-mono text-[.7rem] tabular-nums text-muted-foreground/70">
+          {metadata.join(" · ")}
+        </span>
+        <span className="sr-only">{statusLabel}</span>
+      </button>
+      {selected ? <AgentDetails agent={agent} /> : null}
     </div>
   );
 }
@@ -322,7 +400,13 @@ function PhaseSection({
   phase: AgentPanelWorkflowGroup["phases"][number];
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen || phase.state === "running");
+  const selection = useContext(AgentSelectionContext);
+  const containsFocusedAgent = phase.members.some(
+    (member) => member.id === selection?.focusedAgentId,
+  );
+  const [open, setOpen] = useState(
+    defaultOpen || phase.state === "running" || containsFocusedAgent,
+  );
   const previousState = useRef(phase.state);
 
   useEffect(() => {
@@ -386,6 +470,7 @@ function ExpandedWorkflowSection({
   threadId: ThreadId | null;
   onCollapse: () => void;
 }) {
+  const selection = useContext(AgentSelectionContext);
   const [scriptOpen, setScriptOpen] = useState(false);
   const members = workflowMembers(group);
   const settled = members.filter(
@@ -438,9 +523,18 @@ function ExpandedWorkflowSection({
           onClose={() => setScriptOpen(false)}
         />
       ) : null}
-      {group.phases.map((phase) => (
-        <PhaseSection key={phase.index} phase={phase} defaultOpen={!workflowIsLive(group)} />
-      ))}
+      {group.phases.map((phase) => {
+        const containsFocusedAgent = phase.members.some(
+          (member) => member.id === selection?.focusedAgentId,
+        );
+        return (
+          <PhaseSection
+            key={`${phase.index}:${containsFocusedAgent ? selection?.focusedAgentRequestId : "stable"}`}
+            phase={phase}
+            defaultOpen={!workflowIsLive(group)}
+          />
+        );
+      })}
       {group.unphasedMembers.map((member) => (
         <AgentRow key={member.id} agent={member} />
       ))}
@@ -508,7 +602,11 @@ function WorkflowSection({
   environmentId: EnvironmentId | null;
   threadId: ThreadId | null;
 }) {
-  const [open, setOpen] = useState(() => workflowIsLive(group));
+  const selection = useContext(AgentSelectionContext);
+  const containsFocusedAgent = workflowMembers(group).some(
+    (member) => member.id === selection?.focusedAgentId,
+  );
+  const [open, setOpen] = useState(() => workflowIsLive(group) || containsFocusedAgent);
   return open ? (
     <ExpandedWorkflowSection
       group={group}
@@ -525,11 +623,40 @@ export function AgentsPanel({
   model,
   environmentId = null,
   threadId = null,
+  focusedAgentId = null,
+  focusedAgentRequestId = 0,
 }: {
   model: AgentPanelModel;
   environmentId?: EnvironmentId | null;
   threadId?: ThreadId | null;
+  focusedAgentId?: string | null;
+  focusedAgentRequestId?: number;
 }) {
+  const [selection, setSelection] = useState({
+    focusedAgentId,
+    focusedAgentRequestId,
+    selectedAgentId: focusedAgentId,
+  });
+  const selectedAgentId =
+    selection.focusedAgentId === focusedAgentId &&
+    selection.focusedAgentRequestId === focusedAgentRequestId
+      ? selection.selectedAgentId
+      : focusedAgentId;
+  const setSelectedAgentId = useCallback(
+    (agentId: string | null) =>
+      setSelection({ focusedAgentId, focusedAgentRequestId, selectedAgentId: agentId }),
+    [focusedAgentId, focusedAgentRequestId],
+  );
+  const selectionContext = useMemo(
+    () => ({
+      selectedAgentId,
+      setSelectedAgentId,
+      focusedAgentId,
+      focusedAgentRequestId,
+    }),
+    [focusedAgentId, focusedAgentRequestId, selectedAgentId, setSelectedAgentId],
+  );
+
   if (!model.hasAgents) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
@@ -544,41 +671,48 @@ export function AgentsPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-2 p-2">
-          {model.workflows.map((group) => (
-            <WorkflowSection
-              key={group.workflow.id}
-              group={group}
-              environmentId={environmentId}
-              threadId={threadId}
-            />
-          ))}
-          {model.directAgents.length > 0 ? (
-            <section>
-              <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
-                Direct spawns
-              </div>
-              {model.directAgents.map((agent) => (
-                <AgentRow key={agent.id} agent={agent} />
-              ))}
-            </section>
-          ) : null}
-        </div>
-      </ScrollArea>
-      <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
-        <span className="flex items-center gap-2">
-          {model.runningCount + model.waitingCount > 0 ? (
-            <span className="text-info-foreground">
-              ● {model.runningCount + model.waitingCount} working
-            </span>
-          ) : null}
-          {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
-          {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
-        </span>
-        <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
-      </footer>
-    </div>
+    <AgentSelectionContext.Provider value={selectionContext}>
+      <div className="flex h-full min-h-0 flex-col">
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-2 p-2">
+            {model.workflows.map((group) => {
+              const containsFocusedAgent = workflowMembers(group).some(
+                (member) => member.id === focusedAgentId,
+              );
+              return (
+                <WorkflowSection
+                  key={`${group.workflow.id}:${containsFocusedAgent ? focusedAgentRequestId : "stable"}`}
+                  group={group}
+                  environmentId={environmentId}
+                  threadId={threadId}
+                />
+              );
+            })}
+            {model.directAgents.length > 0 ? (
+              <section>
+                <div className="px-1.5 pt-1 text-[.65rem] font-medium uppercase tracking-wider text-muted-foreground">
+                  Direct spawns
+                </div>
+                {model.directAgents.map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} />
+                ))}
+              </section>
+            ) : null}
+          </div>
+        </ScrollArea>
+        <footer className="flex items-center justify-between border-t border-border/60 px-3 py-1.5 font-mono text-[.7rem] text-muted-foreground">
+          <span className="flex items-center gap-2">
+            {model.runningCount + model.waitingCount > 0 ? (
+              <span className="text-info-foreground">
+                ● {model.runningCount + model.waitingCount} working
+              </span>
+            ) : null}
+            {model.idleCount > 0 ? <span>{model.idleCount} idle</span> : null}
+            {model.settledCount > 0 ? <span>{model.settledCount} settled</span> : null}
+          </span>
+          <span className="tabular-nums">Σ {formatSubagentTokenCount(model.totalTokens)} tok</span>
+        </footer>
+      </div>
+    </AgentSelectionContext.Provider>
   );
 }

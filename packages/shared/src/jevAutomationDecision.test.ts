@@ -74,6 +74,13 @@ describe("Jev automation decision transport", () => {
     expect(body.state.unmetConditions[0]).toMatchObject({ passed: false, actual: "" });
     expect(body.state.observation).toMatchObject({ visibleText: "Email Continue" });
     expect(body.state.suppliedInputs[0]?.value).toBe("[host-held value]");
+    expect(body.state.policy).toContain(
+      "do not request novel text merely because its value is shown as host-held",
+    );
+    expect(body.questions.next.criteria.needs_novel_text).toContain(
+      "A redacted host-held value is already supplied",
+    );
+    expect(JSON.stringify(body.questions)).not.toContain("person@example.test");
     expect(body.state.unmetConditions[0]?.assertion).toMatchObject({
       expected: "person@example.test",
     });
@@ -157,5 +164,56 @@ describe("Jev automation decision transport", () => {
     }).decide({ ...input, signal: AbortSignal.abort() });
     expect(transport).not.toHaveBeenCalled();
     expect(result.decision.outcome).toBe("unavailable");
+  });
+
+  it("distinguishes transport failures without exposing thrown details", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new Error("secret-key upstream body: credential rejected"));
+    const result = await createOpenRouterJevAutomationDecision({
+      apiKey: "secret-key",
+      transport,
+    }).decide({ ...input, signal: new AbortController().signal });
+
+    expect(result.decision).toEqual({
+      outcome: "unavailable",
+      reason: "The Jev request failed during transport.",
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(JSON.stringify(result)).not.toContain("credential rejected");
+  });
+
+  it("distinguishes unreadable response bodies without exposing thrown details", async () => {
+    const transport = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      text: vi.fn().mockRejectedValue(new Error("secret response body")),
+    } as unknown as Response);
+    const result = await createOpenRouterJevAutomationDecision({
+      apiKey: "secret-key",
+      transport,
+    }).decide({ ...input, signal: new AbortController().signal });
+
+    expect(result.decision).toEqual({
+      outcome: "unavailable",
+      reason: "The Jev response body could not be read.",
+    });
+    expect(JSON.stringify(result)).not.toContain("secret response body");
+  });
+
+  it("distinguishes invalid JSON without exposing the response body", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("secret-key invalid response"));
+    const result = await createOpenRouterJevAutomationDecision({
+      apiKey: "secret-key",
+      transport,
+    }).decide({ ...input, signal: new AbortController().signal });
+
+    expect(result.decision).toEqual({
+      outcome: "unavailable",
+      reason: "The Jev response was not valid JSON.",
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-key");
+    expect(JSON.stringify(result)).not.toContain("invalid response");
   });
 });

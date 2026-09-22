@@ -105,7 +105,7 @@ export function buildJevAutomationDecisionBody(input: {
       state: {
         task: input.task,
         policy:
-          "Choose only one exact legal host action. Values, URLs and keys are supplied by the host and must not be invented. Choose needs_agent for novel text, visual understanding, unsupported work or ambiguity. A done proposal never proves completion: the host independently evaluates assertions.",
+          "Choose only one exact legal host action. Listed inputs are available to the host even though their values are deliberately hidden from you. Choose an action that references a listed input when it fits the task; do not request novel text merely because its value is shown as host-held. Values, URLs and keys must not be invented. Choose needs_agent for genuinely missing text, visual understanding, unsupported work or ambiguity. A done proposal never proves completion: the host independently evaluates assertions.",
         observation,
         suppliedInputs: input.inputs.map(({ id, kind, description }) => ({
           id,
@@ -125,7 +125,7 @@ export function buildJevAutomationDecisionBody(input: {
             ...actionHead.criteria,
             done: "Propose that the task is complete; the host must still verify it independently.",
             needs_novel_text:
-              "Request an agent because required text was not supplied by the host.",
+              "Request an agent only when required text has no listed supplied input. A redacted host-held value is already supplied.",
             needs_visual_understanding:
               "Request an agent because the step requires interpreting pixels or visual evidence.",
             needs_unsupported_operation:
@@ -237,8 +237,9 @@ export function createOpenRouterJevAutomationDecision(
           decision: { outcome: "unavailable", reason: "The Jev request exceeded its byte limit." },
           accounting: { inputTokens: null, outputTokens: null, costUsd: null },
         };
+      let response: Response;
       try {
-        const response = await transport(endpoint, {
+        response = await transport(endpoint, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${options.apiKey}`,
@@ -247,32 +248,54 @@ export function createOpenRouterJevAutomationDecision(
           body: payload,
           signal: input.signal,
         });
-        if (!response.ok)
-          return {
-            decision: {
-              outcome: "unavailable",
-              reason: `The Jev request failed with HTTP ${response.status}.`,
-            },
-            accounting: { inputTokens: null, outputTokens: null, costUsd: null },
-          };
-        const text = await response.text();
-        if (encoder.encode(text).length > JEV_AUTOMATION_RESPONSE_BYTE_LIMIT)
-          return {
-            decision: { outcome: "unavailable", reason: "The Jev response was too large." },
-            accounting: { inputTokens: null, outputTokens: null, costUsd: null },
-          };
-        return parseJevAutomationDecision(JSON.parse(text) as unknown, compiled.heads);
       } catch {
         return {
           decision: {
             outcome: "unavailable",
             reason: input.signal.aborted
               ? "The Jev request was cancelled."
-              : "The Jev request could not be completed.",
+              : "The Jev request failed during transport.",
           },
           accounting: { inputTokens: null, outputTokens: null, costUsd: null },
         };
       }
+      if (!response.ok)
+        return {
+          decision: {
+            outcome: "unavailable",
+            reason: `The Jev request failed with HTTP ${response.status}.`,
+          },
+          accounting: { inputTokens: null, outputTokens: null, costUsd: null },
+        };
+      let responseText: string;
+      try {
+        responseText = await response.text();
+      } catch {
+        return {
+          decision: {
+            outcome: "unavailable",
+            reason: input.signal.aborted
+              ? "The Jev request was cancelled."
+              : "The Jev response body could not be read.",
+          },
+          accounting: { inputTokens: null, outputTokens: null, costUsd: null },
+        };
+      }
+      if (encoder.encode(responseText).length > JEV_AUTOMATION_RESPONSE_BYTE_LIMIT)
+        return {
+          decision: { outcome: "unavailable", reason: "The Jev response was too large." },
+          accounting: { inputTokens: null, outputTokens: null, costUsd: null },
+        };
+      let raw: unknown;
+      try {
+        raw = JSON.parse(responseText) as unknown;
+      } catch {
+        return {
+          decision: { outcome: "unavailable", reason: "The Jev response was not valid JSON." },
+          accounting: { inputTokens: null, outputTokens: null, costUsd: null },
+        };
+      }
+      return parseJevAutomationDecision(raw, compiled.heads);
     },
   };
 }

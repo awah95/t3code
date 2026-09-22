@@ -19,6 +19,13 @@ visual judgment, unsupported controls, or clarification. A proposed completion i
 as verified success. Tasks have step and time limits, and stale page state stops an action
 from using an outdated target. Do not leave consequential tasks unattended.
 
+For repeatable QA, describe the starting state, exact values to enter, expected results, and
+how to restore the original state. Break a larger flow into checks such as changing a setting,
+verifying its effect, saving and reopening, then resetting it. Name the section containing a
+control when several controls share a label. A changed input value alone does not prove that
+the page rendered the expected result; ask your agent to check that separately. Content inside
+embedded frames and visual comparisons may still need the agent's ordinary browser tools.
+
 The Browser panel shows recent actions and reported API cost. Unknown cost is not zero; a
 cancelled request may still have been billed. These API charges are separate from your coding
 provider subscription. The dollar limit is checked between decisions, not enforced by the

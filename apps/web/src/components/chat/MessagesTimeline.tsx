@@ -284,6 +284,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   showCodexTurnUsage: boolean;
+  turnIdsWithUsageFold: ReadonlySet<TurnId>;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -300,7 +301,7 @@ interface TimelineRowSharedState {
   workGroupViewState: WorkGroupViewState;
   agentPanelModel: AgentPanelModel;
   expandedSpawnEntryIds: ReadonlySet<string>;
-  onOpenAgents: () => void;
+  onOpenAgents: (agentId?: string) => void;
   onCancelWorktreeSetup: (() => void) | null;
   onWorktreeSetupWorkLocally: (() => void) | null;
   onOpenWorktreeSetupTerminal: ((terminalId: string) => void) | null;
@@ -408,7 +409,7 @@ interface MessagesTimelineProps {
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
   agentPanelModel?: AgentPanelModel;
-  onOpenAgents?: () => void;
+  onOpenAgents?: (agentId?: string) => void;
   isWorking: boolean;
   isPreparingWorktree?: boolean;
   isCompacting?: boolean;
@@ -816,6 +817,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     queuedMessages,
   ]);
   const rows = useStableRows(rawRows, listIdentityKey);
+  const turnIdsWithUsageFold = useMemo(
+    () => new Set(rows.flatMap((row) => (row.kind === "turn-fold" ? [row.turnId] : []))),
+    [rows],
+  );
   const minimapItems = useMemo(() => deriveTimelineMinimapItems(rows), [rows]);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1148,6 +1153,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       showCodexTurnUsage,
+      turnIdsWithUsageFold,
       onRevertToTurnCount,
       onUseArtifactTemplate,
       onImageExpand,
@@ -1184,6 +1190,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       showCodexTurnUsage,
+      turnIdsWithUsageFold,
       onRevertToTurnCount,
       onUseArtifactTemplate,
       onImageExpand,
@@ -2344,31 +2351,35 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
 
   return (
-    <div className="group/timeline-row relative flex items-center gap-1 border-b border-border/60 pb-2 pe-0.5 pt-1">
-      <button
-        type="button"
-        aria-expanded={row.expanded}
-        data-scroll-anchor-ignore
-        onClick={() => ctx.onToggleTurnFold(row.turnId)}
-        className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
-      >
-        <span>{row.label}</span>
-        <Icon className="size-3.5" />
-      </button>
-      {ctx.showCodexTurnUsage && ctx.threadRef ? (
-        <CodexTurnUsage
-          environmentId={ctx.activeThreadEnvironmentId}
-          threadId={ctx.threadRef.threadId}
-          turnId={row.turnId}
-          isLatestTurn={activity.latestTurnId === row.turnId}
-          isUnsettled={activity.unsettledTurnId === row.turnId}
+    <div className="group/timeline-row relative border-b border-border/60 pb-2 pe-0.5 pt-1">
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          aria-expanded={row.expanded}
+          data-scroll-anchor-ignore
+          onClick={() => ctx.onToggleTurnFold(row.turnId)}
+          className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-sm leading-relaxed text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
+        >
+          <span>{row.label}</span>
+          <Icon className="size-3.5" />
+        </button>
+        <TimelineRowTimestamp
+          createdAt={row.createdAt}
+          timestampFormat={ctx.timestampFormat}
+          className="ms-auto"
         />
+      </div>
+      {ctx.showCodexTurnUsage && ctx.threadRef ? (
+        <div className="mt-1 px-1">
+          <CodexTurnUsage
+            environmentId={ctx.activeThreadEnvironmentId}
+            threadId={ctx.threadRef.threadId}
+            turnId={row.turnId}
+            isLatestTurn={activity.latestTurnId === row.turnId}
+            isUnsettled={activity.unsettledTurnId === row.turnId}
+          />
+        </div>
       ) : null}
-      <TimelineRowTimestamp
-        createdAt={row.createdAt}
-        timestampFormat={ctx.timestampFormat}
-        className="ms-auto"
-      />
     </div>
   );
 }
@@ -2415,7 +2426,11 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
             copyStreaming={row.assistantCopyStreaming}
           />
         ) : null}
-        {ctx.showCodexTurnUsage && ctx.threadRef && row.message.turnId ? (
+        {ctx.showCodexTurnUsage &&
+        ctx.threadRef &&
+        row.showAssistantMeta &&
+        row.message.turnId &&
+        !ctx.turnIdsWithUsageFold.has(row.message.turnId) ? (
           <div className="mt-1 flex justify-start">
             <CodexTurnUsage
               environmentId={ctx.activeThreadEnvironmentId}
@@ -2436,6 +2451,8 @@ function AssistantMetaTimelineRow({
 }: {
   row: Extract<TimelineRow, { kind: "assistant-meta" }>;
 }) {
+  const ctx = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
   return (
     <div className="px-1">
       <AssistantMessageMeta
@@ -2445,6 +2462,20 @@ function AssistantMetaTimelineRow({
         copyStreaming={row.assistantCopyStreaming}
         alwaysVisible
       />
+      {ctx.showCodexTurnUsage &&
+      ctx.threadRef &&
+      row.message.turnId &&
+      !ctx.turnIdsWithUsageFold.has(row.message.turnId) ? (
+        <div className="mt-1 flex justify-start">
+          <CodexTurnUsage
+            environmentId={ctx.activeThreadEnvironmentId}
+            threadId={ctx.threadRef.threadId}
+            turnId={row.message.turnId}
+            isLatestTurn={activity.latestTurnId === row.message.turnId}
+            isUnsettled={activity.unsettledTurnId === row.message.turnId}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4681,7 +4712,7 @@ const AgentSpawnRow = memo(function AgentSpawnRow(props: {
           ))}
           <button
             type="button"
-            onClick={onOpenAgents}
+            onClick={() => onOpenAgents()}
             className="mt-1 self-start rounded-sm px-1 text-xs text-muted-foreground hover:text-foreground"
           >
             Open Agents panel ›
@@ -4710,6 +4741,7 @@ function AgentSpawnMemberRow({
   agent: RuntimeSubagent;
   onToggleEntry?: ((collapsed: boolean) => void) | undefined;
 }) {
+  const { onOpenAgents } = use(TimelineRowCtx);
   const [open, setOpen] = useState(false);
   const activeStatus = isActiveSubagentStatus(agent.status);
   const activity = activeStatus
@@ -4751,50 +4783,74 @@ function AgentSpawnMemberRow({
 
   return (
     <div
-      role={canExpand ? "button" : undefined}
-      tabIndex={canExpand ? 0 : undefined}
-      aria-label={canExpand ? `${agent.title}, ${statusLabel}` : undefined}
-      aria-expanded={canExpand ? open : undefined}
-      onClick={canExpand ? toggleOpen : undefined}
-      onKeyDown={
-        canExpand
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                toggleOpen();
-              }
-            }
-          : undefined
-      }
       className={cn(
         "flex flex-col rounded-md px-1 py-0.5 transition-colors",
-        canExpand &&
-          "cursor-pointer hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
+        canExpand && "hover:bg-accent/20",
       )}
     >
-      <div className="flex select-none items-center gap-1.5">
-        <p className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm leading-relaxed">
-          <span
-            className={cn(
-              "min-w-0 truncate",
-              agent.status === "failed" ? failedToolIconClassName : "text-foreground/80",
-            )}
+      <div className="flex select-none items-start gap-1">
+        {canExpand ? (
+          <button
+            type="button"
+            aria-label={`${agent.title}, ${statusLabel}`}
+            aria-expanded={open}
+            onClick={toggleOpen}
+            className="min-w-0 flex-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
           >
-            {agent.title}
-          </span>
-          {role ? (
-            <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
-              {role}
+            <span className="flex min-w-0 items-baseline gap-1.5 text-sm leading-relaxed">
+              <span
+                className={cn(
+                  "min-w-0 flex-1 truncate",
+                  agent.status === "failed" ? failedToolIconClassName : "text-foreground/80",
+                )}
+              >
+                {agent.title}
+              </span>
+              {role ? (
+                <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+                  {role}
+                </span>
+              ) : null}
+              <span className="shrink-0 font-mono text-[.7rem] tabular-nums text-muted-foreground">
+                {statusLabel}
+              </span>
             </span>
-          ) : null}
-        </p>
-        <span className="shrink-0 font-mono text-[.7rem] tabular-nums text-muted-foreground">
-          {statusLabel}
-        </span>
+            {!open && firstLine ? (
+              <span className="block truncate text-xs text-muted-foreground">{firstLine}</span>
+            ) : null}
+          </button>
+        ) : (
+          <div className="flex min-w-0 flex-1 items-baseline gap-1.5 text-sm leading-relaxed">
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate",
+                agent.status === "failed" ? failedToolIconClassName : "text-foreground/80",
+              )}
+            >
+              {agent.title}
+            </span>
+            {role ? (
+              <span className="max-w-28 shrink-0 truncate rounded-sm border border-border/60 px-1 font-mono text-[.65rem] text-muted-foreground">
+                {role}
+              </span>
+            ) : null}
+            <span className="shrink-0 font-mono text-[.7rem] tabular-nums text-muted-foreground">
+              {statusLabel}
+            </span>
+          </div>
+        )}
+        <button
+          type="button"
+          aria-label={`Inspect ${agent.title} in Agents panel`}
+          className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenAgents(agent.id);
+          }}
+        >
+          <ChevronRightIcon aria-hidden className="size-3" />
+        </button>
       </div>
-      {!open && firstLine ? (
-        <p className="truncate text-xs text-muted-foreground">{firstLine}</p>
-      ) : null}
       {open ? (
         <div
           className="mt-1 cursor-default rounded-md bg-muted/40 px-3 py-2"

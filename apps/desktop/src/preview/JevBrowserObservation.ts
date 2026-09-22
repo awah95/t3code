@@ -6,6 +6,10 @@ export function buildJevBrowserObservationExpression(): string {
   return `(${installJevBrowserObserver.toString()})()`;
 }
 
+export function buildJevBrowserReadyObservationExpression(): string {
+  return `globalThis.__t3JevBrowser?.observeReady?.() ?? (${installJevBrowserObserver.toString()})()`;
+}
+
 export function buildJevBrowserGuardExpression(revision: string, targetId?: string): string {
   return `globalThis.__t3JevBrowser?.guard(${JSON.stringify(revision)}, ${JSON.stringify(targetId ?? null)}) ?? { ok: false, reason: 'document-changed' }`;
 }
@@ -35,6 +39,7 @@ function installJevBrowserObserver() {
   const page = globalThis as typeof globalThis & {
     __t3JevBrowser?: {
       observe: () => unknown;
+      observeReady: () => Promise<unknown>;
       guard: (revision: string, id: string | null) => unknown;
       select: (revision: string, id: string, value: string) => unknown;
       prepareText: (revision: string, id: string) => unknown;
@@ -103,6 +108,15 @@ function installJevBrowserObserver() {
       ""
     ).slice(0, 240);
   };
+  const isContentEditable = (element: Element) => {
+    const contentEditable = element.getAttribute("contenteditable");
+    return (
+      contentEditable === "" ||
+      contentEditable === "true" ||
+      contentEditable === "plaintext-only" ||
+      ("isContentEditable" in element && element.isContentEditable === true)
+    );
+  };
   const roleOf = (element: Element) => {
     const explicit = element.getAttribute("role");
     if (explicit) return explicit;
@@ -110,7 +124,7 @@ function installJevBrowserObserver() {
     if (tag === "button") return "button";
     if (tag === "a") return "link";
     if (tag === "select") return "combobox";
-    if (tag === "textarea" || element.getAttribute("contenteditable") === "true") return "textbox";
+    if (tag === "textarea" || isContentEditable(element)) return "textbox";
     if (tag === "input") {
       const type = (element as HTMLInputElement).type;
       if (["checkbox", "radio"].includes(type)) return type;
@@ -146,10 +160,10 @@ function installJevBrowserObserver() {
     }
     return false;
   };
+  const controlSelector =
+    'a[href],button,input:not([type=hidden]),textarea,select,[role],[tabindex],[contenteditable]:not([contenteditable="false"])';
   const read = (includeOmissions: boolean) => {
-    const candidates = document.querySelectorAll(
-      "a[href],button,input:not([type=hidden]),textarea,select,[role],[tabindex],[contenteditable=true]",
-    );
+    const candidates = document.querySelectorAll(controlSelector);
     const visibleControls: Array<{ element: Element; rect: DOMRect }> = [];
     let offscreenControls = 0;
     let omittedControls = 0;
@@ -176,6 +190,7 @@ function installJevBrowserObserver() {
       nodes.set(id, element);
       const input = element as HTMLInputElement;
       const sensitive = input.type === "password" || input.type === "file";
+      const contentEditable = isContentEditable(element);
       const select = element instanceof HTMLSelectElement ? element : null;
       if (element instanceof HTMLSelectElement)
         omittedOptions += Math.max(0, element.options.length - 100);
@@ -184,7 +199,13 @@ function installJevBrowserObserver() {
         tag: element.tagName.toLowerCase(),
         role: roleOf(element),
         name: nameOf(element),
-        value: sensitive ? "" : "value" in element ? String(input.value).slice(0, 2000) : "",
+        value: sensitive
+          ? ""
+          : contentEditable
+            ? String((element as HTMLElement).innerText ?? element.textContent ?? "").slice(0, 2000)
+            : "value" in element
+              ? String(input.value).slice(0, 2000)
+              : "",
         checked:
           "checked" in element ? input.checked : element.getAttribute("aria-checked") === "true",
         disabled:
@@ -262,6 +283,85 @@ function installJevBrowserObserver() {
       omissions: state.omissions,
     };
   };
+  const observeReady = () =>
+    new Promise<ReturnType<typeof observe>>((resolve, reject) => {
+      const idleMaximumFrames = 8;
+      const maximumFrames = 30;
+      const minimumFrames = 3;
+      const quietFramesRequired = 2;
+      let frame = 0;
+      let quietFrames = 0;
+      let changed = false;
+      let mutationPending = false;
+      let animationFrame = 0;
+      let finished = false;
+      let maximumWallTime: ReturnType<typeof setTimeout>;
+      const mutations = new MutationObserver(() => {
+        mutationPending = true;
+      });
+      const hasRelevantAnimation = () =>
+        document.getAnimations().some((animation) => {
+          if (animation.playState !== "running") return false;
+          const target = (animation.effect as (AnimationEffect & { target?: unknown }) | null)
+            ?.target;
+          if (!(target instanceof Element)) return false;
+          return target.matches(controlSelector) || target.querySelector(controlSelector) !== null;
+        });
+      const cleanup = () => {
+        clearTimeout(maximumWallTime);
+        cancelAnimationFrame(animationFrame);
+        mutations.disconnect();
+        window.removeEventListener("pagehide", abort, true);
+      };
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        try {
+          resolve(observe());
+        } catch (cause) {
+          reject(cause);
+        }
+      };
+      const abort = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(new Error("The document changed before the browser observation became ready."));
+      };
+      // @effect-diagnostics-next-line globalTimers:off -- Serialized page code uses a wall-clock fallback when animation frames are throttled.
+      maximumWallTime = setTimeout(finish, 750);
+      const sample = () => {
+        frame++;
+        if (mutationPending) {
+          changed = true;
+          quietFrames = 0;
+          mutationPending = false;
+        } else {
+          quietFrames++;
+        }
+        const animating = hasRelevantAnimation();
+        // This catches ordinary render transitions without continuously scanning large pages.
+        // Updates delayed beyond these bounds still require task assertions or agent handoff.
+        if (
+          frame >= maximumFrames ||
+          (!animating && !changed && frame >= idleMaximumFrames) ||
+          (!animating && changed && frame >= minimumFrames && quietFrames >= quietFramesRequired)
+        ) {
+          finish();
+          return;
+        }
+        animationFrame = requestAnimationFrame(sample);
+      };
+      mutations.observe(document.documentElement, {
+        attributes: true,
+        characterData: true,
+        childList: true,
+        subtree: true,
+      });
+      window.addEventListener("pagehide", abort, true);
+      animationFrame = requestAnimationFrame(sample);
+    });
   const guard = (expected: string, id: string | null) => {
     if (expected !== `${documentId}:${revision}`) return { ok: false, reason: "stale-revision" };
     const node = id ? nodes.get(id) : null;
@@ -320,7 +420,7 @@ function installJevBrowserObserver() {
         "submit",
       ]).has(node.type);
     const textArea = node instanceof HTMLTextAreaElement;
-    const contentEditable = node?.getAttribute("contenteditable") === "true";
+    const contentEditable = isContentEditable(node);
     if (
       (!textInput && !textArea && !contentEditable) ||
       ("readOnly" in node && (node as HTMLInputElement).readOnly)
@@ -369,6 +469,6 @@ function installJevBrowserObserver() {
     node?.dispatchEvent(new Event("change", { bubbles: true }));
     return { ok: true };
   };
-  page.__t3JevBrowser = { observe, guard, select, prepareText, setText };
+  page.__t3JevBrowser = { observe, observeReady, guard, select, prepareText, setText };
   return observe();
 }
