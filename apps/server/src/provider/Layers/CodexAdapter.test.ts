@@ -238,6 +238,7 @@ const validationLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: validationRuntimeFactory.factory,
       });
     }),
@@ -290,6 +291,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
       NodeAssert.deepStrictEqual(validationRuntimeFactory.factory.mock.calls[0]?.[0], {
         binaryPath: "codex",
         cwd: process.cwd(),
+        environment: {},
         launchArgs: "",
         model: "gpt-5.3-codex",
         providerInstanceId: ProviderInstanceId.make("codex"),
@@ -308,6 +310,7 @@ const sessionErrorLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: sessionRuntimeFactory.factory,
       });
     }),
@@ -546,6 +549,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       Effect.gen(function* () {
         const codexConfig = decodeCodexSettings({ launchArgs: "--strict-config --enable foo" });
         return yield* makeCodexAdapter(codexConfig, {
+          environment: {},
           makeRuntime: runtimeFactory.factory,
         });
       }),
@@ -610,6 +614,7 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       Effect.gen(function* () {
         const codexConfig = decodeCodexSettings({});
         return yield* makeCodexAdapter(codexConfig, {
+          environment: {},
           instanceId: customInstanceId,
           makeRuntime: customRuntimeFactory.factory,
         });
@@ -665,6 +670,7 @@ const lifecycleLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: lifecycleRuntimeFactory.factory,
       });
     }),
@@ -2683,6 +2689,7 @@ const scopedLifecycleLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: scopedLifecycleRuntimeFactory.factory,
       });
     }),
@@ -2727,6 +2734,7 @@ const scopedFailureLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: scopedFailureRuntimeFactory.factory,
       });
     }),
@@ -2778,6 +2786,7 @@ it.effect("flushes managed native logs when the adapter layer shuts down", () =>
         Effect.gen(function* () {
           const codexConfig = decodeCodexSettings({});
           return yield* makeCodexAdapter(codexConfig, {
+            environment: {},
             makeRuntime: runtimeFactory.factory,
             nativeEventLogPath: basePath,
           });
@@ -2835,6 +2844,7 @@ const usageLimitLayer = it.layer(
     Effect.gen(function* () {
       const codexConfig = decodeCodexSettings({});
       return yield* makeCodexAdapter(codexConfig, {
+        environment: {},
         makeRuntime: usageLimitRuntimeFactory.factory,
       });
     }),
