@@ -113,6 +113,8 @@ export const PREVIEW_POINTER_EVENT_CHANNEL = "desktop:preview-pointer-event";
 export const MAC_PERMISSION_HELPER_CHANNEL = "desktop:mac-permission-helper";
 
 export const CHECK_SYSTEM_PERMISSION_CHANNEL = "desktop:check-system-permission";
+export const PREVIEW_RECORDING_INPUT_CHANNEL = "desktop:preview-recording-input";
+
 export const GET_JEV_STATUS_CHANNEL = "desktop:jev:status";
 export const SET_JEV_API_KEY_CHANNEL = "desktop:jev:key";
 export const DECIDE_JEV_ROUTE_CHANNEL = "desktop:jev:decide";

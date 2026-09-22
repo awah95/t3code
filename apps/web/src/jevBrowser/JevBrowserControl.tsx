@@ -4,6 +4,7 @@ import { BotIcon, CircleAlertIcon, Globe2Icon, LoaderCircleIcon } from "lucide-r
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
+import { MenuItem } from "~/components/ui/menu";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "~/components/ui/popover";
 import { Switch } from "~/components/ui/switch";
 import { cn } from "~/lib/utils";
@@ -27,7 +28,13 @@ function statusLabel(status: "pending" | "succeeded" | "failed" | "cancelled") {
   }
 }
 
-export function JevBrowserControl({ scope }: { readonly scope: ScopedThreadRef }) {
+export function JevBrowserControl({
+  scope,
+  presentation = "toolbar",
+}: {
+  readonly scope: ScopedThreadRef;
+  readonly presentation?: "toolbar" | "menu";
+}) {
   const key = scopedThreadKey(scope);
   const state = useJevBrowserStore((store) => store.byScope[key]);
   const enable = useJevBrowserStore((store) => store.enable);
@@ -105,20 +112,29 @@ export function JevBrowserControl({ scope }: { readonly scope: ScopedThreadRef }
     }
   };
 
+  const controlLabel = `Jev browser: ${pendingCount > 0 ? `${pendingCount} action${pendingCount === 1 ? "" : "s"} running` : enabled ? "on for this thread" : "off"}`;
+  const controlStatus = pendingCount > 0 ? "Running" : enabled ? "Jev" : "Direct";
+
   return (
     <Popover>
       <PopoverTrigger
         render={
-          <Button
-            type="button"
-            variant="ghost-muted"
-            size="compact"
-            aria-label={`Jev browser: ${pendingCount > 0 ? `${pendingCount} action${pendingCount === 1 ? "" : "s"} running` : enabled ? "on for this thread" : "off"}`}
-          />
+          presentation === "menu" ? (
+            <MenuItem
+              closeOnClick={false}
+              density="touch"
+              aria-label={controlLabel}
+              className="w-full"
+            />
+          ) : (
+            <Button type="button" variant="ghost-muted" size="compact" aria-label={controlLabel} />
+          )
         }
       >
         <Globe2Icon className="size-3.5" />
-        <span>Browser</span>
+        <span className={presentation === "menu" ? "min-w-0 flex-1" : undefined}>
+          {presentation === "menu" ? "Jev browser" : "Browser"}
+        </span>
         <span
           aria-hidden
           className={cn(
@@ -126,12 +142,17 @@ export function JevBrowserControl({ scope }: { readonly scope: ScopedThreadRef }
             pendingCount > 0 ? "bg-warning" : enabled ? "bg-success" : "bg-muted-foreground/50",
           )}
         />
-        <span className="text-[11px] font-normal">
-          {pendingCount > 0 ? "Running" : enabled ? "Jev" : "Direct"}
+        <span
+          className={cn(
+            "font-normal text-muted-foreground",
+            presentation === "menu" ? "text-xs" : "text-[11px]",
+          )}
+        >
+          {controlStatus}
         </span>
       </PopoverTrigger>
       <PopoverPopup
-        side="bottom"
+        side={presentation === "menu" ? "left" : "bottom"}
         align="end"
         className="w-80 max-w-[calc(100vw-2rem)]"
         aria-label="Jev browser controls"

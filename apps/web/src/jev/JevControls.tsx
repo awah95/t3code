@@ -14,7 +14,15 @@ import {
 import { isElectron } from "../env";
 import { listenForJevSubagents, useJevStore, type JevCall } from "./jevStore";
 
-export function JevControls() {
+type JevControlsProps = {
+  readonly presentation?: "toolbar" | "menu";
+  readonly onRequestMenuClose?: () => void;
+};
+
+export function JevControls({
+  presentation = "toolbar",
+  onRequestMenuClose,
+}: JevControlsProps = {}) {
   const { enabled, setEnabled, panelOpen, setPanelOpen, calls, mode } = useJevStore();
   useEffect(listenForJevSubagents, []);
   useEffect(() => {
@@ -47,12 +55,40 @@ export function JevControls() {
   if (!isElectron) return null;
   const pending = calls.some((call) => call.status === "pending");
   const reviewCount = calls.filter((call) => call.status === "awaiting-review").length;
+  const status =
+    reviewCount > 0
+      ? "Review"
+      : pending
+        ? "Routing…"
+        : enabled
+          ? mode === "guided"
+            ? "Guided"
+            : "Auto"
+          : "Off";
+  const togglePanel = () => {
+    setPanelOpen(!panelOpen);
+    onRequestMenuClose?.();
+  };
+  if (presentation === "menu") {
+    return (
+      <MenuItem density="touch" onClick={togglePanel}>
+        <RouteIcon />
+        <span className="min-w-0 flex-1">Jev routing</span>
+        <span className="text-xs text-muted-foreground">{status}</span>
+        {reviewCount > 0 && (
+          <span className="min-w-4 rounded-sm bg-warning/15 px-1 text-center text-[10px] tabular-nums text-warning-foreground">
+            {reviewCount}
+          </span>
+        )}
+      </MenuItem>
+    );
+  }
   return (
     <Button
       type="button"
       variant={reviewCount > 0 ? "warning-outline" : "ghost-muted"}
       size="compact"
-      onClick={() => setPanelOpen(!panelOpen)}
+      onClick={togglePanel}
       aria-expanded={panelOpen}
       aria-controls="jev-routing-panel"
       aria-label={`Jev routing: ${reviewCount > 0 ? `${reviewCount} recommendation${reviewCount === 1 ? "" : "s"} awaiting review` : pending ? "routing in progress" : enabled ? `${mode} mode enabled` : "off"}`}
@@ -63,17 +99,7 @@ export function JevControls() {
         aria-hidden
         className={`size-1.5 rounded-full ${reviewCount > 0 ? "bg-warning" : enabled ? "bg-success" : "bg-muted-foreground/50"}`}
       />
-      <span className="text-[11px] font-normal">
-        {reviewCount > 0
-          ? "Review"
-          : pending
-            ? "Routing…"
-            : enabled
-              ? mode === "guided"
-                ? "Guided"
-                : "Auto"
-              : "Off"}
-      </span>
+      <span className="text-[11px] font-normal">{status}</span>
       {reviewCount > 0 && (
         <span className="min-w-4 rounded-sm bg-warning/15 px-1 text-[10px] tabular-nums text-warning-foreground">
           {reviewCount}
