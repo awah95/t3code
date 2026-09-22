@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import type {
   JevAutomationAdapter,
+  JevAutomationAction,
+  JevAutomationAssertion,
   JevAutomationDecisionClient,
   JevAutomationObservation,
+  JevAutomationVerificationResult,
 } from "./jevAutomation.ts";
 import { evaluateJevAutomationAssertions, runJevAutomation } from "./jevAutomation.ts";
 
@@ -38,6 +41,23 @@ const after: JevAutomationObservation = {
 };
 
 const paid = { inputTokens: 12, outputTokens: 3, costUsd: 0.00002 } as const;
+
+const verifyAgainst = (
+  observation: JevAutomationObservation,
+  assertions: readonly JevAutomationAssertion[],
+): JevAutomationVerificationResult => ({
+  results: evaluateJevAutomationAssertions(observation, assertions).map((result) => ({
+    ...result,
+    verdict: result.verdict ?? (result.passed ? "passed" : "failed"),
+    matchCount: result.matchCount ?? 0,
+    coverage: { status: "complete", searchedScopes: 1, omittedScopes: 0, omissions: [] },
+    document: {
+      documentId: observation.document?.documentId ?? "test-document",
+      revision: observation.document?.revision ?? observation.revision,
+      status: "current",
+    },
+  })),
+});
 
 describe("evaluateJevAutomationAssertions", () => {
   it("matches pre-observation controls by exact unique role and name", () => {
@@ -114,7 +134,7 @@ describe("evaluateJevAutomationAssertions", () => {
           expected: true,
         },
       ]),
-    ).toEqual([
+    ).toMatchObject([
       {
         assertion: {
           kind: "control-exists",
@@ -209,11 +229,109 @@ describe("evaluateJevAutomationAssertions", () => {
 });
 
 describe("runJevAutomation", () => {
+  it("fails closed when assertion-bearing automation has no independent verifier", async () => {
+    const result = await runJevAutomation(
+      {
+        task: "Verify the saved name",
+        assertions: [
+          {
+            kind: "control",
+            targetId: "name",
+            property: "value",
+            operator: "equals",
+            expected: "Ada",
+          },
+        ],
+      },
+      { observe: async () => ({ ...after, candidates: [] }), execute: vi.fn() },
+      { decide: vi.fn() },
+    );
+
+    expect(result).toMatchObject({
+      status: "needs-agent",
+      reason: expect.stringContaining("independent targeted verification"),
+    });
+  });
+
+  it("never turns an indeterminate verifier result into completion", async () => {
+    const assertion = {
+      kind: "control-exists" as const,
+      target: { role: "button", name: "Save" },
+    };
+    const result = await runJevAutomation(
+      { task: "Verify Save exists", assertions: [assertion] },
+      {
+        observe: async () => ({ ...after, candidates: [] }),
+        verify: async () => ({
+          results: [
+            {
+              assertion,
+              verdict: "indeterminate",
+              passed: false,
+              reason: "One frame was not searchable.",
+              matchCount: 1,
+              coverage: {
+                status: "partial",
+                searchedScopes: 1,
+                omittedScopes: 1,
+                omissions: ["unsupported-frame"],
+              },
+              document: { documentId: "doc-1", revision: "r2", status: "current" },
+            },
+          ],
+        }),
+        execute: vi.fn(),
+      },
+      { decide: vi.fn() },
+    );
+
+    expect(result.status).toBe("needs-agent");
+    expect(result.assertions).toMatchObject([{ verdict: "indeterminate", passed: false }]);
+  });
+
+  it("rejects verifier success without complete coverage", async () => {
+    const assertion = {
+      kind: "control-exists" as const,
+      target: { role: "button", name: "Save" },
+    };
+    const result = await runJevAutomation(
+      { task: "Verify Save exists", assertions: [assertion] },
+      {
+        observe: async () => ({ ...after, candidates: [] }),
+        verify: async () => ({
+          results: [
+            {
+              assertion,
+              verdict: "passed",
+              passed: true,
+              matchCount: 1,
+              coverage: {
+                status: "partial",
+                searchedScopes: 1,
+                omittedScopes: 1,
+                omissions: ["closed-shadow-root"],
+              },
+              document: { documentId: "doc-1", revision: "r2", status: "current" },
+            },
+          ],
+        }),
+        execute: vi.fn(),
+      },
+      { decide: vi.fn() },
+    );
+
+    expect(result).toMatchObject({
+      status: "failed",
+      reason: "The verifier claimed success without complete coverage.",
+    });
+  });
+
   it("executes only a host candidate, persists its proposal first, and verifies completion fresh", async () => {
     let current = before;
     const events: string[] = [];
     const adapter: JevAutomationAdapter = {
       observe: vi.fn(async () => current),
+      verify: vi.fn(async ({ assertions }) => verifyAgainst(current, assertions)),
       execute: vi.fn(async ({ revision, action }) => {
         events.push(`execute:${action.candidateId}`);
         expect(revision).toBe("r1");
@@ -380,6 +498,11 @@ describe("runJevAutomation", () => {
         ],
       };
     };
+    let latestObservation: JevAutomationObservation | null = null;
+    const observeForAdapter = async () => {
+      latestObservation = await observe();
+      return latestObservation;
+    };
 
     const result = await runJevAutomation(
       {
@@ -393,7 +516,14 @@ describe("runJevAutomation", () => {
           },
         ],
       },
-      { observe, execute },
+      {
+        observe: observeForAdapter,
+        verify: async ({ assertions }) => {
+          if (!latestObservation) throw new Error("verify called before observe");
+          return verifyAgainst(latestObservation, assertions);
+        },
+        execute,
+      },
       {
         decide: async () => ({
           decision: { outcome: "act", candidateId: "purchase" },
@@ -440,6 +570,11 @@ describe("runJevAutomation", () => {
         ],
       };
     };
+    let latestObservation: JevAutomationObservation | null = null;
+    const observeForAdapter = async () => {
+      latestObservation = await observe();
+      return latestObservation;
+    };
 
     const result = await runJevAutomation(
       {
@@ -461,7 +596,14 @@ describe("runJevAutomation", () => {
           },
         ],
       },
-      { observe, execute },
+      {
+        observe: observeForAdapter,
+        verify: async ({ assertions }) => {
+          if (!latestObservation) throw new Error("verify called before observe");
+          return verifyAgainst(latestObservation, assertions);
+        },
+        execute,
+      },
       {
         decide: async () => ({
           decision: { outcome: "act", candidateId: "apply" },
@@ -568,12 +710,93 @@ describe("runJevAutomation", () => {
           },
         ],
       },
-      { observe: async () => observation(), execute },
+      {
+        observe: async () => observation(),
+        verify: async ({ assertions }) => verifyAgainst(observation(), assertions),
+        execute,
+      },
       { decide },
     );
 
     expect(result.status).toBe("completed");
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("binds logical navigation and desired check state only from host candidates", async () => {
+    const logicalTarget = {
+      kind: "environment-port" as const,
+      port: 5173,
+      path: "/settings",
+    };
+    const observations: JevAutomationObservation[] = [
+      {
+        revision: "navigation-1",
+        surface: "browser",
+        controls: [{ id: "stock", role: "checkbox", name: "Stock only", checked: false }],
+        candidates: [
+          {
+            id: "navigate-settings",
+            operation: "navigate",
+            inputId: "settings-target",
+            description: "Open settings",
+          },
+        ],
+      },
+      {
+        revision: "check-1",
+        surface: "browser",
+        controls: [{ id: "stock", role: "checkbox", name: "Stock only", checked: false }],
+        candidates: [
+          {
+            id: "check-stock",
+            operation: "set-checked",
+            targetId: "stock",
+            checked: true,
+            description: "Enable stock only",
+          },
+        ],
+      },
+      { revision: "done", surface: "browser", controls: [], candidates: [] },
+    ];
+    const decisions = [
+      { decision: { outcome: "act", candidateId: "navigate-settings" } as const, accounting: paid },
+      { decision: { outcome: "act", candidateId: "check-stock" } as const, accounting: paid },
+      { decision: { outcome: "done" } as const, accounting: paid },
+    ];
+    const executedActions: JevAutomationAction[] = [];
+    const execute = vi.fn(async ({ action }: { action: JevAutomationAction }) => {
+      executedActions.push(action);
+      return { status: "executed" as const };
+    });
+    const result = await runJevAutomation(
+      {
+        task: "Open settings and enable stock only",
+        inputs: [
+          {
+            id: "settings-target",
+            kind: "navigation",
+            target: logicalTarget,
+            description: "the settings dev server",
+          },
+        ],
+      },
+      {
+        observe: async () => observations.shift()!,
+        execute,
+      },
+      { decide: async () => decisions.shift()! },
+    );
+
+    expect(result.status).toBe("needs-agent");
+    expect(executedActions[0]).toMatchObject({
+      operation: "navigate",
+      navigationTarget: logicalTarget,
+    });
+    expect(executedActions[1]).toMatchObject({
+      operation: "set-checked",
+      targetId: "stock",
+      checked: true,
+    });
   });
 
   it("rejects request and observation input id collisions", async () => {

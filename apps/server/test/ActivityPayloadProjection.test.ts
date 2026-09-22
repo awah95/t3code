@@ -356,6 +356,70 @@ describe("projectActivityPayload", () => {
     ).toEqual(projectActivityPayload(activity));
     expect(event.payload.activity).toBe(activity);
   });
+
+  it("projects persisted nonterminal browser runs as interrupted after restart", () => {
+    const activity = {
+      id: EventId.make("browser-run:run-restart"),
+      tone: "tool",
+      kind: "browser.run.updated",
+      summary: "Browser run is acting",
+      payload: {
+        runId: "run-restart",
+        sequence: 2,
+        environmentId: "environment-a",
+        threadId: "thread-a",
+        browserBackend: "embedded",
+        status: "acting",
+        startedAt: "2025-01-01T00:00:00.000Z",
+        updatedAt: "2025-01-01T00:00:01.000Z",
+        lastAction: "activate",
+        assertionCounts: {
+          total: 1,
+          passed: 0,
+          failed: 1,
+          indeterminate: 0,
+          outstanding: 1,
+        },
+        decisionCalls: 1,
+        executedSteps: 0,
+        reportedCostUsd: null,
+        hasUnknownCost: false,
+      },
+      createdAt: "2025-01-01T00:00:01.000Z",
+      updatedAt: "2025-01-01T00:00:01.000Z",
+    } satisfies OrchestrationThreadActivity;
+    const thread = makeThread([activity]);
+    const projectedSnapshot = projectThreadDetailSnapshot({ snapshotSequence: 7, thread });
+    const projectedPayload = projectedSnapshot.thread.activities[0]?.payload;
+
+    expect(projectedPayload).toMatchObject({
+      runId: "run-restart",
+      sequence: 3,
+      status: "interrupted",
+      handoffReason: "The server restarted before this browser run finished.",
+    });
+
+    const event = {
+      sequence: 8,
+      eventId: EventId.make("event-browser-run"),
+      aggregateKind: "thread",
+      aggregateId: thread.id,
+      occurredAt: "2025-01-01T00:00:02.000Z",
+      commandId: null,
+      causationEventId: null,
+      correlationId: null,
+      metadata: {},
+      type: "thread.activity-appended",
+      payload: { threadId: thread.id, activity },
+    } satisfies Extract<OrchestrationEvent, { type: "thread.activity-appended" }>;
+    const projectedEvent = projectActivityEvent(event);
+
+    expect(
+      projectedEvent.type === "thread.activity-appended"
+        ? projectedEvent.payload.activity.payload
+        : undefined,
+    ).toMatchObject({ status: "acting", sequence: 2 });
+  });
 });
 
 describe("superseded tool.updated snapshot dedup", () => {

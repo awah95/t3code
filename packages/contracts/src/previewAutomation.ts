@@ -11,10 +11,27 @@ import {
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import {
+  BROWSER_QUERY_MAX_INPUT_BYTES,
+  BrowserExtractQuery,
+  BrowserExtractResult,
+  BrowserWaitForAssertionQuery,
+  BrowserWaitForAssertionResult,
+} from "./browserQueries.ts";
+import { BrowserNavigationTarget, BrowserSemanticTarget } from "./browserVerification.ts";
+import {
+  PREVIEW_AUTOMATION_ARTIFACT_OPERATIONS,
+  PreviewAutomationArtifactTransferError,
+} from "./browserArtifactAutomation.ts";
+import { BrowserObservedDialog } from "./browserArtifacts.ts";
+export { BrowserNavigationTarget } from "./browserVerification.ts";
+import {
   JEV_BROWSER_AUTOMATION_OPERATIONS,
+  JEV_BROWSER_ASSERTIONS_MAX_BYTES,
+  JevBrowserAssertion,
   JevBrowserRunConflictError,
   JevBrowserRunError,
   JevBrowserStatus,
+  JevBrowserVerifyResult,
 } from "./jevBrowser.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
@@ -22,6 +39,7 @@ const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isMaxLength(2048));
 const URL_GUIDANCE =
   "Absolute http(s) URL or a schemeless host such as t3.chat or localhost:5173. Schemeless public hosts use https; loopback hosts use http.";
+const utf8Encoder = new TextEncoder();
 const OptionalTimeoutMs = Schema.optional(
   Schema.Int.check(Schema.isGreaterThan(0))
     .check(Schema.isLessThanOrEqualTo(60_000))
@@ -49,8 +67,19 @@ export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
+  "verify",
+  "select",
+  "check",
+  "hover",
+  "extract",
+  "waitForAssertion",
   ...JEV_BROWSER_AUTOMATION_OPERATIONS,
+  ...PREVIEW_AUTOMATION_ARTIFACT_OPERATIONS,
 ] as const;
+
+export const PREVIEW_AUTOMATION_VERIFICATION_OPERATIONS = ["verify"] as const;
+export const PREVIEW_AUTOMATION_TYPED_ACTION_OPERATIONS = ["select", "check", "hover"] as const;
+export const PREVIEW_AUTOMATION_QUERY_OPERATIONS = ["extract", "waitForAssertion"] as const;
 
 export const PreviewAutomationOperation = Schema.Literals(PREVIEW_AUTOMATION_OPERATIONS);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
@@ -122,36 +151,6 @@ export const PreviewAutomationOpenInput = Schema.Struct({
       "Opens the collaborative browser for the current thread. Use preview_navigate afterward when readiness waiting matters.",
   });
 export type PreviewAutomationOpenInput = typeof PreviewAutomationOpenInput.Type;
-
-export const BrowserNavigationTarget = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("url").annotate({
-      description: "Selects direct URL navigation.",
-    }),
-    url: BoundedUrl.annotate({
-      description: `Direct website URL. ${URL_GUIDANCE}`,
-    }),
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("environment-port").annotate({
-      description: "Selects a dev-server port relative to the current execution environment.",
-    }),
-    port: Schema.Int.check(Schema.isGreaterThan(0))
-      .check(Schema.isLessThan(65_536))
-      .annotate({ description: "Dev-server TCP port inside the current environment." }),
-    protocol: Schema.optional(
-      Schema.Literals(["http", "https"]).annotate({
-        description: "Dev-server protocol. Defaults to http.",
-      }),
-    ),
-    path: Schema.optional(
-      Schema.String.annotate({
-        description: "Optional path, query, and fragment, for example /settings?tab=account.",
-      }),
-    ),
-  }),
-]);
-export type BrowserNavigationTarget = typeof BrowserNavigationTarget.Type;
 
 export const PreviewAutomationNavigateInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -289,6 +288,94 @@ export const PreviewAutomationSetColorSchemeResult = Schema.Struct({
 export type PreviewAutomationSetColorSchemeResult =
   typeof PreviewAutomationSetColorSchemeResult.Type;
 
+export const PreviewAutomationVerifyInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  assertions: Schema.Array(JevBrowserAssertion)
+    .check(Schema.isMaxLength(128))
+    .check(
+      Schema.makeFilter(
+        (assertions) =>
+          utf8Encoder.encode(JSON.stringify(assertions)).length <=
+            JEV_BROWSER_ASSERTIONS_MAX_BYTES ||
+          `Assertions must not exceed ${JEV_BROWSER_ASSERTIONS_MAX_BYTES} UTF-8 bytes in total.`,
+      ),
+    )
+    .annotate({
+      description:
+        "Bounded assertions to evaluate independently against the selected document and semantic scope.",
+    })
+    .annotateKey({
+      description:
+        "Bounded assertions to evaluate independently against the selected document and semantic scope.",
+    }),
+  expectedDocumentId: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(256)).annotate({
+      description: "Document identity from a prior observation, when freshness must be enforced.",
+    }),
+  ).annotate({
+    description: "Document identity from a prior observation, when freshness must be enforced.",
+  }),
+  timeoutMs: OptionalTimeoutMs,
+}).annotate({
+  description:
+    "Independently verifies bounded assertions against the selected tab and reports explicit coverage and freshness.",
+});
+export type PreviewAutomationVerifyInput = typeof PreviewAutomationVerifyInput.Type;
+
+export const PreviewAutomationVerifyResult = JevBrowserVerifyResult;
+export type PreviewAutomationVerifyResult = typeof PreviewAutomationVerifyResult.Type;
+
+export const PreviewAutomationExtractInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  ...BrowserExtractQuery.fields,
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter(
+      (query) =>
+        new Set(query.fields.map(({ key }) => key)).size === query.fields.length ||
+        "Extraction field keys must be unique.",
+    ),
+  )
+  .check(
+    Schema.makeFilter(
+      (query) =>
+        utf8Encoder.encode(JSON.stringify(query)).length <= BROWSER_QUERY_MAX_INPUT_BYTES ||
+        `Extraction query must not exceed ${BROWSER_QUERY_MAX_INPUT_BYTES} UTF-8 bytes.`,
+    ),
+  )
+  .annotate({
+    description:
+      "Extracts declared fields from one bounded semantic region, list, or table without executing page code.",
+  });
+export type PreviewAutomationExtractInput = typeof PreviewAutomationExtractInput.Type;
+
+export const PreviewAutomationExtractResult = BrowserExtractResult;
+export type PreviewAutomationExtractResult = typeof PreviewAutomationExtractResult.Type;
+
+export const PreviewAutomationWaitForAssertionInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  ...BrowserWaitForAssertionQuery.fields,
+})
+  .check(
+    Schema.makeFilter(
+      (query) =>
+        utf8Encoder.encode(JSON.stringify([query.assertion])).length <=
+          JEV_BROWSER_ASSERTIONS_MAX_BYTES ||
+        `Assertion must not exceed ${JEV_BROWSER_ASSERTIONS_MAX_BYTES} UTF-8 bytes.`,
+    ),
+  )
+  .annotate({
+    description:
+      "Waits for one typed assertion until its exact deadline and returns independent coverage and freshness.",
+  });
+export type PreviewAutomationWaitForAssertionInput =
+  typeof PreviewAutomationWaitForAssertionInput.Type;
+
+export const PreviewAutomationWaitForAssertionResult = BrowserWaitForAssertionResult;
+export type PreviewAutomationWaitForAssertionResult =
+  typeof PreviewAutomationWaitForAssertionResult.Type;
+
 const Locator = TrimmedNonEmptyString.annotate({
   description:
     "Playwright selector, preferably role/text based, for example role=button[name='Send'] or text=Continue. Use snapshot first to inspect the page.",
@@ -298,6 +385,83 @@ const LegacySelector = TrimmedNonEmptyString.annotate({
   description:
     "Legacy CSS selector such as button[type='submit']. Prefer locator for resilient role/text targeting.",
 });
+
+const PreviewAutomationSemanticTargetFields = {
+  selector: Schema.optional(LegacySelector).annotate({
+    description: "Legacy CSS selector for one target. Prefer locator or semanticTarget.",
+  }),
+  locator: Schema.optional(Locator).annotate({
+    description: "Playwright locator for one exact target.",
+  }),
+  semanticTarget: Schema.optional(
+    BrowserSemanticTarget.annotate({
+      description: "Exact role and accessible name, optionally narrowed to a frame or ancestor.",
+    }),
+  ).annotate({
+    description: "Exact role and accessible name, optionally narrowed to a frame or ancestor.",
+  }),
+};
+
+const hasExactlyOneAutomationTarget = (input: {
+  readonly selector?: string | undefined;
+  readonly locator?: string | undefined;
+  readonly semanticTarget?: unknown;
+}) =>
+  Number(input.selector !== undefined) +
+    Number(input.locator !== undefined) +
+    Number(input.semanticTarget !== undefined) ===
+    1 || "Provide exactly one of selector, locator, or semanticTarget.";
+
+export const PreviewAutomationSelectInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSemanticTargetFields,
+  value: Schema.optional(Schema.String).annotate({
+    description: "Exact native option value.",
+  }),
+  label: Schema.optional(Schema.String).annotate({
+    description: "Exact visible option label.",
+  }),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(
+    Schema.makeFilter((input) => {
+      const targetProblem = hasExactlyOneAutomationTarget(input);
+      if (targetProblem !== true) return targetProblem;
+      return (
+        Number(input.value !== undefined) + Number(input.label !== undefined) === 1 ||
+        "Provide exactly one of value or label."
+      );
+    }),
+  )
+  .annotate({
+    description: "Selects one exact option on one native select or supported combobox target.",
+  });
+export type PreviewAutomationSelectInput = typeof PreviewAutomationSelectInput.Type;
+
+export const PreviewAutomationCheckInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSemanticTargetFields,
+  checked: Schema.Boolean.annotate({
+    description: "Desired checkbox or radio state. The action never blindly toggles.",
+  }),
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(Schema.makeFilter(hasExactlyOneAutomationTarget))
+  .annotate({
+    description: "Sets one checkbox or radio to the declared desired state.",
+  });
+export type PreviewAutomationCheckInput = typeof PreviewAutomationCheckInput.Type;
+
+export const PreviewAutomationHoverInput = Schema.Struct({
+  ...PreviewAutomationTabTargetFields,
+  ...PreviewAutomationSemanticTargetFields,
+  timeoutMs: OptionalTimeoutMs,
+})
+  .check(Schema.makeFilter(hasExactlyOneAutomationTarget))
+  .annotate({
+    description: "Hovers one exact target and waits only for the bounded host operation.",
+  });
+export type PreviewAutomationHoverInput = typeof PreviewAutomationHoverInput.Type;
 
 export const PreviewAutomationClickInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
@@ -407,11 +571,19 @@ export const PreviewAutomationScrollInput = Schema.Struct({
   locator: Schema.optional(Locator).annotate({
     description: "Playwright selector for a scrollable container. Omit to scroll the viewport.",
   }),
+  semanticTarget: Schema.optional(BrowserSemanticTarget).annotate({
+    description: "Scoped semantic target for a scrollable container. Omit to scroll the viewport.",
+  }),
 })
   .check(
     Schema.makeFilter((input) => {
-      if (input.selector !== undefined && input.locator !== undefined) {
-        return "Provide at most one of selector or locator.";
+      if (
+        Number(input.selector !== undefined) +
+          Number(input.locator !== undefined) +
+          Number(input.semanticTarget !== undefined) >
+        1
+      ) {
+        return "Provide at most one of selector, locator, or semanticTarget.";
       }
       return (
         input.deltaX !== undefined || input.deltaY !== undefined || "Provide deltaX or deltaY."
@@ -779,6 +951,23 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
   }
 }
 
+/**
+ * An action reached the page and opened a blocking JavaScript dialog. The
+ * action's effects are therefore uncertain until the exact dialog is handled.
+ */
+export class PreviewAutomationDialogPendingError extends Schema.TaggedError<PreviewAutomationDialogPendingError>()(
+  "PreviewAutomationDialogPendingError",
+  {
+    ...PreviewAutomationRequestErrorFields,
+    ...PreviewAutomationRemoteDiagnosticFields,
+    dialog: BrowserObservedDialog,
+  },
+) {
+  override get message(): string {
+    return `Preview automation ${this.operation} is paused by a browser dialog. Handle this exact dialog with preview_dialog. Do not repeat the original action; it may already have executed.`;
+  }
+}
+
 export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewAutomationExecutionError>()(
   "PreviewAutomationExecutionError",
   {
@@ -924,6 +1113,7 @@ export class PreviewAutomationRecordingDeadlineExpiredError extends Schema.Tagge
 }
 
 export const PreviewAutomationError = Schema.Union([
+  PreviewAutomationArtifactTransferError,
   JevBrowserRunConflictError,
   JevBrowserRunError,
   PreviewAutomationRecordingTransferError,
@@ -936,6 +1126,7 @@ export const PreviewAutomationError = Schema.Union([
   PreviewAutomationTabNotFoundError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationDialogPendingError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationTargetNotEditableError,

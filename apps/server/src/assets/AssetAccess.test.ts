@@ -23,7 +23,12 @@ import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "../project/T3ProjectFileLoader.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { assetFileResponse } from "../http.ts";
-import { ASSET_ROUTE_PREFIX, issueAssetUrl, resolveAsset } from "./AssetAccess.ts";
+import {
+  ASSET_ROUTE_PREFIX,
+  issueAssetUrl,
+  issueAttachmentAssetUrl,
+  resolveAsset,
+} from "./AssetAccess.ts";
 import * as NativeAppIconResolver from "./NativeAppIconResolver.ts";
 import { openMediaFile } from "./MediaFile.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -733,6 +738,27 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
         kind: "file",
         path: attachmentPath,
+      });
+
+      const direct = yield* issueAttachmentAssetUrl({
+        _tag: "attachment",
+        attachmentId,
+        fileName: "evidence.png",
+        mimeType: "image/png",
+        disposition: "attachment",
+      });
+      const directSuffix = direct.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const directSeparatorIndex = directSuffix.indexOf("/");
+      expect(
+        yield* resolveAsset(
+          directSuffix.slice(0, directSeparatorIndex),
+          directSuffix.slice(directSeparatorIndex + 1),
+        ),
+      ).toEqual({
+        kind: "file",
+        path: attachmentPath,
+        fileName: "evidence.png",
+        mimeType: "image/png",
       });
     }).pipe(Effect.provide(testLayer)),
   );

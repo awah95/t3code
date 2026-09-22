@@ -73,7 +73,7 @@ describe("Jev automation decision transport", () => {
     });
     expect(body.state.unmetConditions[0]).toMatchObject({ passed: false, actual: "" });
     expect(body.state.observation).toMatchObject({ visibleText: "Email Continue" });
-    expect(body.state.suppliedInputs[0]?.value).toBe("[host-held value]");
+    expect(body.state.suppliedInputs[0]).toMatchObject({ value: "[host-held value]" });
     expect(body.state.policy).toContain(
       "do not request novel text merely because its value is shown as host-held",
     );
@@ -99,7 +99,7 @@ describe("Jev automation decision transport", () => {
       ],
     });
 
-    expect(body.state.observation.inputs?.[0]?.value).toBe("[host-held value]");
+    expect(body.state.observation.inputs?.[0]).toMatchObject({ value: "[host-held value]" });
   });
 
   it("parses an exact action and retains official response accounting", () => {

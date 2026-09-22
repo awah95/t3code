@@ -11,6 +11,9 @@ import {
   DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER,
 } from "@t3tools/contracts";
 import type {
+  PreviewAutomationWaitForAssertionResult,
+  PreviewAutomationExtractResult,
+  PreviewAutomationVerifyResult,
   DesktopPreviewAnnotationTheme,
   DesktopPreviewAutomationStatus,
   DesktopPreviewColorScheme,
@@ -34,6 +37,15 @@ import type {
   PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
+  PreviewAutomationVerifyInput,
+  PreviewAutomationSelectInput,
+  PreviewAutomationCheckInput,
+  PreviewAutomationHoverInput,
+  PreviewAutomationExtractInput,
+  PreviewAutomationWaitForAssertionInput,
+  JevBrowserResolvedNavigation,
+  JevBrowserVerifyInput,
+  JevBrowserVerifyResult,
 } from "@t3tools/contracts";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import type {
@@ -90,6 +102,11 @@ import {
 } from "./GuestProtocol.ts";
 import { isPreviewAnnotationPayload } from "./PickedElementPayload.ts";
 import { makeJevBrowserController, type JevBrowserSendCommand } from "./JevBrowserController.ts";
+import { makeBrowserCapabilities } from "./BrowserCapabilities.ts";
+import {
+  makeBrowserArtifactController,
+  PreviewAutomationDialogPendingError,
+} from "./BrowserArtifactController.ts";
 import { playwrightInjectedRuntimeInstallExpression } from "./PlaywrightInjectedRuntime.ts";
 import {
   makePreviewAutomationKeySequence,
@@ -1486,6 +1503,25 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
 
   type SendCommand = JevBrowserSendCommand<PreviewManagerError>;
 
+  // The dialog observer is installed below after the control adapter exists.
+  let racePreparedAction = <A>(
+    _tabId: string,
+    _operation: string,
+    action: Effect.Effect<A, PreviewManagerError>,
+  ): Effect.Effect<A, PreviewManagerError> => action;
+  const dialogActions = new Set([
+    "click",
+    "type",
+    "press",
+    "scroll",
+    "evaluate",
+    "select",
+    "check",
+    "hover",
+    "uploadFile",
+    "downloadFile",
+  ]);
+
   const prepareAutomationInput = Effect.fn("PreviewManager.prepareAutomationInput")(function* (
     send: SendCommand,
     enableRuntime: boolean,
@@ -1549,7 +1585,8 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       );
       // Cleanup commands must still run after human input invalidates the action's
       // control epoch. Otherwise a partially dispatched input can leave Chromium
-      // with a held key or focus emulation enabled for subsequent actions.
+      // with a held key or focus emulation enabled for subsequent actions. A
+      // modal can pause CDP, so cleanup must not hold the control lease forever.
       const sendCleanup: SendCommand = Effect.fn("PreviewManager.sendCleanupCommand")(
         function* (method, commandParams, sessionId) {
           return yield* attemptPromise(
@@ -1562,7 +1599,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
               sessionId === undefined
                 ? control.debugger.sendCommand(method, commandParams)
                 : control.debugger.sendCommand(method, commandParams, sessionId),
-          );
+          ).pipe(Effect.timeoutOption(1_000), Effect.map(Option.getOrUndefined));
         },
       );
       return yield* use(send, sendCleanup, checkControl);
@@ -1598,7 +1635,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       }
       yield* clearAgentController(tabId);
     });
-    return yield* control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
+    const controlled = control.semaphore.withPermit(execute().pipe(Effect.onExit(finalize)));
+    return yield* dialogActions.has(action) || action.startsWith("jevBrowserExecute:")
+      ? racePreparedAction(tabId, action, controlled)
+      : controlled;
   });
 
   const evaluateWithDebugger = <A = unknown>(
@@ -1657,12 +1697,15 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const ensurePlaywrightInjected = Effect.fn("PreviewManager.ensurePlaywrightInjected")(function* (
     tabId: string,
     send: SendCommand,
+    contextId?: number,
   ) {
     const installed = yield* evaluateWithDebugger<boolean>(
       tabId,
       send,
       "Boolean(globalThis.__t3PlaywrightInjected)",
       true,
+      true,
+      contextId,
     );
     if (installed) return;
     const expression = yield* playwrightInstallExpression.pipe(
@@ -1675,7 +1718,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
           }),
       ),
     );
-    yield* evaluateWithDebugger(tabId, send, expression, true);
+    yield* evaluateWithDebugger(tabId, send, expression, true, true, contextId);
   });
 
   const cancelPickElement = Effect.fn("PreviewManager.cancelPickElement")(function* (
@@ -2426,7 +2469,10 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
-  const navigate = Effect.fn("PreviewManager.navigate")(function* (tabId: string, rawUrl: string) {
+  const navigateCore = Effect.fn("PreviewManager.navigate")(function* (
+    tabId: string,
+    rawUrl: string,
+  ) {
     const url = yield* attempt({ operation: "navigate.normalizeUrl", tabId }, () =>
       normalizePreviewUrl(rawUrl),
     );
@@ -2522,6 +2568,9 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
       wc.loadURL(url),
     );
   });
+
+  const navigate = (tabId: string, rawUrl: string) =>
+    racePreparedAction(tabId, "navigate", navigateCore(tabId, rawUrl));
 
   const withWebContents = Effect.fn("PreviewManager.withWebContents")(function* (
     operation: string,
@@ -4581,6 +4630,49 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     );
   });
 
+  const browserCapabilities = makeBrowserCapabilities<PreviewManagerError>({
+    requireWebContents,
+    withControlSession,
+    evaluate: evaluateWithDebugger,
+    operationError: (input) => new PreviewOperationError(input),
+    prepareAutomationInput,
+    emitPointerEvent,
+    nextPointerSequence: () => nextCounter(pointerSequenceRef),
+    currentIso: () => currentIso,
+    expectAgentPointer: (tabId, point) => expectAgentInput(tabId, { kind: "pointer", ...point }),
+    ensurePlaywrightInjected,
+  });
+  const {
+    automationVerify,
+    automationSelect,
+    automationCheck,
+    automationHover,
+    automationExtract,
+    automationWaitForAssertion,
+  } = browserCapabilities;
+
+  const browserArtifacts = makeBrowserArtifactController<PreviewManagerError>(
+    {
+      requireWebContents,
+      withControlSession,
+      evaluate: evaluateWithDebugger,
+      operationError: (input) => new PreviewOperationError(input),
+      prepareAutomationInput,
+      emitPointerEvent,
+      nextPointerSequence: () => nextCounter(pointerSequenceRef),
+      currentIso: () => currentIso,
+      expectAgentPointer: (tabId, point) => expectAgentInput(tabId, { kind: "pointer", ...point }),
+      ensurePlaywrightInjected,
+      semanticWorld: browserCapabilities.semanticWorld,
+      getDebugger: (wc) => ensureControlSession(wc).pipe(Effect.map((control) => control.debugger)),
+      controlGeneration: (tabId) =>
+        Ref.get(controlEpochRef).pipe(Effect.map((epochs) => epochs.get(tabId) ?? 0)),
+    },
+    path.join(resolvedArtifactDirectory, "transfers"),
+  );
+  racePreparedAction = browserArtifacts.racePreparedAction;
+  yield* Effect.addFinalizer(() => browserArtifacts.dispose);
+
   const jevBrowser = yield* makeJevBrowserController<PreviewManagerError>({
     controlGeneration: (tabId) =>
       Ref.get(controlEpochRef).pipe(Effect.map((epochs) => epochs.get(tabId) ?? 0)),
@@ -4598,7 +4690,18 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     press: performAutomationPress,
   });
   const jevBrowserObserve = jevBrowser.observe;
-  const jevBrowserExecute = jevBrowser.execute;
+  const jevBrowserExecute = (
+    runId: string,
+    tabId: string,
+    revision: string,
+    action: JevAutomationAction,
+  ) =>
+    racePreparedAction(
+      tabId,
+      `jevBrowserExecute:${action.operation}`,
+      jevBrowser.execute(runId, tabId, revision, action),
+    );
+  const jevBrowserVerify = jevBrowser.verify;
   const jevBrowserCancel = jevBrowser.cancel;
 
   const revealArtifact = Effect.fn("PreviewManager.revealArtifact")(function* (
@@ -4665,6 +4768,7 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   yield* Effect.addFinalizer(() => destroy().pipe(Effect.ignore));
 
   return {
+    browserArtifacts,
     automationClick,
     automationEvaluate,
     automationPress,
@@ -4673,9 +4777,16 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
     automationStatus,
     automationType,
     automationWaitFor,
+    automationVerify,
+    automationSelect,
+    automationCheck,
+    automationHover,
+    automationExtract,
+    automationWaitForAssertion,
     jevBrowserCancel,
     jevBrowserExecute,
     jevBrowserObserve,
+    jevBrowserVerify,
     cancelPickElement,
     captureScreenshot,
     closeTab,
@@ -4996,6 +5107,7 @@ export const PreviewManagerError = Schema.Union([
   PreviewAutomationResultTooLargeError,
   PreviewAutomationTimeoutError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationDialogPendingError,
 ]);
 export type PreviewManagerError = typeof PreviewManagerError.Type;
 
@@ -5008,6 +5120,9 @@ const isPreviewAutomationInvalidSelectorError = Schema.is(PreviewAutomationInval
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
+    readonly browserArtifacts: () => Effect.Effect<
+      ReturnType<typeof makeBrowserArtifactController<PreviewManagerError>>
+    >;
     readonly setMainWindow: (window: BrowserWindow) => Effect.Effect<void, PreviewManagerError>;
     readonly getBrowserSession: (
       scope?: string,
@@ -5090,7 +5205,13 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       inputs: readonly JevAutomationInput[],
       allowedOrigins: readonly string[],
+      resolvedNavigations?: readonly JevBrowserResolvedNavigation[],
     ) => Effect.Effect<JevAutomationObservation, PreviewManagerError>;
+    readonly jevBrowserVerify: (
+      runId: string,
+      tabId: string,
+      input: JevBrowserVerifyInput,
+    ) => Effect.Effect<JevBrowserVerifyResult, PreviewManagerError>;
     readonly jevBrowserExecute: (
       runId: string,
       tabId: string,
@@ -5122,6 +5243,30 @@ export class PreviewManager extends Context.Service<
       tabId: string,
       input: PreviewAutomationWaitForInput,
     ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationVerify: (
+      tabId: string,
+      input: PreviewAutomationVerifyInput,
+    ) => Effect.Effect<PreviewAutomationVerifyResult, PreviewManagerError>;
+    readonly automationSelect: (
+      tabId: string,
+      input: PreviewAutomationSelectInput,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationCheck: (
+      tabId: string,
+      input: PreviewAutomationCheckInput,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationHover: (
+      tabId: string,
+      input: PreviewAutomationHoverInput,
+    ) => Effect.Effect<void, PreviewManagerError>;
+    readonly automationExtract: (
+      tabId: string,
+      input: PreviewAutomationExtractInput,
+    ) => Effect.Effect<PreviewAutomationExtractResult, PreviewManagerError>;
+    readonly automationWaitForAssertion: (
+      tabId: string,
+      input: PreviewAutomationWaitForAssertionInput,
+    ) => Effect.Effect<PreviewAutomationWaitForAssertionResult, PreviewManagerError>;
     readonly subscribeStateChanges: (listener: Listener) => Effect.Effect<void, never, Scope.Scope>;
     readonly subscribePointerEvents: (
       listener: PointerEventListener,
@@ -5212,16 +5357,24 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     stopRecording: operations.stopRecording,
     saveRecording: operations.saveRecording,
     automationStatus: operations.automationStatus,
+    browserArtifacts: () => Effect.succeed(operations.browserArtifacts),
     automationSnapshot: operations.automationSnapshot,
     jevBrowserCancel: operations.jevBrowserCancel,
     jevBrowserObserve: operations.jevBrowserObserve,
     jevBrowserExecute: operations.jevBrowserExecute,
+    jevBrowserVerify: operations.jevBrowserVerify,
     automationClick: operations.automationClick,
     automationType: operations.automationType,
     automationPress: operations.automationPress,
     automationScroll: operations.automationScroll,
     automationEvaluate: operations.automationEvaluate,
     automationWaitFor: operations.automationWaitFor,
+    automationVerify: operations.automationVerify,
+    automationSelect: operations.automationSelect,
+    automationCheck: operations.automationCheck,
+    automationHover: operations.automationHover,
+    automationExtract: operations.automationExtract,
+    automationWaitForAssertion: operations.automationWaitForAssertion,
     subscribeStateChanges: operations.subscribeStateChanges,
     subscribePointerEvents: operations.subscribePointerEvents,
     subscribeRecordingFrames: operations.subscribeRecordingFrames,

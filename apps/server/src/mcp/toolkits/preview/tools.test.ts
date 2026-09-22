@@ -80,3 +80,8 @@ it("exposes semantic selected-option assertions for Jev browser tasks", () => {
   const schema = Tool.getJsonSchema(PreviewToolkit.tools.preview_run_task);
   expect(JSON.stringify(schema)).toContain("selectedLabel");
 });
+
+it("keeps ambient thread identity out of the public upload parameters", () => {
+  const schema = Tool.getJsonSchema(PreviewToolkit.tools.preview_upload);
+  expect(JSON.stringify(schema)).not.toContain('"threadId"');
+});

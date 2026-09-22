@@ -32,6 +32,9 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as CodexLedgerService from "../../../usage/CodexLedgerService.ts";
 import * as JevBrowserRunRegistry from "../../JevBrowserRunRegistry.ts";
+import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
+import { browserCapabilityTools } from "./browserCapabilityTools.ts";
+import { browserArtifactTools } from "./browserArtifactTools.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -273,11 +276,14 @@ export const PreviewRunTaskTool = browserTool(
       Crypto.Crypto,
       CodexLedgerService.CodexLedgerService,
       JevBrowserRunRegistry.JevBrowserRunRegistry,
+      OrchestrationEngine.OrchestrationEngineService,
     ],
   }).annotate(Tool.Title, "Run browser task with Jev"),
 );
 
 export const PreviewToolkit = Toolkit.make(
+  ...browserArtifactTools,
+  ...browserCapabilityTools,
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,
@@ -296,6 +302,8 @@ export const PreviewToolkit = Toolkit.make(
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
+  ...browserArtifactTools,
+  ...browserCapabilityTools,
   PreviewStatusTool,
   PreviewOpenTool,
   PreviewNavigateTool,

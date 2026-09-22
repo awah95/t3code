@@ -175,6 +175,47 @@ describe("PreviewAutomationHost", () => {
 });
 
 describe("PreviewAutomationError", () => {
+  it("preserves an exact pending dialog and directs the caller to preview_dialog", () => {
+    const error = decodeAutomationError({
+      _tag: "PreviewAutomationDialogPendingError",
+      operation: "click",
+      environmentId: "environment-1",
+      threadId: "thread-1",
+      providerSessionId: "provider-session-1",
+      providerInstanceId: "codex",
+      clientId: "client-1",
+      connectionId: "connection-1",
+      requestId: "request-1",
+      tabId: "tab-1",
+      timeoutMs: 1_000,
+      remoteTag: "PreviewAutomationDialogPendingError",
+      remoteMessageLength: 12,
+      cause: {},
+      dialog: {
+        environmentId: "environment-1",
+        tabId: "tab-1",
+        actionId: "request-1",
+        dialogId: "dialog-1",
+        kind: "confirm",
+        message: "Continue?",
+        openedAt: "2026-09-22T00:00:00.000Z",
+      },
+    });
+
+    expect(error._tag).toBe("PreviewAutomationDialogPendingError");
+    if (error._tag === "PreviewAutomationDialogPendingError") {
+      expect(error.dialog).toMatchObject({
+        environmentId: "environment-1",
+        tabId: "tab-1",
+        actionId: "request-1",
+        dialogId: "dialog-1",
+      });
+      expect(error.message).toContain("preview_dialog");
+      expect(error.message).not.toContain("preview_dialog_handle");
+      expect(error.message).toContain("Do not repeat the original action");
+    }
+  });
+
   it("preserves a typed non-editable target failure", () => {
     const error = decodeAutomationError({
       _tag: "PreviewAutomationTargetNotEditableError",

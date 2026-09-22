@@ -1,6 +1,14 @@
 import * as Schema from "effect/Schema";
 
 import { EnvironmentId } from "./baseSchemas.ts";
+import {
+  BrowserDocumentFreshness,
+  BrowserElementReference,
+  BrowserNavigationTarget,
+  BrowserSemanticTarget,
+  BrowserVerificationCoverage,
+  BrowserVerificationVerdict,
+} from "./browserVerification.ts";
 import { PreviewTabId } from "./preview.ts";
 
 const BoundedId = Schema.String.check(Schema.isTrimmed())
@@ -13,13 +21,19 @@ const BoundedText = Schema.String.check(Schema.isMaxLength(20_000));
 const BoundedDescription = Schema.String.check(Schema.isMaxLength(1_000));
 const BoundedStringArray = Schema.Array(BoundedText).check(Schema.isMaxLength(128));
 const NonNegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const utf8Encoder = new TextEncoder();
+
+export const JEV_BROWSER_ASSERTIONS_MAX_BYTES = 16 * 1_024;
 
 export const JEV_BROWSER_AUTOMATION_OPERATIONS = [
   "jevBrowserObserve",
+  "jevBrowserVerify",
   "jevBrowserDecide",
   "jevBrowserExecute",
   "jevBrowserCancel",
 ] as const;
+
+export const JEV_BROWSER_VERIFICATION_OPERATIONS = ["jevBrowserVerify"] as const;
 
 export class JevBrowserRunConflictError extends Schema.TaggedError<JevBrowserRunConflictError>()(
   "JevBrowserRunConflictError",
@@ -76,6 +90,7 @@ export type JevBrowserOption = typeof JevBrowserOption.Type;
 
 export const JevBrowserControl = Schema.Struct({
   id: BoundedId,
+  reference: Schema.optionalKey(BrowserElementReference),
   role: BoundedId,
   name: Schema.optionalKey(Schema.String),
   text: Schema.optionalKey(BoundedText),
@@ -91,34 +106,68 @@ export const JevBrowserOperation = Schema.Literals([
   "activate",
   "set-text",
   "select-option",
+  "set-checked",
+  "hover",
   "navigate",
   "scroll",
   "press-key",
 ]);
 export type JevBrowserOperation = typeof JevBrowserOperation.Type;
 
-export const JevBrowserInputKind = Schema.Literals(["text", "url", "option", "scroll", "key"]);
+export const JevBrowserInputKind = Schema.Literals([
+  "text",
+  "url",
+  "navigation",
+  "option",
+  "scroll",
+  "key",
+]);
 export type JevBrowserInputKind = typeof JevBrowserInputKind.Type;
 
-export const JevBrowserInput = Schema.Struct({
+const JevBrowserValueInput = Schema.Struct({
   id: BoundedId,
-  kind: JevBrowserInputKind,
+  kind: Schema.Literals(["text", "url", "option", "scroll", "key"]),
   value: BoundedText,
   description: BoundedDescription,
 });
+
+const JevBrowserNavigationInput = Schema.Struct({
+  id: BoundedId,
+  kind: Schema.Literal("navigation"),
+  target: BrowserNavigationTarget,
+  description: BoundedDescription,
+});
+
+export const JevBrowserInput = Schema.Union([JevBrowserValueInput, JevBrowserNavigationInput]);
 export type JevBrowserInput = typeof JevBrowserInput.Type;
+
+export const JevBrowserResolvedNavigation = Schema.Struct({
+  inputId: BoundedId,
+  resolvedUrl: Schema.String.check(Schema.isTrimmed())
+    .check(Schema.isNonEmpty())
+    .check(Schema.isMaxLength(2_048)),
+  logicalLocation: Schema.String.check(Schema.isMaxLength(2_048)),
+  allowedOrigins: Schema.Array(
+    Schema.String.check(Schema.isTrimmed())
+      .check(Schema.isNonEmpty())
+      .check(Schema.isMaxLength(2_048)),
+  ).check(Schema.isMaxLength(64)),
+});
+export type JevBrowserResolvedNavigation = typeof JevBrowserResolvedNavigation.Type;
 
 export const JevBrowserCandidate = Schema.Struct({
   id: BoundedId,
   operation: JevBrowserOperation,
   targetId: Schema.optionalKey(Schema.String),
   inputId: Schema.optionalKey(Schema.String),
+  checked: Schema.optionalKey(Schema.Boolean),
   description: BoundedDescription,
 });
 export type JevBrowserCandidate = typeof JevBrowserCandidate.Type;
 
 export const JevBrowserObservation = Schema.Struct({
   revision: BoundedId,
+  document: Schema.optionalKey(BrowserDocumentFreshness),
   surface: Schema.Literals(["browser", "computer"]),
   location: Schema.optionalKey(Schema.String),
   title: Schema.optionalKey(Schema.String),
@@ -136,6 +185,8 @@ export const JevBrowserAction = Schema.Struct({
   targetId: Schema.optionalKey(Schema.String),
   inputId: Schema.optionalKey(Schema.String),
   value: Schema.optionalKey(Schema.String),
+  navigationTarget: Schema.optionalKey(BrowserNavigationTarget),
+  checked: Schema.optionalKey(Schema.Boolean),
 });
 export type JevBrowserAction = typeof JevBrowserAction.Type;
 
@@ -145,13 +196,6 @@ export const JevBrowserExecutionResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("rejected"), detail: Schema.String }),
 ]);
 export type JevBrowserExecutionResult = typeof JevBrowserExecutionResult.Type;
-
-const JevBrowserSemanticTarget = Schema.Struct({
-  role: BoundedId.annotate({ description: "Exact semantic control role, such as combobox." }),
-  name: BoundedText.annotate({
-    description: "Exact accessible control name; the role/name pair must match one control.",
-  }),
-});
 
 const JevBrowserControlAssertionFields = {
   kind: Schema.Literal("control"),
@@ -178,24 +222,72 @@ export const JevBrowserAssertion = Schema.Union([
     expected: Schema.String,
   }),
   Schema.Struct({ kind: Schema.Literal("control-exists"), targetId: BoundedId }),
-  Schema.Struct({ kind: Schema.Literal("control-exists"), target: JevBrowserSemanticTarget }),
+  Schema.Struct({ kind: Schema.Literal("control-exists"), target: BrowserSemanticTarget }),
   Schema.Struct({
     ...JevBrowserControlAssertionFields,
     targetId: BoundedId,
   }),
   Schema.Struct({
     ...JevBrowserControlAssertionFields,
-    target: JevBrowserSemanticTarget,
+    target: BrowserSemanticTarget,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("control-count"),
+    target: BrowserSemanticTarget,
+    operator: Schema.Literals(["equals", "at-least", "at-most"]),
+    expected: NonNegativeInt,
   }),
 ]);
 export type JevBrowserAssertion = typeof JevBrowserAssertion.Type;
 
+export const JevBrowserAssertions = Schema.Array(JevBrowserAssertion)
+  .check(Schema.isMaxLength(128))
+  .check(
+    Schema.makeFilter(
+      (assertions) =>
+        utf8Encoder.encode(JSON.stringify(assertions)).length <= JEV_BROWSER_ASSERTIONS_MAX_BYTES ||
+        `Assertions must not exceed ${JEV_BROWSER_ASSERTIONS_MAX_BYTES} UTF-8 bytes in total.`,
+    ),
+  );
+export type JevBrowserAssertions = typeof JevBrowserAssertions.Type;
+
 export const JevBrowserAssertionResult = Schema.Struct({
   assertion: JevBrowserAssertion,
   passed: Schema.Boolean,
+  verdict: Schema.optionalKey(BrowserVerificationVerdict),
   actual: Schema.optionalKey(JevBrowserValue),
+  reason: Schema.optionalKey(BoundedDescription),
+  matchCount: Schema.optionalKey(NonNegativeInt),
+  coverage: Schema.optionalKey(BrowserVerificationCoverage),
+  document: Schema.optionalKey(BrowserDocumentFreshness),
 });
 export type JevBrowserAssertionResult = typeof JevBrowserAssertionResult.Type;
+
+export const JevBrowserVerificationResult = Schema.Struct({
+  assertion: JevBrowserAssertion,
+  verdict: BrowserVerificationVerdict,
+  passed: Schema.Boolean,
+  actual: Schema.optionalKey(JevBrowserValue),
+  reason: Schema.optionalKey(BoundedDescription),
+  matchCount: NonNegativeInt,
+  matches: Schema.optionalKey(Schema.Array(BrowserElementReference).check(Schema.isMaxLength(16))),
+  coverage: BrowserVerificationCoverage,
+  document: BrowserDocumentFreshness,
+}).check(
+  Schema.makeFilter((result) => {
+    if (result.passed !== (result.verdict === "passed")) {
+      return "Verification passed must agree with its tri-state verdict.";
+    }
+    if (
+      result.verdict === "passed" &&
+      (result.coverage.status !== "complete" || result.document.status !== "current")
+    ) {
+      return "Passed verification requires complete coverage of the current document.";
+    }
+    return true;
+  }),
+);
+export type JevBrowserVerificationResult = typeof JevBrowserVerificationResult.Type;
 
 export const JevBrowserAccounting = Schema.Struct({
   inputTokens: Schema.NullOr(Schema.Number),
@@ -261,11 +353,26 @@ export const JevBrowserObserveInput = Schema.Struct({
   allowedOrigins: Schema.Array(Schema.String.check(Schema.isMaxLength(2_048))).check(
     Schema.isMaxLength(64),
   ),
+  resolvedNavigations: Schema.optionalKey(
+    Schema.Array(JevBrowserResolvedNavigation).check(Schema.isMaxLength(128)),
+  ),
 });
 export type JevBrowserObserveInput = typeof JevBrowserObserveInput.Type;
 
 export const JevBrowserObserveResult = Schema.Struct({ observation: JevBrowserObservation });
 export type JevBrowserObserveResult = typeof JevBrowserObserveResult.Type;
+
+export const JevBrowserVerifyInput = Schema.Struct({
+  ...RunFields,
+  assertions: JevBrowserAssertions,
+  expectedDocumentId: Schema.optionalKey(BoundedId),
+});
+export type JevBrowserVerifyInput = typeof JevBrowserVerifyInput.Type;
+
+export const JevBrowserVerifyResult = Schema.Struct({
+  results: Schema.Array(JevBrowserVerificationResult).check(Schema.isMaxLength(128)),
+});
+export type JevBrowserVerifyResult = typeof JevBrowserVerifyResult.Type;
 
 export const JevBrowserDecideInput = Schema.Struct({
   ...RunFields,
@@ -313,18 +420,25 @@ export const JevBrowserRunTaskInput = Schema.Struct({
   tabId: Schema.optionalKey(PreviewTabId).annotate({
     description: "Specific collaborative preview tab to control.",
   }),
+  resumeFromRunId: Schema.optionalKey(BoundedId).annotate({
+    description:
+      "Prior handed-off run to continue. Continuation always starts with a fresh observation and never replays prior actions.",
+  }),
   inputs: Schema.optionalKey(Schema.Array(JevBrowserInput).check(Schema.isMaxLength(128))).annotate(
     {
       description:
         "Caller-supplied exact text, destination URLs, options, keys, or scroll values. Jev cannot invent values.",
     },
   ),
-  assertions: Schema.optionalKey(
-    Schema.Array(JevBrowserAssertion).check(Schema.isMaxLength(128)),
-  ).annotate({
-    description:
-      "Optional observable success conditions, including semantic control role and exact accessible name.",
-  }),
+  assertions: Schema.optionalKey(JevBrowserAssertions)
+    .annotate({
+      description:
+        "Optional observable success conditions, including semantic control role and exact accessible name.",
+    })
+    .annotateKey({
+      description:
+        "Optional observable success conditions, including semantic control role and exact accessible name.",
+    }),
   allowedOrigins: Schema.optionalKey(
     Schema.Array(Schema.String.check(Schema.isMaxLength(2_048))).check(Schema.isMaxLength(64)),
   ).annotate({
@@ -353,8 +467,22 @@ export const JevBrowserRunTaskInput = Schema.Struct({
 });
 export type JevBrowserRunTaskInput = typeof JevBrowserRunTaskInput.Type;
 
+const JevBrowserHandoffAction = Schema.Struct({
+  iteration: NonNegativeInt,
+  operation: JevBrowserOperation,
+});
+
+export const JevBrowserHandoff = Schema.Struct({
+  reason: BoundedDescription,
+  lastConfirmedAction: Schema.optionalKey(JevBrowserHandoffAction),
+  uncertainEffects: Schema.Array(JevBrowserHandoffAction).check(Schema.isMaxLength(16)),
+  outstandingAssertionIndexes: Schema.Array(NonNegativeInt).check(Schema.isMaxLength(128)),
+});
+export type JevBrowserHandoff = typeof JevBrowserHandoff.Type;
+
 export const JevBrowserRunTaskResult = Schema.Struct({
   runId: BoundedId,
+  continuedFromRunId: Schema.optionalKey(BoundedId),
   status: Schema.Literals([
     "disabled",
     "completed",
@@ -370,5 +498,6 @@ export const JevBrowserRunTaskResult = Schema.Struct({
   decisionCalls: NonNegativeInt,
   executedSteps: NonNegativeInt,
   billedCostUsd: Schema.NullOr(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
+  handoff: Schema.optionalKey(JevBrowserHandoff),
 });
 export type JevBrowserRunTaskResult = typeof JevBrowserRunTaskResult.Type;

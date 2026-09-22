@@ -83,6 +83,16 @@ export function createPreviewEnvironmentAtoms<R, E>(
       scheduler: lifecycleScheduler,
       concurrency: lifecycleConcurrency,
     }),
+    cancelBrowserRun: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:preview:cancel-browser-run",
+      tag: WS_METHODS.browserCancelRun,
+      scheduler: automationScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, input.runId]),
+      },
+    }),
     reportStatus: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:preview:report-status",
       tag: WS_METHODS.previewReportStatus,

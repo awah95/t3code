@@ -5,6 +5,7 @@ export const CANCEL_JEV_ROUTE_CHANNEL = "desktop:jev:cancel";
 export const OBSERVE_JEV_BROWSER_CHANNEL = "desktop:jev-browser:observe";
 export const DECIDE_JEV_BROWSER_CHANNEL = "desktop:jev-browser:decide";
 export const EXECUTE_JEV_BROWSER_CHANNEL = "desktop:jev-browser:execute";
+export const VERIFY_JEV_BROWSER_CHANNEL = "desktop:jev-browser:verify";
 export const CANCEL_JEV_BROWSER_CHANNEL = "desktop:jev-browser:cancel";
 export const SET_JEV_SUBAGENT_POLICY_CHANNEL = "desktop:jev:subagent-policy";
 export const JEV_SUBAGENT_DECISION_CHANNEL = "desktop:jev:subagent-decision";

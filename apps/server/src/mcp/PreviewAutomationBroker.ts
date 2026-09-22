@@ -1,7 +1,10 @@
 import {
+  BrowserObservedDialog,
   PREVIEW_AUTOMATION_V1_OPERATIONS,
+  PreviewAutomationArtifactTransferError,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationControlInterruptedError,
+  PreviewAutomationDialogPendingError,
   PreviewAutomationExecutionError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
@@ -91,6 +94,7 @@ interface PendingRequest {
   readonly queue: ClientConnection["queue"];
   readonly deferred: Deferred.Deferred<unknown, PreviewAutomationError>;
   readonly context: PreviewAutomationRequestErrorContext;
+  readonly expectedDialogActionId: string;
 }
 
 /**
@@ -169,10 +173,38 @@ const selectorDiagnosticsFromInput = (
   return {};
 };
 
+const dialogActionIdFromInput = (input: unknown, fallback: string): string => {
+  if (typeof input !== "object" || input === null) return fallback;
+  const record = input as Record<string, unknown>;
+  for (const key of ["transfer", "expectation"] as const) {
+    if (!(key in record)) continue;
+    const scope = record[key];
+    if (
+      typeof scope === "object" &&
+      scope !== null &&
+      "actionId" in scope &&
+      typeof scope.actionId === "string"
+    ) {
+      return scope.actionId;
+    }
+  }
+  return fallback;
+};
+
 const hostAssignmentKey = (scope: McpInvocationContext.McpInvocationScope): string =>
   `${scope.environmentId}\u0000${scope.providerSessionId}`;
 
 const isPreviewTabId = Schema.is(PreviewTabId);
+const isBrowserObservedDialog = Schema.is(BrowserObservedDialog);
+const artifactTransferReasons = new Set([
+  "scope-mismatch",
+  "source-not-found",
+  "source-invalid",
+  "size-limit",
+  "transfer-failed",
+  "claim-missing",
+  "claim-invalid",
+]);
 
 const readResultTabId = (result: unknown): PreviewTabId | null | undefined => {
   if (typeof result !== "object" || result === null || !("tabId" in result)) return undefined;
@@ -211,6 +243,7 @@ function remoteDetailKind(detail: unknown): RemoteDetailKind {
 
 const classifyResponseError = (
   context: PreviewAutomationRequestErrorContext,
+  expectedDialogActionId: string,
   error: NonNullable<PreviewAutomationResponse["error"]>,
 ): PreviewAutomationError => {
   const remoteDiagnostics = {
@@ -220,6 +253,41 @@ const classifyResponseError = (
     cause: error,
   };
   switch (error._tag) {
+    case "PreviewAutomationArtifactTransferError": {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const remote = detail
+        ? {
+            _tag: "PreviewAutomationArtifactTransferError" as const,
+            ...("operation" in detail ? { operation: detail.operation } : {}),
+            ...("environmentId" in detail ? { environmentId: detail.environmentId } : {}),
+            ...("threadId" in detail ? { threadId: detail.threadId } : {}),
+            ...("reason" in detail ? { reason: detail.reason } : {}),
+          }
+        : undefined;
+      if (
+        remote === undefined ||
+        (remote.operation !== "uploadFile" && remote.operation !== "downloadFile") ||
+        typeof remote.environmentId !== "string" ||
+        typeof remote.threadId !== "string" ||
+        typeof remote.reason !== "string" ||
+        !artifactTransferReasons.has(remote.reason) ||
+        remote.environmentId !== context.environmentId ||
+        remote.threadId !== context.threadId ||
+        remote.operation !== context.operation
+      ) {
+        return new PreviewAutomationExecutionError({
+          ...context,
+          ...remoteDiagnostics,
+        });
+      }
+      return new PreviewAutomationArtifactTransferError({
+        operation: remote.operation,
+        environmentId: context.environmentId,
+        threadId: context.threadId,
+        reason: remote.reason as PreviewAutomationArtifactTransferError["reason"],
+      });
+    }
     case "PreviewAutomationRecordingDesktopUpdateRequiredError":
       return new PreviewAutomationRecordingDesktopUpdateRequiredError({
         threadId: context.threadId,
@@ -265,6 +333,27 @@ const classifyResponseError = (
         ...context,
         ...remoteDiagnostics,
       });
+    case "PreviewAutomationDialogPendingError": {
+      const detail =
+        typeof error.detail === "object" && error.detail !== null ? error.detail : undefined;
+      const dialog = detail && "dialog" in detail ? detail.dialog : undefined;
+      if (
+        !isBrowserObservedDialog(dialog) ||
+        dialog.environmentId !== context.environmentId ||
+        dialog.actionId !== expectedDialogActionId ||
+        (context.tabId !== undefined && dialog.tabId !== context.tabId)
+      ) {
+        return new PreviewAutomationExecutionError({
+          ...context,
+          ...remoteDiagnostics,
+        });
+      }
+      return new PreviewAutomationDialogPendingError({
+        ...context,
+        ...remoteDiagnostics,
+        dialog,
+      });
+    }
     case "PreviewAutomationInvalidSelectorError": {
       return new PreviewAutomationInvalidSelectorError({
         ...context,
@@ -478,7 +567,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       yield* Deferred.fail(
         pending.deferred,
         response.error
-          ? classifyResponseError(pending.context, response.error)
+          ? classifyResponseError(pending.context, pending.expectedDialogActionId, response.error)
           : new PreviewAutomationMalformedResponseError(pending.context),
       );
     }
@@ -577,7 +666,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ...selectorDiagnostics,
       };
       const pending = new Map(current.pending);
-      pending.set(requestId, { queue: connection.queue, deferred, context });
+      pending.set(requestId, {
+        queue: connection.queue,
+        deferred,
+        context,
+        expectedDialogActionId: dialogActionIdFromInput(input.input, requestId),
+      });
       return [
         { connection, requestId, requestContext: context, requestSequence },
         { ...current, assignments, pending, requestSequence: current.requestSequence + 1 },

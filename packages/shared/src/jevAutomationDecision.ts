@@ -71,12 +71,16 @@ export function buildJevAutomationDecisionBody(input: {
     ...input.observation,
     ...(input.observation.inputs
       ? {
-          inputs: input.observation.inputs.map(({ id, kind, description }) => ({
-            id,
-            kind,
-            value: "[host-held value]",
-            description,
-          })),
+          inputs: input.observation.inputs.map((entry) =>
+            entry.kind === "navigation"
+              ? entry
+              : {
+                  id: entry.id,
+                  kind: entry.kind,
+                  value: "[host-held value]",
+                  description: entry.description,
+                },
+          ),
         }
       : {}),
   };
@@ -107,12 +111,16 @@ export function buildJevAutomationDecisionBody(input: {
         policy:
           "Choose only one exact legal host action. Listed inputs are available to the host even though their values are deliberately hidden from you. Choose an action that references a listed input when it fits the task; do not request novel text merely because its value is shown as host-held. Values, URLs and keys must not be invented. Choose needs_agent for genuinely missing text, visual understanding, unsupported work or ambiguity. A done proposal never proves completion: the host independently evaluates assertions.",
         observation,
-        suppliedInputs: input.inputs.map(({ id, kind, description }) => ({
-          id,
-          kind,
-          value: "[host-held value]",
-          description,
-        })),
+        suppliedInputs: input.inputs.map((entry) =>
+          entry.kind === "navigation"
+            ? entry
+            : {
+                id: entry.id,
+                kind: entry.kind,
+                value: "[host-held value]",
+                description: entry.description,
+              },
+        ),
         unmetConditions: input.unmetConditions,
         recentReceipts: input.priorReceipts.slice(-8),
       },

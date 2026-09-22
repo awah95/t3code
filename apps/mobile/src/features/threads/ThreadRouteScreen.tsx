@@ -6,6 +6,7 @@ import {
 } from "../../state/use-composer-drafts";
 import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
+import { deriveBrowserRunProjection } from "@t3tools/client-runtime/browser-run";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
 import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
@@ -78,6 +79,7 @@ import { useSelectedThreadRequests } from "../../state/use-selected-thread-reque
 import { useSelectedThreadWorktree } from "../../state/use-selected-thread-worktree";
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
+import { previewEnvironment } from "../../state/preview";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
@@ -91,6 +93,7 @@ import {
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
+import { ActiveBrowserRunBanner } from "./ActiveBrowserRunBanner";
 
 function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
@@ -356,6 +359,54 @@ function ThreadRouteContent(
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
+  const cancelBrowserRun = useAtomCommand(previewEnvironment.cancelBrowserRun, {
+    reportFailure: false,
+  });
+  const activeBrowserRuns = useMemo(
+    () =>
+      selectedThread === null
+        ? []
+        : deriveBrowserRunProjection(selectedThreadDetail?.activities ?? [], {
+            environmentId: selectedThread.environmentId,
+            threadId: selectedThread.id,
+          }).activeRuns,
+    [selectedThread, selectedThreadDetail?.activities],
+  );
+  const activeBrowserRunKey = activeBrowserRuns.map((run) => run.runId).join("\u0000");
+  const [stoppingBrowserRunKey, setStoppingBrowserRunKey] = useState<string | null>(null);
+  const stoppingBrowserRuns = stoppingBrowserRunKey === activeBrowserRunKey;
+  const handleStopBrowserRuns = useCallback(async () => {
+    if (selectedThread === null || activeBrowserRuns.length === 0 || stoppingBrowserRuns) {
+      return;
+    }
+    setStoppingBrowserRunKey(activeBrowserRunKey);
+    const results = await Promise.all(
+      activeBrowserRuns.map((run) =>
+        cancelBrowserRun({
+          environmentId: selectedThread.environmentId,
+          input: {
+            environmentId: selectedThread.environmentId,
+            threadId: selectedThread.id,
+            runId: run.runId,
+          },
+        }),
+      ),
+    );
+    if (results.every((result) => result._tag === "Success" && result.value.cancelled)) {
+      return;
+    }
+    setStoppingBrowserRunKey(null);
+    Alert.alert(
+      "Could not stop browser task",
+      "One or more browser tasks had already stopped or could not be reached.",
+    );
+  }, [
+    activeBrowserRunKey,
+    activeBrowserRuns,
+    cancelBrowserRun,
+    selectedThread,
+    stoppingBrowserRuns,
+  ]);
   const navigation = useNavigation();
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
@@ -943,6 +994,7 @@ function ThreadRouteContent(
           connectionState: routeConnectionState,
         });
   const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
+  const primaryBrowserRun = activeBrowserRuns[0];
   const renderThreadRouteBody = () => (
     <>
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
@@ -959,6 +1011,16 @@ function ThreadRouteContent(
             : undefined
         }
       >
+        {primaryBrowserRun ? (
+          <View className="px-3 pt-3">
+            <ActiveBrowserRunBanner
+              activeRunCount={activeBrowserRuns.length}
+              primaryStatus={primaryBrowserRun.status}
+              stopping={stoppingBrowserRuns}
+              onStop={() => void handleStopBrowserRuns()}
+            />
+          </View>
+        ) : null}
         <ThreadDetailScreen
           selectedThread={selectedThreadWithDraftSettings ?? selectedThread}
           contentPresentation={contentPresentation}

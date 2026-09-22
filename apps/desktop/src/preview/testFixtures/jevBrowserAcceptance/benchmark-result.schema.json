@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://t3.codes/schemas/jev-browser-acceptance-benchmark-result.json",
+  "title": "T3 Jev browser acceptance benchmark result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "fixtureVersion",
+    "revision",
+    "startedAt",
+    "completedAt",
+    "fixtureBaseUrls",
+    "runtime",
+    "runs",
+    "summary",
+    "measurements"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "fixtureVersion": { "type": "string", "minLength": 1 },
+    "revision": { "type": "string", "minLength": 7 },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "fixtureBaseUrls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["primary", "crossOrigin"],
+      "properties": {
+        "primary": { "type": "string", "format": "uri" },
+        "crossOrigin": { "type": "string", "format": "uri" }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["backend", "model", "machine"],
+      "properties": {
+        "backend": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "enum": ["embedded-electron", "external-chrome"] },
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": ["string", "null"] },
+            "profileId": { "type": ["string", "null"] }
+          }
+        },
+        "model": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "model", "billingBoundary"],
+          "properties": {
+            "provider": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "effort": { "type": ["string", "null"] },
+            "billingBoundary": { "enum": ["api", "subscription", "unknown"] }
+          }
+        },
+        "machine": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["os", "architecture"],
+          "properties": {
+            "os": { "type": "string", "minLength": 1 },
+            "architecture": { "type": "string", "minLength": 1 },
+            "label": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/run" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["declaredRunCount", "success", "indeterminate", "failure", "falseSuccess"],
+      "properties": {
+        "declaredRunCount": { "type": "integer", "minimum": 1 },
+        "success": { "type": "integer", "minimum": 0 },
+        "indeterminate": { "type": "integer", "minimum": 0 },
+        "failure": { "type": "integer", "minimum": 0 },
+        "falseSuccess": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "measurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latencyMs", "cpu", "installedRuntime"],
+      "properties": {
+        "latencyMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runP50", "runP95", "actionP50", "actionP95"],
+          "properties": {
+            "runP50": { "type": ["number", "null"], "minimum": 0 },
+            "runP95": { "type": ["number", "null"], "minimum": 0 },
+            "actionP50": { "type": ["number", "null"], "minimum": 0 },
+            "actionP95": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "cpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["idlePercent", "activePercent", "source"],
+          "properties": {
+            "idlePercent": { "type": ["number", "null"], "minimum": 0 },
+            "activePercent": { "type": ["number", "null"], "minimum": 0 },
+            "source": { "enum": ["observed", "unknown"] }
+          }
+        },
+        "installedRuntime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes", "source"],
+          "properties": {
+            "bytes": { "type": ["integer", "null"], "minimum": 0 },
+            "source": { "enum": ["observed", "unknown"] }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "caseId",
+        "status",
+        "assertions",
+        "interventionCount",
+        "decisionCalls",
+        "cost",
+        "bytes",
+        "latencyMs"
+      ],
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "caseId": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["success", "indeterminate", "failure"] },
+        "reason": { "type": ["string", "null"] },
+        "assertions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "status"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["passed", "failed", "indeterminate"] },
+              "observed": {}
+            }
+          }
+        },
+        "interventionCount": { "type": "integer", "minimum": 0 },
+        "decisionCalls": { "type": "integer", "minimum": 0 },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reportedUsd", "unknownCalls"],
+          "properties": {
+            "reportedUsd": { "type": ["number", "null"], "minimum": 0 },
+            "unknownCalls": { "type": "integer", "minimum": 0 },
+            "apiEquivalentUsd": { "type": ["number", "null"], "minimum": 0 }
+          }
+        },
+        "bytes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "request"],
+          "properties": {
+            "observation": { "type": "integer", "minimum": 0 },
+            "request": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "latencyMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run", "actions"],
+          "properties": {
+            "run": { "type": "number", "minimum": 0 },
+            "actions": { "type": "array", "items": { "type": "number", "minimum": 0 } }
+          }
+        }
+      }
+    }
+  }
+}

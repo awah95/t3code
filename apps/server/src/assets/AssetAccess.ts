@@ -178,6 +178,36 @@ function decodeClaims(encodedPayload: string): AssetClaims | null {
   }
 }
 
+const signAssetCapability = Effect.fn("AssetAccess.signCapability")(function* (input: {
+  readonly resource: AssetResource;
+  readonly claims: AssetClaims;
+  readonly fileName: string;
+  readonly expiresAt: number;
+  readonly sourcePath?: string;
+  readonly imageDimensions?: ImageDimensions | null;
+}) {
+  const secretStore = yield* ServerSecretStore.ServerSecretStore;
+  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(
+    Effect.mapError(
+      (cause) =>
+        new AssetSigningKeyLoadError({
+          resource: input.resource,
+          cause,
+        }),
+    ),
+  );
+  const encodedPayload = base64UrlEncode(encodeAssetClaims(input.claims));
+  const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
+  return {
+    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(input.fileName)}`,
+    expiresAt: input.expiresAt,
+    ...(input.sourcePath !== undefined ? { sourcePath: input.sourcePath } : {}),
+    ...(input.imageDimensions !== undefined && input.imageDimensions !== null
+      ? { imageDimensions: input.imageDimensions }
+      : {}),
+  };
+});
+
 function decodeRelativePath(value: string): string | null {
   try {
     return decodeURIComponent(value);
@@ -415,6 +445,67 @@ const finalizeWorkspaceFileAsset = Effect.fn("AssetAccess.finalizeWorkspaceFileA
   },
 );
 
+type AttachmentAssetResource = Extract<AssetResource, { readonly _tag: "attachment" }>;
+
+const finalizeAttachmentAsset = Effect.fn("AssetAccess.finalizeAttachmentAsset")(function* (
+  resource: AttachmentAssetResource,
+  expiresAt: number,
+) {
+  const config = yield* ServerConfig.ServerConfig;
+  const path = yield* Path.Path;
+  const attachmentPath = resolveAttachmentPathById({
+    attachmentsDir: config.attachmentsDir,
+    attachmentId: resource.attachmentId,
+  });
+  if (!attachmentPath) {
+    return yield* new AssetAttachmentNotFoundError({ resource });
+  }
+  const extension = parseAttachmentFileExtension(resource.attachmentId);
+  const isGenericFile = extension !== null;
+  const videoMimeType = resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
+  const isVideo = INLINE_VIDEO_MIME_TYPE_PATTERN.test(videoMimeType);
+  const inlinePreviewMimeType =
+    resource.disposition === "inline" && extension !== null
+      ? inlinePreviewMimeTypeForExtension(extension)
+      : undefined;
+  const imageDimensions = isGenericFile
+    ? null
+    : yield* readImageDimensionsFromHeader(attachmentPath);
+  const claims: AssetClaims = {
+    version: 1,
+    kind: "attachment",
+    attachmentId: resource.attachmentId,
+    ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined ? { download: true } : {}),
+    ...(resource.fileName !== undefined ? { fileName: resource.fileName } : {}),
+    ...(inlinePreviewMimeType !== undefined
+      ? { mimeType: inlinePreviewMimeType }
+      : resource.mimeType !== undefined
+        ? { mimeType: isVideo ? videoMimeType : resource.mimeType }
+        : {}),
+    expiresAt,
+  };
+  return {
+    claims,
+    fileName: resource.fileName ?? path.basename(attachmentPath),
+    imageDimensions,
+  };
+});
+
+/** Mint a signed GET capability for one retained attachment without unrelated asset services. */
+export const issueAttachmentAssetUrl = Effect.fn("AssetAccess.issueAttachmentAssetUrl")(function* (
+  resource: AttachmentAssetResource,
+) {
+  const expiresAt = (yield* Clock.currentTimeMillis) + ASSET_TOKEN_TTL_MS;
+  const finalized = yield* finalizeAttachmentAsset(resource, expiresAt);
+  return yield* signAssetCapability({
+    resource,
+    claims: finalized.claims,
+    fileName: finalized.fileName,
+    expiresAt,
+    ...(finalized.imageDimensions !== null ? { imageDimensions: finalized.imageDimensions } : {}),
+  });
+});
+
 export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (input: {
   readonly resource: AssetResource;
   readonly workspaceRoot?: string;
@@ -519,47 +610,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       break;
     }
     case "attachment": {
-      const config = yield* ServerConfig.ServerConfig;
-      const attachmentPath = resolveAttachmentPathById({
-        attachmentsDir: config.attachmentsDir,
-        attachmentId: input.resource.attachmentId,
-      });
-      if (!attachmentPath) {
-        return yield* new AssetAttachmentNotFoundError({
-          resource: input.resource,
-        });
-      }
-      // Generic files carry their extension inside the attachment id (that
-      // shape resolves the on-disk path); images do not. Videos and images
-      // render inline. Other generic files download unless a viewer requests
-      // a supported document or audio format inline.
-      const extension = parseAttachmentFileExtension(input.resource.attachmentId);
-      const isGenericFile = extension !== null;
-      const videoMimeType = input.resource.mimeType?.split(";", 1)[0]?.trim() ?? "";
-      const isVideo = INLINE_VIDEO_MIME_TYPE_PATTERN.test(videoMimeType);
-      const inlinePreviewMimeType =
-        input.resource.disposition === "inline" && extension !== null
-          ? inlinePreviewMimeTypeForExtension(extension)
-          : undefined;
-      if (!isGenericFile) {
-        imageDimensions = yield* readImageDimensionsFromHeader(attachmentPath);
-      }
-      claims = {
-        version: 1,
-        kind: "attachment",
-        attachmentId: input.resource.attachmentId,
-        ...(isGenericFile && !isVideo && inlinePreviewMimeType === undefined
-          ? { download: true }
-          : {}),
-        ...(input.resource.fileName !== undefined ? { fileName: input.resource.fileName } : {}),
-        ...(inlinePreviewMimeType !== undefined
-          ? { mimeType: inlinePreviewMimeType }
-          : input.resource.mimeType !== undefined
-            ? { mimeType: isVideo ? videoMimeType : input.resource.mimeType }
-            : {}),
-        expiresAt,
-      };
-      fileName = input.resource.fileName ?? path.basename(attachmentPath);
+      const finalized = yield* finalizeAttachmentAsset(input.resource, expiresAt);
+      claims = finalized.claims;
+      fileName = finalized.fileName;
+      imageDimensions = finalized.imageDimensions;
       break;
     }
     case "project-favicon": {
@@ -693,16 +747,6 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
     }
   }
 
-  const secretStore = yield* ServerSecretStore.ServerSecretStore;
-  const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32).pipe(
-    Effect.mapError(
-      (cause) =>
-        new AssetSigningKeyLoadError({
-          resource: input.resource,
-          cause,
-        }),
-    ),
-  );
   if (claims.kind === "project-favicon" || claims.kind === "project-favicon-external") {
     const issuedAt = yield* Clock.currentTimeMillis;
     expiresAt =
@@ -710,14 +754,14 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       PROJECT_FAVICON_TOKEN_BUCKET_MS;
     claims = { ...claims, expiresAt };
   }
-  const encodedPayload = base64UrlEncode(encodeAssetClaims(claims));
-  const token = `${encodedPayload}.${signPayload(encodedPayload, signingSecret)}`;
-  return {
-    relativeUrl: `${ASSET_ROUTE_PREFIX}/${token}/${encodeURIComponent(fileName)}`,
+  return yield* signAssetCapability({
+    resource: input.resource,
+    claims,
+    fileName,
     expiresAt,
     ...(sourcePath !== undefined ? { sourcePath } : {}),
     ...(imageDimensions !== null ? { imageDimensions } : {}),
-  };
+  });
 });
 
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (

@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  PreviewAutomationArtifactTransferError,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
@@ -246,6 +247,37 @@ describe("previewAutomationRequestConsumer", () => {
     });
   });
 
+  it("preserves a scoped artifact transfer reason without its private cause", () => {
+    const error = new PreviewAutomationArtifactTransferError({
+      operation: "uploadFile",
+      environmentId,
+      threadId,
+      reason: "transfer-failed",
+      cause: new Error("private staged file path"),
+    });
+
+    const response = serializePreviewAutomationError(error, {
+      requestId: "request-upload",
+      operation: "uploadFile",
+      environmentId,
+      threadId,
+      tabId,
+    });
+
+    expect(response).toEqual({
+      _tag: "PreviewAutomationArtifactTransferError",
+      message:
+        "Preview automation uploadFile could not complete its scoped artifact transfer (transfer-failed).",
+      detail: {
+        operation: "uploadFile",
+        environmentId: "environment-1",
+        threadId: "thread-1",
+        reason: "transfer-failed",
+      },
+    });
+    expect(JSON.stringify(response)).not.toContain("private staged file path");
+  });
+
   it("reports a missing recording even when no preview tab remains", () => {
     const error = new PreviewAutomationRecordingNotActiveError({
       requestId: "request-recording-stop",
@@ -322,6 +354,94 @@ describe("previewAutomationRequestConsumer", () => {
         selectorLength: 6,
       },
     });
+  });
+
+  it("preserves only the exact pending dialog from the desktop failure", () => {
+    const dialog = {
+      environmentId,
+      tabId,
+      runId: "run-1",
+      actionId: "request-click",
+      dialogId: "dialog-1",
+      kind: "confirm" as const,
+      message: "Continue?",
+      openedAt: "2026-09-22T12:00:00.000Z",
+    };
+
+    expect(
+      serializePreviewAutomationError(
+        {
+          _tag: "PreviewAutomationDialogPendingError",
+          dialog: { ...dialog, transportSecret: "do-not-return" },
+          nativeSecret: "do-not-return",
+        },
+        {
+          requestId: "request-click",
+          operation: "click",
+          environmentId,
+          threadId,
+          tabId,
+        },
+      ),
+    ).toEqual({
+      _tag: "PreviewAutomationDialogPendingError",
+      message:
+        "The browser action is paused by a JavaScript dialog. Handle this exact dialog with preview_dialog. Do not repeat the original action; it may already have executed.",
+      detail: { dialog },
+    });
+  });
+
+  it("preserves a bounded pending dialog through a tagged IPC cause wrapper", () => {
+    const dialog = {
+      environmentId,
+      tabId,
+      actionId: "request-click",
+      dialogId: "dialog-1",
+      kind: "confirm" as const,
+      message: "Continue?",
+      openedAt: "2026-09-22T12:00:00.000Z",
+    };
+
+    expect(
+      serializePreviewAutomationError(
+        {
+          cause: {
+            _tag: "PreviewAutomationDialogPendingError",
+            dialog,
+            nativeSecret: "do-not-return",
+          },
+          wrapperSecret: "do-not-return",
+        },
+        {
+          requestId: "request-click",
+          operation: "click",
+          environmentId,
+          threadId,
+          tabId,
+        },
+      ),
+    ).toEqual({
+      _tag: "PreviewAutomationDialogPendingError",
+      message:
+        "The browser action is paused by a JavaScript dialog. Handle this exact dialog with preview_dialog. Do not repeat the original action; it may already have executed.",
+      detail: { dialog },
+    });
+  });
+
+  it("does not infer a pending dialog from an Electron IPC error message", () => {
+    const error = new Error(
+      "Error invoking remote method: PreviewAutomationDialogPendingError dialog-1",
+    );
+    const response = serializePreviewAutomationError(error, {
+      requestId: "request-click",
+      operation: "click",
+      environmentId,
+      threadId,
+      tabId,
+    });
+
+    expect(response._tag).toBe("PreviewAutomationExecutionError");
+    expect(JSON.stringify(response)).not.toContain("dialog-1");
   });
 
   it("correlates unexpected failures without exposing cause details", () => {

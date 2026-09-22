@@ -215,6 +215,7 @@ import {
   PreviewAutomationResponse,
   PreviewAutomationStreamEvent,
 } from "./previewAutomation.ts";
+import { CancelBrowserRunInput, CancelBrowserRunResult } from "./browserRun.ts";
 import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
@@ -371,6 +372,7 @@ export const WS_METHODS = {
   previewAutomationConnect: "previewAutomation.connect",
   previewAutomationRespond: "previewAutomation.respond",
   previewAutomationFocusHost: "previewAutomation.focusHost",
+  browserCancelRun: "browser.cancelRun",
 
   // Device methods
   deviceConfigure: "device.configure",
@@ -1328,6 +1330,12 @@ const WsPreviewAutomationFocusHostRpc = Rpc.make(WS_METHODS.previewAutomationFoc
   error: EnvironmentAuthorizationError,
 });
 
+const WsBrowserCancelRunRpc = Rpc.make(WS_METHODS.browserCancelRun, {
+  payload: CancelBrowserRunInput,
+  success: CancelBrowserRunResult,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsSubscribePreviewEventsRpc = Rpc.make(WS_METHODS.subscribePreviewEvents, {
   payload: Schema.Struct({}),
   success: PreviewEvent,
@@ -1651,6 +1659,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPreviewAutomationConnectRpc,
   WsPreviewAutomationRespondRpc,
   WsPreviewAutomationFocusHostRpc,
+  WsBrowserCancelRunRpc,
   WsSubscribePreviewEventsRpc,
   WsSubscribeDiscoveredLocalServersRpc,
   WsDeviceConfigureRpc,

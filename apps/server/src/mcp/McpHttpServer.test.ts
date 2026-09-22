@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+  PREVIEW_AUTOMATION_OPERATIONS,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -52,6 +58,11 @@ const TestLayer = McpHttpServer.PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(PreviewAutomationBroker.layer),
   Layer.provideMerge(JevBrowserRunRegistry.layer),
   Layer.provideMerge(CodexLedgerService.layerTest),
+  Layer.provideMerge(
+    Layer.mock(OrchestrationEngineService)({
+      dispatch: () => Effect.succeed({ sequence: 1 }),
+    }),
+  ),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-http-server-test-" })),
   Layer.provideMerge(NodeServices.layer),
 );
@@ -641,6 +652,7 @@ it.effect("registers annotated tools and preserves authenticated request context
       const events = yield* broker.connect({
         clientId: "mcp-test-client",
         environmentId,
+        supportedOperations: PREVIEW_AUTOMATION_OPERATIONS,
       });
       yield* Stream.runForEach(events, (event) => {
         if (event.type === "connected") return Effect.void;
@@ -655,16 +667,18 @@ it.effect("registers annotated tools and preserves authenticated request context
               ? snapshotResult
               : event.request.operation === "evaluate"
                 ? ["Connect", "Continue"]
-                : event.request.operation === "press"
-                  ? undefined
-                  : {
-                      available: true,
-                      visible: true,
-                      tabId,
-                      url: "http://example.test/",
-                      title: "Example",
-                      loading: false,
-                    },
+                : event.request.operation === "verify"
+                  ? { results: [] }
+                  : event.request.operation === "press"
+                    ? undefined
+                    : {
+                        available: true,
+                        visible: true,
+                        tabId,
+                        url: "http://example.test/",
+                        title: "Example",
+                        loading: false,
+                      },
         });
       }).pipe(Effect.forkScoped);
       yield* Effect.yieldNow;
@@ -753,6 +767,9 @@ it.effect("registers annotated tools and preserves authenticated request context
         { name: "preview_press", arguments: { key: "Enter" } },
         { name: "preview_scroll", arguments: { deltaY: 100 } },
         { name: "preview_wait_for", arguments: { text: "Example" } },
+        { name: "preview_select", arguments: { selector: "select", label: "Audio" } },
+        { name: "preview_check", arguments: { selector: "input[type=checkbox]", checked: true } },
+        { name: "preview_hover", arguments: { semanticTarget: { role: "button", name: "Menu" } } },
       ];
       for (const request of actionRequests) {
         const result = yield* server
@@ -761,12 +778,22 @@ it.effect("registers annotated tools and preserves authenticated request context
             Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
             Effect.provideService(McpSchema.McpServerClient, client),
           );
-        expect(result.isError).toBe(false);
+        expect(result.isError, request.name).toBe(false);
         expect(result.structuredContent).toEqual({ toolIcon });
         expect(routedRequests.at(-1)?.operation).toBe("status");
         const text = result.content[0];
         expect(text?.type === "text" ? decodeJsonText(text.text) : null).toEqual({ toolIcon });
       }
+
+      const verified = yield* server
+        .callTool({ name: "preview_verify", arguments: { tabId, assertions: [] } })
+        .pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(verified.isError).toBe(false);
+      expect(verified.structuredContent).toMatchObject({ results: [] });
+      expect(routedRequests.find(({ operation }) => operation === "verify")?.tabId).toBe(tabId);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

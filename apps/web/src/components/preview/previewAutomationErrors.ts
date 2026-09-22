@@ -1,5 +1,7 @@
 import {
+  BrowserObservedDialog,
   EnvironmentId,
+  PreviewAutomationArtifactTransferError,
   type PreviewAutomationHost,
   PreviewAutomationOperation,
   PreviewAutomationRecordingTransferError,
@@ -12,6 +14,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 export interface PreviewAutomationOperationContext {
@@ -138,6 +141,20 @@ export class PreviewAutomationTargetNotEditableHostError extends Schema.TaggedEr
   }
 }
 
+/** The exact dialog that interrupted an action after it may have taken effect. */
+export class PreviewAutomationDialogPendingHostError extends Schema.TaggedError<PreviewAutomationDialogPendingHostError>()(
+  "PreviewAutomationDialogPendingHostError",
+  { dialog: BrowserObservedDialog },
+) {
+  get responseTag() {
+    return "PreviewAutomationDialogPendingError" as const;
+  }
+
+  override get message(): string {
+    return "The browser action is paused by a JavaScript dialog. Handle this exact dialog with preview_dialog. Do not repeat the original action; it may already have executed.";
+  }
+}
+
 const targetNotEditableDiagnostics = (
   cause: unknown,
 ): {
@@ -172,6 +189,37 @@ const targetNotEditableDiagnostics = (
   };
 };
 
+const decodeBrowserObservedDialog = Schema.decodeUnknownOption(BrowserObservedDialog);
+
+const dialogPendingDiagnostics = (
+  input: PreviewAutomationOperationContext & { readonly cause: unknown },
+): typeof BrowserObservedDialog.Type | null => {
+  const visited = new Set<object>();
+  let candidate = input.cause;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (typeof candidate !== "object" || candidate === null || visited.has(candidate)) return null;
+    visited.add(candidate);
+    if (
+      "_tag" in candidate &&
+      candidate._tag === "PreviewAutomationDialogPendingError" &&
+      "dialog" in candidate
+    ) {
+      const decoded = decodeBrowserObservedDialog(candidate.dialog);
+      if (Option.isNone(decoded)) return null;
+      const dialog = decoded.value;
+      return dialog.environmentId === input.environmentId &&
+        input.tabId !== null &&
+        dialog.tabId === input.tabId &&
+        dialog.actionId === input.requestId
+        ? dialog
+        : null;
+    }
+    if (!("cause" in candidate)) return null;
+    candidate = candidate.cause;
+  }
+  return null;
+};
+
 export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewAutomationOperationError>()(
   "PreviewAutomationOperationError",
   {
@@ -186,7 +234,29 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
   static fromCause(
     input: PreviewAutomationOperationContext & { readonly cause: unknown },
   ): PreviewAutomationHostError {
-    if (isPreviewAutomationHostError(input.cause)) return input.cause;
+    if (isPreviewAutomationHostError(input.cause)) {
+      if (
+        input.cause._tag === "PreviewAutomationArtifactTransferError" &&
+        (input.cause.environmentId !== input.environmentId ||
+          input.cause.threadId !== input.threadId ||
+          input.cause.operation !== input.operation)
+      ) {
+        return new PreviewAutomationOperationError(input);
+      }
+      if (
+        input.cause._tag === "PreviewAutomationDialogPendingHostError" &&
+        (input.cause.dialog.environmentId !== input.environmentId ||
+          input.tabId === null ||
+          input.cause.dialog.tabId !== input.tabId)
+      ) {
+        return new PreviewAutomationOperationError(input);
+      }
+      return input.cause;
+    }
+    const pendingDialog = dialogPendingDiagnostics(input);
+    if (pendingDialog) {
+      return new PreviewAutomationDialogPendingHostError({ dialog: pendingDialog });
+    }
     const diagnostics = targetNotEditableDiagnostics(input.cause);
     return diagnostics
       ? new PreviewAutomationTargetNotEditableHostError({
@@ -210,6 +280,7 @@ export class PreviewAutomationOperationError extends Schema.TaggedError<PreviewA
 }
 
 export const PreviewAutomationHostError = Schema.Union([
+  PreviewAutomationArtifactTransferError,
   PreviewAutomationRecordingTransferError,
   PreviewAutomationRecordingDesktopUpdateRequiredError,
   PreviewAutomationRecordingTooLargeError,
@@ -220,6 +291,7 @@ export const PreviewAutomationHostError = Schema.Union([
   PreviewAutomationTargetUnavailableError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetNotEditableHostError,
+  PreviewAutomationDialogPendingHostError,
   PreviewAutomationOperationError,
 ]);
 export type PreviewAutomationHostError = typeof PreviewAutomationHostError.Type;

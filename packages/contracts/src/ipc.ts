@@ -1,4 +1,6 @@
 import * as Schema from "effect/Schema";
+import type { DesktopBrowserCapabilityBridge } from "./browserCapabilities.ts";
+import type { DesktopBrowserArtifactBridge } from "./browserArtifactAutomation.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -1142,6 +1144,9 @@ export interface DesktopBridge {
   cancelJevBrowser?: (
     input: import("./jevBrowser.ts").JevBrowserCancelInput,
   ) => Promise<import("./jevBrowser.ts").JevBrowserCancelResult>;
+  verifyJevBrowser?: (
+    input: import("./jevBrowser.ts").JevBrowserVerifyInput,
+  ) => Promise<import("./jevBrowser.ts").JevBrowserVerifyResult>;
   setJevSubagentPolicy?: (policy: import("./jev.ts").JevSubagentPolicy) => Promise<void>;
   clearJevSubagentPolicies?: () => Promise<void>;
   onJevSubagentDecision?: (
@@ -1285,6 +1290,7 @@ export interface DesktopBridge {
 export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
 
 export interface DesktopPreviewBridge {
+  artifacts?: DesktopBrowserArtifactBridge;
   createTab: (tabId: string, defaults?: DesktopPreviewTabDefaults) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
@@ -1360,7 +1366,7 @@ export interface DesktopPreviewBridge {
     ) => Promise<DesktopPreviewRecordingArtifact>;
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
-  automation: {
+  automation: DesktopBrowserCapabilityBridge & {
     status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;

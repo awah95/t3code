@@ -122,6 +122,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { withTerminalOutputWindow } from "./terminal/OutputProtocol.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
+import * as JevBrowserRunRegistry from "./mcp/JevBrowserRunRegistry.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
@@ -498,6 +499,7 @@ const makeWsRpcLayer = (
   clientOrigin: OrchestrationClientOrigin,
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
+  browserRuns: JevBrowserRunRegistry.JevBrowserRunRegistry["Service"],
 ) =>
   WsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -3539,6 +3541,10 @@ const makeWsRpcLayer = (
             previewAutomationBroker.focusHost(input),
             { "rpc.aggregate": "preview-automation" },
           ),
+        [WS_METHODS.browserCancelRun]: (input) =>
+          observeRpcEffect(WS_METHODS.browserCancelRun, browserRuns.cancel(input), {
+            "rpc.aggregate": "preview-automation",
+          }),
         [WS_METHODS.subscribePreviewEvents]: (_input) =>
           observeRpcStream(WS_METHODS.subscribePreviewEvents, previewManager.events, {
             "rpc.aggregate": "preview",
@@ -3810,6 +3816,7 @@ const makeWsRpcLayer = (
 export const websocketRpcRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
+    const browserRuns = yield* JevBrowserRunRegistry.JevBrowserRunRegistry;
     const baseServerSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const config = yield* ServerConfig.ServerConfig;
     const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
@@ -3876,6 +3883,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               clientOrigin,
               clientAnalyticsProps,
               previewAutomationBroker,
+              browserRuns,
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),

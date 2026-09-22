@@ -1,0 +1,226 @@
+{
+  "schemaVersion": 1,
+  "fixtureVersion": "2026-09-22.1",
+  "reset": {
+    "method": "POST",
+    "path": "/api/reset?session={session}",
+    "authoritativeStatePath": "/api/state?session={session}",
+    "authoritativeEventsPath": "/api/events?session={session}&after={sequence}",
+    "sessionPattern": "^[a-zA-Z0-9_-]{1,64}$"
+  },
+  "hostRequirements": {
+    "primary": {
+      "host": "127.0.0.1",
+      "originRole": "top-level and same-origin-frame host"
+    },
+    "crossOrigin": {
+      "host": "localhost",
+      "originRole": "cross-site iframe candidate",
+      "requirements": [
+        "localhost resolves to the loopback interface used by the harness",
+        "the browser host can reach both printed loopback origins",
+        "cross-origin and OOPIF assertions use the printed secondary origin rather than changing the iframe URL",
+        "OOPIF status is proven from the browser/CDP target tree; a distinct origin alone is not OOPIF proof"
+      ]
+    },
+    "shadow": {
+      "supportedFixture": "open shadow root in /scopes-limits",
+      "handoffFixtures": ["closed shadow root in /scopes-limits", "canvas in /scopes-limits"]
+    }
+  },
+  "limits": {
+    "controlCount": 185,
+    "pageTextCharacters": 12500,
+    "selectOptionCount": 105
+  },
+  "pages": [
+    {
+      "id": "scopes-limits",
+      "path": "/scopes-limits",
+      "readyLifecycle": "scopes-limits.ready"
+    },
+    {
+      "id": "frames",
+      "path": "/frames",
+      "readyLifecycle": "frames.ready"
+    },
+    {
+      "id": "workflows",
+      "path": "/workflows",
+      "readyLifecycle": "workflows.ready"
+    }
+  ],
+  "cases": [
+    {
+      "id": "duplicate-save-scopes",
+      "page": "scopes-limits",
+      "operation": "scoped-target",
+      "expected": {
+        "scoped": "success",
+        "unscoped": "indeterminate",
+        "serverEvent": "save.committed",
+        "statePaths": ["saved.profile", "saved.billing"]
+      }
+    },
+    {
+      "id": "bounded-observation-limits",
+      "page": "scopes-limits",
+      "operation": "targeted-verification",
+      "expected": {
+        "supportedTarget": "success-or-indeterminate",
+        "falseSuccessAllowed": false,
+        "controlCount": 185,
+        "pageTextCharacters": 12500,
+        "selectOptionCount": 105,
+        "targetName": "Apply advanced preference"
+      }
+    },
+    {
+      "id": "open-shadow-action",
+      "page": "scopes-limits",
+      "operation": "shadow-target",
+      "expected": {
+        "verdict": "success",
+        "targetName": "Apply shadow preference",
+        "lifecycle": "shadow.applied"
+      }
+    },
+    {
+      "id": "unsupported-visual-boundaries",
+      "page": "scopes-limits",
+      "operation": "capability-handoff",
+      "expected": {
+        "verdict": "indeterminate",
+        "targets": ["closed shadow action", "Visual-only chart control"],
+        "falseSuccessAllowed": false
+      }
+    },
+    {
+      "id": "nested-scroll",
+      "page": "scopes-limits",
+      "operation": "container-scroll",
+      "expected": {
+        "verdict": "success",
+        "containerId": "nested-scroll-container",
+        "targetName": "Bottom action"
+      }
+    },
+    {
+      "id": "custom-menu",
+      "page": "scopes-limits",
+      "operation": "hover-or-click-select",
+      "expected": {
+        "verdict": "success",
+        "triggerName": "Choose channel",
+        "selectedValue": "push",
+        "lifecycle": "menu.selected"
+      }
+    },
+    {
+      "id": "contenteditable",
+      "page": "scopes-limits",
+      "operation": "edit-and-verify",
+      "expected": {
+        "verdict": "success",
+        "targetName": "Release notes",
+        "lifecycle": "editor.changed"
+      }
+    },
+    {
+      "id": "same-origin-nested-frame",
+      "page": "frames",
+      "operation": "frame-target",
+      "expected": {
+        "verdict": "success",
+        "frameTitle": "Same-origin preferences",
+        "targetName": "Apply frame preference",
+        "lifecycle": "frame.applied"
+      }
+    },
+    {
+      "id": "cross-origin-oopif-candidate",
+      "page": "frames",
+      "operation": "frame-target",
+      "expected": {
+        "implemented": "success",
+        "unsupported": "indeterminate",
+        "frameTitle": "Cross-origin preferences",
+        "targetName": "Apply frame preference",
+        "requiresCdpTargetProof": true
+      }
+    },
+    {
+      "id": "delayed-submit-no-replay",
+      "page": "workflows",
+      "operation": "delayed-submit",
+      "expected": {
+        "verdict": "success-or-indeterminate",
+        "lifecycle": "submission.settled",
+        "serverEvent": "submission.settled",
+        "submissionCount": 1,
+        "replayAllowed": false
+      }
+    },
+    {
+      "id": "save-reopen",
+      "page": "workflows",
+      "operation": "save-reload-verify",
+      "expected": {
+        "verdict": "success",
+        "serverEvent": "save.committed",
+        "statePath": "saved.workspace",
+        "changedInputAloneIsSuccess": false
+      }
+    },
+    {
+      "id": "upload",
+      "page": "workflows",
+      "operation": "upload",
+      "inputArtifact": "upload-sample.txt",
+      "expected": {
+        "verdict": "success",
+        "serverEvent": "upload.received",
+        "filename": "upload-sample.txt",
+        "bytes": 36,
+        "sha256": "f01d50767e67c03ae81d229b831862516ac42d721a61ed557af431bccc70c74c"
+      }
+    },
+    {
+      "id": "download",
+      "page": "workflows",
+      "operation": "download",
+      "expected": {
+        "serverEvent": "download.requested",
+        "browserReceiptRequired": true,
+        "requestAloneIsSuccess": false,
+        "filename": "jev-browser-acceptance.txt",
+        "bytes": 38,
+        "sha256": "215a5d778568ead964b1632d2cedc6000d3fd848108ca5f4f9414fd0bf2561a0"
+      }
+    },
+    {
+      "id": "dialog",
+      "page": "workflows",
+      "operation": "dialog",
+      "expected": {
+        "verdict": "success",
+        "serverEvent": "dialog.resolved",
+        "explicitActionRequired": true
+      }
+    },
+    {
+      "id": "owned-popup",
+      "page": "workflows",
+      "operation": "popup",
+      "expected": {
+        "verdict": "success",
+        "serverEvents": ["popup.opened", "popup.action"],
+        "unrelatedTabMutationAllowed": false
+      }
+    }
+  ],
+  "benchmark": {
+    "schemaPath": "benchmark-result.schema.json",
+    "statusValues": ["success", "indeterminate", "failure"]
+  }
+}

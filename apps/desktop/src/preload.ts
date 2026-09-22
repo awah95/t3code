@@ -11,6 +11,8 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 import * as JevChannels from "./ipc/jevChannels.ts";
+import { browserCapabilityPreload } from "./browserCapabilityPreload.ts";
+import { browserArtifactPreload } from "./browserArtifactPreload.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
   "requested",
@@ -72,6 +74,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   observeJevBrowser: (input) => ipcRenderer.invoke(JevChannels.OBSERVE_JEV_BROWSER_CHANNEL, input),
   decideJevBrowser: (input) => ipcRenderer.invoke(JevChannels.DECIDE_JEV_BROWSER_CHANNEL, input),
   executeJevBrowser: (input) => ipcRenderer.invoke(JevChannels.EXECUTE_JEV_BROWSER_CHANNEL, input),
+  verifyJevBrowser: (input) => ipcRenderer.invoke(JevChannels.VERIFY_JEV_BROWSER_CHANNEL, input),
   cancelJevBrowser: (input) => ipcRenderer.invoke(JevChannels.CANCEL_JEV_BROWSER_CHANNEL, input),
   setJevSubagentPolicy: (policy) =>
     ipcRenderer.invoke(JevChannels.SET_JEV_SUBAGENT_POLICY_CHANNEL, policy),
@@ -383,6 +386,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       },
     },
     automation: {
+      ...browserCapabilityPreload,
       status: (tabId) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_STATUS_CHANNEL, { tabId }),
       snapshot: (tabId) =>
@@ -400,6 +404,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       waitFor: (tabId, input) =>
         ipcRenderer.invoke(IpcChannels.PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL, { tabId, input }),
     },
+    artifacts: browserArtifactPreload,
     onStateChange: (listener) => {
       const wrappedListener = (
         _event: Electron.IpcRendererEvent,

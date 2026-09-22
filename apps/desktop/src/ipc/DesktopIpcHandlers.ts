@@ -7,6 +7,7 @@ import {
   decideJevBrowser,
   executeJevBrowser,
   observeJevBrowser,
+  verifyJevBrowser,
 } from "./methods/jevBrowser.ts";
 import {
   setJevSubagentPolicy,
@@ -82,6 +83,8 @@ import {
   setSnapShotShortcutSuppressed,
 } from "./methods/snapShot.ts";
 import * as PreviewIpc from "./methods/preview.ts";
+import * as BrowserCapabilityIpc from "./methods/browserCapabilities.ts";
+import * as BrowserArtifactIpc from "./methods/browserArtifacts.ts";
 import * as AppActivationIpc from "./methods/appActivation.ts";
 import { getWslState, setWslBackendEnabled, setWslDistro, setWslOnly } from "./methods/wsl.ts";
 
@@ -92,6 +95,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(decideJevRoute);
   yield* ipc.handle(cancelJevRoute);
   yield* ipc.handle(observeJevBrowser);
+  yield* ipc.handle(verifyJevBrowser);
   yield* ipc.handle(decideJevBrowser);
   yield* ipc.handle(executeJevBrowser);
   yield* ipc.handle(cancelJevBrowser);
@@ -101,6 +105,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(ackJevSubagentReceipt);
   yield* installJevSubagentEvents();
   yield* installNotificationBadge();
+  for (const method of BrowserCapabilityIpc.methods) yield* ipc.handle(method);
+  for (const method of BrowserArtifactIpc.methods) yield* ipc.handle(method);
   yield* PreviewIpc.installPreviewEventForwarding();
 
   yield* ipc.handle(AppActivationIpc.setReady);

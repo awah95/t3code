@@ -7,6 +7,8 @@ import {
   JevBrowserExecuteResult,
   JevBrowserObserveInput,
   JevBrowserObserveResult,
+  JevBrowserVerifyInput,
+  JevBrowserVerifyResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -38,7 +40,13 @@ export const observeJevBrowser = DesktopIpc.makeIpcMethod({
     const manager = yield* PreviewManager;
     const service = yield* DesktopJevBrowser;
     const observation = yield* service.withRunCancellation(input.runId, () =>
-      manager.jevBrowserObserve(input.runId, tabId, input.inputs, input.allowedOrigins),
+      manager.jevBrowserObserve(
+        input.runId,
+        tabId,
+        input.inputs,
+        input.allowedOrigins,
+        input.resolvedNavigations,
+      ),
     );
     return { observation };
   }),
@@ -69,6 +77,10 @@ export const executeJevBrowser = DesktopIpc.makeIpcMethod({
         ...(input.action.targetId === undefined ? {} : { targetId: input.action.targetId }),
         ...(input.action.inputId === undefined ? {} : { inputId: input.action.inputId }),
         ...(input.action.value === undefined ? {} : { value: input.action.value }),
+        ...(input.action.checked === undefined ? {} : { checked: input.action.checked }),
+        ...(input.action.navigationTarget === undefined
+          ? {}
+          : { navigationTarget: input.action.navigationTarget }),
       }),
     );
   }),
@@ -86,5 +98,19 @@ export const cancelJevBrowser = DesktopIpc.makeIpcMethod({
       manager.jevBrowserCancel(input.runId),
     ]);
     return { cancelled: activeOperation || retainedRun };
+  }),
+});
+
+export const verifyJevBrowser = DesktopIpc.makeIpcMethod({
+  channel: JevChannels.VERIFY_JEV_BROWSER_CHANNEL,
+  payload: JevBrowserVerifyInput,
+  result: JevBrowserVerifyResult,
+  handler: Effect.fn("desktop.ipc.jevBrowser.verify")(function* (input) {
+    const tabId = yield* requireTabId(input.tabId);
+    const manager = yield* PreviewManager;
+    const service = yield* DesktopJevBrowser;
+    return yield* service.withRunCancellation(input.runId, () =>
+      manager.jevBrowserVerify(input.runId, tabId, input),
+    );
   }),
 });

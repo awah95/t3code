@@ -4,13 +4,20 @@ import { RegistryContext, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   FILL_PREVIEW_VIEWPORT,
-  PREVIEW_AUTOMATION_OPERATIONS,
+  BrowserArtifactActionId,
+  type BrowserArtifactAcknowledgeHostInput,
+  type BrowserDialogHandleRequest,
+  type BrowserDialogPrepareActionInput,
+  type BrowserDialogStatusHostInput,
+  type BrowserDownloadHostInput,
+  type BrowserUploadHostInput,
   type EnvironmentId,
   type JevBrowserCancelInput,
   type JevBrowserDecideInput,
   type JevBrowserExecuteInput,
   type JevBrowserExecuteResult,
   type JevBrowserObserveInput,
+  type JevBrowserVerifyInput,
   type PreviewAutomationNavigateInput,
   type PreviewAutomationOpenInput,
   type PreviewAutomationResizeInput,
@@ -72,8 +79,15 @@ import {
 } from "~/jevBrowser";
 
 import { previewBridge } from "./previewBridge";
+import { createBrowserArtifactAutomationHost } from "./browserArtifactAutomationHost";
+import {
+  hasJevBrowserHost,
+  resolvePreviewAutomationSupportedOperations,
+} from "./previewAutomationHostCapabilities";
+import { resolveJevBrowserNavigations } from "./jevBrowserNavigationResolution";
 import {
   PreviewAutomationOperationError,
+  PreviewAutomationDialogPendingHostError,
   PreviewAutomationOverlayTimeoutError,
   PreviewAutomationRecordingNotActiveError,
   PreviewAutomationTargetUnavailableError,
@@ -103,12 +117,11 @@ import { shouldRollbackPreviewViewport } from "./previewViewportRollback";
 
 const PREVIEW_PRESENTATION_SETTLE_TIMEOUT_MS = 500;
 
-const hasJevBrowserHost = () =>
-  window.desktopBridge?.getJevStatus !== undefined &&
-  window.desktopBridge.observeJevBrowser !== undefined &&
-  window.desktopBridge.decideJevBrowser !== undefined &&
-  window.desktopBridge.executeJevBrowser !== undefined &&
-  window.desktopBridge.cancelJevBrowser !== undefined;
+const previewAutomationHostNotReady = async (
+  _request: PreviewAutomationRequest,
+): Promise<unknown> => {
+  throw new Error("Preview automation host is not ready.");
+};
 
 const readJevBrowserStatus = async (threadRef: ScopedThreadRef) => {
   const credential = hasJevBrowserHost()
@@ -333,7 +346,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
     () => ({
       clientId: automationClientId,
       environmentId,
-      supportedOperations: [...PREVIEW_AUTOMATION_OPERATIONS],
+      supportedOperations: resolvePreviewAutomationSupportedOperations(
+        previewBridge!.automation,
+        window.desktopBridge,
+        previewBridge!.artifacts,
+      ),
     }),
     [automationClientId, environmentId],
   );
@@ -361,6 +378,13 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
   const [automationConnectionAtom] = useState(() => Atom.make<string | null>(null));
   const automationConnectionId = useAtomValue(automationConnectionAtom);
   const presentationSuppressedRuntimeTabsRef = useRef(new Map<string, Set<string>>());
+  const artifactAutomationHost = useMemo(
+    () =>
+      previewBridge?.artifacts
+        ? createBrowserArtifactAutomationHost(previewBridge.artifacts)
+        : null,
+    [],
+  );
 
   useEffect(
     () => () => {
@@ -453,12 +477,121 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             runtimeTabId,
           };
         };
+        const requireDialogTab = (input: {
+          readonly environmentId: EnvironmentId;
+          readonly tabId?: string;
+        }) => {
+          const artifacts = previewBridge?.artifacts;
+          const readyTabId = tabId;
+          if (!artifacts || !readyTabId) {
+            throw new PreviewAutomationTargetUnavailableError(unavailableTarget);
+          }
+          if (
+            input.environmentId !== environmentId ||
+            (input.tabId !== undefined && input.tabId !== readyTabId)
+          ) {
+            throw new Error("The browser dialog request does not match the selected host tab.");
+          }
+          const readyState = readThreadPreviewState(threadRef);
+          const runtimeTabId = previewRuntimeTabId(threadRef, readyState.serverEpoch, readyTabId);
+          const currentState = assertPreviewRuntimeCurrent(
+            threadRef,
+            readyTabId,
+            runtimeTabId,
+            request,
+          );
+          if (!currentState.desktopByTabId[readyTabId]) {
+            throw new PreviewAutomationTargetUnavailableError(unavailableTarget);
+          }
+          return { artifacts, tabId: readyTabId, runtimeTabId };
+        };
         const requireJevBrowserAuthority = () => {
           if (getJevBrowserExecutionMode(threadRef) === "disabled") {
             throw new Error("Jev browser automation is disabled for this environment and thread.");
           }
           if (!hasJevBrowserHost()) {
             throw new Error("This client does not provide the Jev browser host bridge.");
+          }
+        };
+        const prepareBrowserAction = async (
+          ready: Awaited<ReturnType<typeof requireReadyTab>>,
+          identity?: {
+            readonly actionId?: string;
+            readonly runId?: string;
+            readonly operation?: string;
+          },
+        ): Promise<BrowserDialogPrepareActionInput | null> => {
+          const prepareAction = ready.bridge.artifacts?.prepareAction;
+          if (!prepareAction) return null;
+          const prepared = {
+            environmentId,
+            tabId: ready.tabId,
+            ...(identity?.runId === undefined ? {} : { runId: identity.runId }),
+            actionId: BrowserArtifactActionId.make(identity?.actionId ?? request.requestId),
+            operation: identity?.operation ?? request.operation,
+          } satisfies BrowserDialogPrepareActionInput;
+          await prepareAction(ready.runtimeTabId, prepared);
+          return prepared;
+        };
+        const runPreparedBrowserAction = async <A,>(
+          ready: Awaited<ReturnType<typeof requireReadyTab>>,
+          identity: {
+            readonly actionId?: string;
+            readonly runId?: string;
+            readonly operation?: string;
+          },
+          action: () => Promise<A>,
+        ): Promise<A> => {
+          const prepared = await prepareBrowserAction(ready, identity);
+          try {
+            return await action();
+          } catch (cause) {
+            return await rethrowPreparedBrowserActionFailure(ready, prepared, cause);
+          }
+        };
+        const rethrowPreparedBrowserActionFailure = async (
+          ready: Awaited<ReturnType<typeof requireReadyTab>>,
+          prepared: BrowserDialogPrepareActionInput | null,
+          cause: unknown,
+        ): Promise<never> => {
+          if (prepared) {
+            const status = await ready.bridge.artifacts
+              ?.dialogStatus(ready.runtimeTabId, {
+                environmentId: prepared.environmentId,
+                tabId: prepared.tabId,
+              })
+              .catch(() => null);
+            const dialog = status?.dialog;
+            if (
+              dialog &&
+              dialog.environmentId === prepared.environmentId &&
+              dialog.tabId === prepared.tabId &&
+              dialog.actionId === prepared.actionId
+            ) {
+              throw new PreviewAutomationDialogPendingHostError({ dialog });
+            }
+            await ready.bridge.artifacts
+              ?.cancelPreparedAction?.(ready.runtimeTabId, prepared)
+              .catch(() => undefined);
+          }
+          throw cause;
+        };
+        const runDeferredPreparedBrowserAction = async <A,>(
+          ready: Awaited<ReturnType<typeof requireReadyTab>>,
+          identity: {
+            readonly actionId?: string;
+            readonly runId?: string;
+            readonly operation?: string;
+          },
+          action: (beforeNative: () => Promise<void>) => Promise<A>,
+        ): Promise<A> => {
+          let prepared: BrowserDialogPrepareActionInput | null = null;
+          try {
+            return await action(async () => {
+              prepared = await prepareBrowserAction(ready, identity);
+            });
+          } catch (cause) {
+            return await rethrowPreparedBrowserActionFailure(ready, prepared, cause);
           }
         };
         const runJevBrowserOperation = async <A,>(input: {
@@ -522,10 +655,64 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 const ready = await requireReadyTab();
                 if (signal.aborted) throw new Error("Jev browser observation was cancelled.");
                 requireJevBrowserAuthority();
-                return await window.desktopBridge!.observeJevBrowser!({
-                  ...input,
+                const cancelInput: JevBrowserCancelInput = {
+                  runId: input.runId,
                   tabId: ready.runtimeTabId,
-                });
+                  reason: "policy-disabled",
+                };
+                const cancel = () => {
+                  void window.desktopBridge?.cancelJevBrowser?.(cancelInput);
+                };
+                signal.addEventListener("abort", cancel, { once: true });
+                if (signal.aborted) {
+                  cancel();
+                  signal.removeEventListener("abort", cancel);
+                  throw new Error("Jev browser observation was cancelled.");
+                }
+                try {
+                  return await window.desktopBridge!.observeJevBrowser!({
+                    ...input,
+                    tabId: ready.runtimeTabId,
+                    resolvedNavigations: resolveJevBrowserNavigations(environmentId, input),
+                  });
+                } finally {
+                  signal.removeEventListener("abort", cancel);
+                }
+              },
+            });
+          }
+          case "jevBrowserVerify": {
+            const input = request.input as JevBrowserVerifyInput;
+            return await runJevBrowserOperation({
+              runId: input.runId,
+              label: "Verify browser",
+              execute: async (signal) => {
+                requireJevBrowserAuthority();
+                const ready = await requireReadyTab();
+                if (signal.aborted) throw new Error("Jev browser verification was cancelled.");
+                requireJevBrowserAuthority();
+                const cancelInput: JevBrowserCancelInput = {
+                  runId: input.runId,
+                  tabId: ready.runtimeTabId,
+                  reason: "policy-disabled",
+                };
+                const cancel = () => {
+                  void window.desktopBridge?.cancelJevBrowser?.(cancelInput);
+                };
+                signal.addEventListener("abort", cancel, { once: true });
+                if (signal.aborted) {
+                  cancel();
+                  signal.removeEventListener("abort", cancel);
+                  throw new Error("Jev browser verification was cancelled.");
+                }
+                try {
+                  return await window.desktopBridge!.verifyJevBrowser!({
+                    ...input,
+                    tabId: ready.runtimeTabId,
+                  });
+                } finally {
+                  signal.removeEventListener("abort", cancel);
+                }
               },
             });
           }
@@ -583,10 +770,19 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                   throw new Error("Jev browser action was cancelled.");
                 }
                 try {
-                  return await window.desktopBridge!.executeJevBrowser!({
-                    ...input,
-                    tabId: ready.runtimeTabId,
-                  });
+                  return await runPreparedBrowserAction(
+                    ready,
+                    {
+                      runId: input.runId,
+                      actionId: request.requestId,
+                      operation: `jevBrowserExecute:${input.action.operation}`,
+                    },
+                    () =>
+                      window.desktopBridge!.executeJevBrowser!({
+                        ...input,
+                        tabId: ready.runtimeTabId,
+                      }),
+                  );
                 } finally {
                   signal.removeEventListener("abort", cancel);
                 }
@@ -726,8 +922,11 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
               await waitForPreviewPresentation(activeRuntimeTabId);
             }
             if (reusedExistingTab && resolvedInputUrl && previewBridge) {
+              const ready = await requireReadyTab();
               assertPreviewRuntimeCurrent(threadRef, activeTabId, activeRuntimeTabId, request);
-              await previewBridge.navigate(activeRuntimeTabId, resolvedInputUrl);
+              await runPreparedBrowserAction(ready, { operation: "navigate" }, () =>
+                ready.bridge.navigate(ready.runtimeTabId, resolvedInputUrl),
+              );
               await waitForNavigationReadiness(
                 threadRef,
                 request.requestId,
@@ -750,7 +949,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
                 url: input.url!,
               },
             );
-            await ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl);
+            await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.navigate(ready.runtimeTabId, resolution.resolvedUrl),
+            );
             await waitForNavigationReadiness(
               threadRef,
               request.requestId,
@@ -855,39 +1056,168 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
             const ready = await requireReadyTab();
             return await ready.bridge.automation.snapshot(ready.runtimeTabId);
           }
+          case "verify": {
+            const ready = await requireReadyTab();
+            const verify = ready.bridge.automation.verify;
+            if (!verify)
+              throw new Error("This desktop browser host does not support verification.");
+            return await verify(ready.runtimeTabId, request.input as Parameters<typeof verify>[1]);
+          }
+          case "select": {
+            const ready = await requireReadyTab();
+            const select = ready.bridge.automation.select;
+            if (!select) throw new Error("This desktop browser host does not support selection.");
+            return await runPreparedBrowserAction(ready, {}, () =>
+              select(ready.runtimeTabId, request.input as Parameters<typeof select>[1]),
+            );
+          }
+          case "check": {
+            const ready = await requireReadyTab();
+            const check = ready.bridge.automation.check;
+            if (!check) throw new Error("This desktop browser host does not support checking.");
+            return await runPreparedBrowserAction(ready, {}, () =>
+              check(ready.runtimeTabId, request.input as Parameters<typeof check>[1]),
+            );
+          }
+          case "hover": {
+            const ready = await requireReadyTab();
+            const hover = ready.bridge.automation.hover;
+            if (!hover) throw new Error("This desktop browser host does not support hovering.");
+            return await runPreparedBrowserAction(ready, {}, () =>
+              hover(ready.runtimeTabId, request.input as Parameters<typeof hover>[1]),
+            );
+          }
+          case "extract": {
+            const ready = await requireReadyTab();
+            const extract = ready.bridge.automation.extract;
+            if (!extract) throw new Error("This desktop browser host does not support extraction.");
+            return await extract(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof extract>[1],
+            );
+          }
+          case "waitForAssertion": {
+            const ready = await requireReadyTab();
+            const waitForAssertion = ready.bridge.automation.waitForAssertion;
+            if (!waitForAssertion) {
+              throw new Error("This desktop browser host does not support assertion waits.");
+            }
+            return await waitForAssertion(
+              ready.runtimeTabId,
+              request.input as Parameters<typeof waitForAssertion>[1],
+            );
+          }
+          case "uploadFile": {
+            const ready = await requireReadyTab();
+            if (!artifactAutomationHost) {
+              throw new Error("This desktop browser host does not support file upload.");
+            }
+            const input = request.input as BrowserUploadHostInput;
+            return await runDeferredPreparedBrowserAction(
+              ready,
+              {
+                ...(input.transfer.runId === undefined ? {} : { runId: input.transfer.runId }),
+                actionId: input.transfer.actionId,
+              },
+              (beforeNative) =>
+                artifactAutomationHost.selectUpload(
+                  threadRef,
+                  ready.tabId,
+                  ready.runtimeTabId,
+                  input,
+                  hostDeadlineMs,
+                  beforeNative,
+                ),
+            );
+          }
+          case "downloadFile": {
+            const ready = await requireReadyTab();
+            if (!artifactAutomationHost) {
+              throw new Error("This desktop browser host does not support file download.");
+            }
+            const input = request.input as BrowserDownloadHostInput;
+            return await runDeferredPreparedBrowserAction(
+              ready,
+              {
+                ...(input.expectation.runId === undefined
+                  ? {}
+                  : { runId: input.expectation.runId }),
+                actionId: input.expectation.actionId,
+              },
+              (beforeNative) =>
+                artifactAutomationHost.download(
+                  threadRef,
+                  ready.tabId,
+                  ready.runtimeTabId,
+                  input,
+                  hostDeadlineMs,
+                  beforeNative,
+                ),
+            );
+          }
+          case "dialogStatus": {
+            const input = request.input as BrowserDialogStatusHostInput;
+            const ready = requireDialogTab(input);
+            return await ready.artifacts.dialogStatus(ready.runtimeTabId, {
+              ...input,
+              tabId: ready.tabId,
+            });
+          }
+          case "dialogHandle": {
+            const input = request.input as BrowserDialogHandleRequest;
+            const ready = requireDialogTab(input);
+            return await ready.artifacts.handleDialog(ready.runtimeTabId, input);
+          }
+          case "artifactAcknowledge": {
+            const input = request.input as BrowserArtifactAcknowledgeHostInput;
+            if (!artifactAutomationHost || !tabId) {
+              throw new Error("This desktop browser host does not support artifact cleanup.");
+            }
+            return await artifactAutomationHost.acknowledge(threadRef, tabId, input);
+          }
           case "click": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.click(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.click>[1],
+            return await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.automation.click(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.click>[1],
+              ),
             );
           }
           case "type": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.type(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.type>[1],
+            return await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.automation.type(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.type>[1],
+              ),
             );
           }
           case "press": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.press(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.press>[1],
+            return await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.automation.press(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.press>[1],
+              ),
             );
           }
           case "scroll": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.scroll(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+            return await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.automation.scroll(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.scroll>[1],
+              ),
             );
           }
           case "evaluate": {
             const ready = await requireReadyTab();
-            return await ready.bridge.automation.evaluate(
-              ready.runtimeTabId,
-              request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+            return await runPreparedBrowserAction(ready, {}, () =>
+              ready.bridge.automation.evaluate(
+                ready.runtimeTabId,
+                request.input as Parameters<typeof ready.bridge.automation.evaluate>[1],
+              ),
             );
           }
           case "waitFor": {
@@ -965,9 +1295,9 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
         browserActivity.release?.();
       }
     },
-    [environmentId, listPreviews, open, registry, resize],
+    [artifactAutomationHost, environmentId, listPreviews, open, registry, resize],
   );
-  const [requestHandlerAtom] = useState(() => Atom.make({ handle: handleRequest }));
+  const [requestHandlerAtom] = useState(() => Atom.make({ handle: previewAutomationHostNotReady }));
   const setRequestHandler = useAtomSet(requestHandlerAtom);
   useEffect(() => {
     setRequestHandler({ handle: handleRequest });

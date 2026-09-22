@@ -3,7 +3,9 @@ import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   JEV_BROWSER_AUTOMATION_OPERATIONS,
+  PreviewAutomationArtifactTransferError,
   PreviewAutomationClientDisconnectedError,
+  PreviewAutomationDialogPendingError,
   PreviewAutomationInvalidSelectorError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -428,6 +430,170 @@ it.effect("classifies a remote non-editable target without collapsing it to exec
         remoteTag: "PreviewAutomationTargetNotEditableError",
       });
       expect(error.message).toBe("Preview automation type requires an editable focused element.");
+    }),
+  );
+});
+
+it.effect("preserves a scoped artifact transfer reason from the renderer", () => {
+  const remoteError = {
+    _tag: "PreviewAutomationArtifactTransferError",
+    message: "untrusted remote transfer message",
+    detail: {
+      operation: "uploadFile",
+      environmentId: scope.environmentId,
+      threadId: scope.threadId,
+      reason: "transfer-failed",
+      privatePath: "/private/staged/file",
+    },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(
+        yield* broker.connect(makeHost({ supportedOperations: ["uploadFile"] })),
+      );
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({ scope, operation: "uploadFile", input: {} })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationArtifactTransferError);
+      expect(error).toMatchObject({
+        operation: "uploadFile",
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        reason: "transfer-failed",
+      });
+      expect(error.message).not.toContain("untrusted remote transfer message");
+      expect(error).not.toHaveProperty("cause");
+      expect(error).not.toHaveProperty("privatePath");
+    }),
+  );
+});
+
+it.effect("binds a pending browser dialog to trusted request context", () => {
+  const dialog = {
+    environmentId: scope.environmentId,
+    tabId: PreviewTabId.make("tab-1"),
+    actionId: "preview-0",
+    dialogId: "dialog-1",
+    kind: "confirm",
+    message: "Continue?",
+    openedAt: "2026-09-22T00:00:00.000Z",
+  } as const;
+  const remoteError = {
+    _tag: "PreviewAutomationDialogPendingError",
+    message: "untrusted remote message",
+    detail: {
+      dialog,
+      threadId: "untrusted-thread",
+      requestId: "untrusted-request",
+      operation: "evaluate",
+    },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "click",
+          input: { locator: "role=button[name='Continue']" },
+          tabId: PreviewTabId.make("tab-1"),
+          timeoutMs: 1_234,
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toBeInstanceOf(PreviewAutomationDialogPendingError);
+      expect(error).toMatchObject({
+        operation: "click",
+        environmentId: scope.environmentId,
+        threadId: scope.threadId,
+        providerSessionId: scope.providerSessionId,
+        providerInstanceId: scope.providerInstanceId,
+        clientId: "client-1",
+        requestId: "preview-0",
+        tabId: "tab-1",
+        timeoutMs: 1_234,
+        remoteTag: "PreviewAutomationDialogPendingError",
+        dialog,
+      });
+      expect(error.message).toContain("preview_dialog");
+      expect(error.message).not.toContain("untrusted remote message");
+      expect(error.cause).toBe(remoteError);
+      expect("remoteMessage" in error).toBe(false);
+      expect("remoteDetail" in error).toBe(false);
+    }),
+  );
+});
+
+it.effect("rejects a pending dialog from another action scope", () => {
+  const remoteError = {
+    _tag: "PreviewAutomationDialogPendingError",
+    message: "untrusted remote message",
+    detail: {
+      dialog: {
+        environmentId: scope.environmentId,
+        tabId: "tab-1",
+        actionId: "other-action",
+        dialogId: "dialog-1",
+        kind: "confirm",
+        message: "Continue?",
+        openedAt: "2026-09-22T00:00:00.000Z",
+      },
+    },
+  } as const;
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: remoteError,
+        }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const error = yield* broker
+        .invoke<void>({
+          scope,
+          operation: "click",
+          input: {},
+          tabId: PreviewTabId.make("tab-1"),
+        })
+        .pipe(Effect.flip);
+
+      expect(error._tag).toBe("PreviewAutomationExecutionError");
+      expect(error).not.toBeInstanceOf(PreviewAutomationDialogPendingError);
     }),
   );
 });

@@ -7,6 +7,8 @@ import type {
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import { interruptBrowserRunForSnapshot } from "./BrowserRunActivity.ts";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -658,7 +660,7 @@ export function projectThreadDetailSnapshot(
           ),
       activities: dropSupersededToolUpdatedActivities(
         dropStaleContextWindowActivities(snapshot.thread.activities),
-      ).map(projectActivityPayload),
+      ).map((activity) => interruptBrowserRunForSnapshot(projectActivityPayload(activity))),
     },
   };
 }

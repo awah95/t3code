@@ -40,6 +40,11 @@ const mocks = vi.hoisted(() => ({
     >(),
   focus: vi.fn(async () => undefined),
   previewStatus: vi.fn(),
+  prepareAction: vi.fn(),
+  cancelPreparedAction: vi.fn(),
+  click: vi.fn(),
+  dialogStatus: vi.fn(),
+  handleDialog: vi.fn(),
 }));
 
 vi.mock("~/localApi", () => ({
@@ -66,7 +71,19 @@ vi.mock("~/state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => mocks.list,
 }));
 vi.mock("./previewBridge", () => ({
-  previewBridge: { automation: { status: mocks.previewStatus } },
+  previewBridge: {
+    automation: { status: mocks.previewStatus, click: mocks.click },
+    artifacts: {
+      prepareAction: mocks.prepareAction,
+      cancelPreparedAction: mocks.cancelPreparedAction,
+      selectUpload: vi.fn(),
+      startDownload: vi.fn(),
+      readDownload: vi.fn(),
+      acknowledgeArtifact: vi.fn(),
+      dialogStatus: mocks.dialogStatus,
+      handleDialog: mocks.handleDialog,
+    },
+  },
 }));
 
 const environmentId = EnvironmentId.make("automation-environment");
@@ -121,6 +138,14 @@ beforeEach(async () => {
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
   mocks.respond.mockReset();
   mocks.previewStatus.mockReset().mockResolvedValue({ available: true, loading: false });
+  mocks.prepareAction.mockReset().mockResolvedValue(undefined);
+  mocks.cancelPreparedAction.mockReset().mockResolvedValue(undefined);
+  mocks.click.mockReset().mockResolvedValue(undefined);
+  mocks.dialogStatus.mockReset().mockResolvedValue({ dialog: null });
+  mocks.handleDialog.mockReset().mockImplementation(async (_runtimeTabId, input) => ({
+    ...input,
+    status: "handled",
+  }));
   __resetClientSettingsPersistenceForTests();
   resetPreviewStateForTests();
   resetJevBrowserStoreForTests();
@@ -202,6 +227,214 @@ describe("PreviewAutomationHosts open", () => {
   });
 });
 
+describe("PreviewAutomationHosts paused dialogs", () => {
+  const prepareRegisteredPreview = () => {
+    applyPreviewServerSnapshot(threadRef, snapshot);
+    applyPreviewDesktopState(threadRef, snapshot.tabId, {
+      hasWebContents: true,
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1,
+      pictureInPicture: false,
+      colorScheme: "system",
+      audioMuted: false,
+      audible: false,
+      controller: "none",
+      favicon: null,
+    });
+    const runtimeTabId = previewRuntimeTabId(threadRef, null, snapshot.tabId);
+    const webview = {
+      getAttribute: (name: string) => (name === "data-preview-tab" ? runtimeTabId : null),
+      closest: () => ({
+        getAttribute: (name: string) => (name === "data-preview-rendering" ? "active" : null),
+      }),
+    };
+    vi.stubGlobal("document", {
+      hasFocus: () => false,
+      querySelectorAll: () => [webview],
+    });
+    return runtimeTabId;
+  };
+
+  it("reads dialog status from the registered runtime without probing page status", async () => {
+    const runtimeTabId = prepareRegisteredPreview();
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          type: "request",
+          connectionId: "automation-connection",
+          request: {
+            requestId: "dialog-status-request",
+            threadId,
+            tabId: snapshot.tabId,
+            operation: "dialogStatus",
+            input: { environmentId },
+            timeoutMs: 15_000,
+          },
+        }),
+      );
+      await response.promise;
+    });
+
+    expect(mocks.previewStatus).not.toHaveBeenCalled();
+    expect(mocks.dialogStatus).toHaveBeenCalledExactlyOnceWith(runtimeTabId, {
+      environmentId,
+      tabId: snapshot.tabId,
+    });
+    await expect(response.promise).resolves.toMatchObject({ ok: true, result: { dialog: null } });
+  });
+
+  it("handles an exact dialog from the registered runtime without probing page status", async () => {
+    const runtimeTabId = prepareRegisteredPreview();
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+    const input = {
+      environmentId,
+      tabId: snapshot.tabId,
+      actionId: "dialog-action",
+      dialogId: "dialog-one",
+      action: "dismiss" as const,
+    };
+
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          type: "request",
+          connectionId: "automation-connection",
+          request: {
+            requestId: "dialog-handle-request",
+            threadId,
+            tabId: snapshot.tabId,
+            operation: "dialogHandle",
+            input,
+            timeoutMs: 15_000,
+          },
+        }),
+      );
+      await response.promise;
+    });
+
+    expect(mocks.previewStatus).not.toHaveBeenCalled();
+    expect(mocks.handleDialog).toHaveBeenCalledExactlyOnceWith(runtimeTabId, input);
+    await expect(response.promise).resolves.toMatchObject({
+      ok: true,
+      result: { ...input, status: "handled" },
+    });
+  });
+
+  it("recovers the exact pending dialog after Electron reduces the mutation failure to Error", async () => {
+    const runtimeTabId = prepareRegisteredPreview();
+    const response = deferred<PreviewAutomationResponse>();
+    const dialog = {
+      environmentId,
+      tabId: snapshot.tabId,
+      actionId: "click-dialog-request",
+      dialogId: "dialog-one",
+      kind: "confirm" as const,
+      message: "Continue?",
+      openedAt: "2026-09-22T12:00:00.000Z",
+    };
+    mocks.click.mockRejectedValueOnce(new Error("Error invoking remote method 'preview:click'"));
+    mocks.dialogStatus.mockResolvedValueOnce({ dialog });
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          type: "request",
+          connectionId: "automation-connection",
+          request: {
+            requestId: "click-dialog-request",
+            threadId,
+            tabId: snapshot.tabId,
+            operation: "click",
+            input: { tabId: snapshot.tabId, selector: "#submit" },
+            timeoutMs: 15_000,
+          },
+        }),
+      );
+      await response.promise;
+    });
+
+    expect(mocks.prepareAction).toHaveBeenCalledExactlyOnceWith(runtimeTabId, {
+      environmentId,
+      tabId: snapshot.tabId,
+      actionId: "click-dialog-request",
+      operation: "click",
+    });
+    expect(mocks.dialogStatus).toHaveBeenCalledExactlyOnceWith(runtimeTabId, {
+      environmentId,
+      tabId: snapshot.tabId,
+    });
+    expect(mocks.previewStatus).toHaveBeenCalledOnce();
+    expect(mocks.cancelPreparedAction).not.toHaveBeenCalled();
+    await expect(response.promise).resolves.toMatchObject({
+      ok: false,
+      error: {
+        _tag: "PreviewAutomationDialogPendingError",
+        detail: { dialog },
+      },
+    });
+  });
+
+  it("keeps a mismatched dialog generic and cancels the exact unused preparation", async () => {
+    const runtimeTabId = prepareRegisteredPreview();
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.click.mockRejectedValueOnce(new Error("Error invoking remote method 'preview:click'"));
+    mocks.dialogStatus.mockResolvedValueOnce({
+      dialog: {
+        environmentId,
+        tabId: snapshot.tabId,
+        actionId: "another-action",
+        dialogId: "dialog-other",
+        kind: "confirm",
+        message: "Unrelated",
+        openedAt: "2026-09-22T12:00:00.000Z",
+      },
+    });
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+
+    await act(async () => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          type: "request",
+          connectionId: "automation-connection",
+          request: {
+            requestId: "click-mismatch-request",
+            threadId,
+            tabId: snapshot.tabId,
+            operation: "click",
+            input: { tabId: snapshot.tabId, selector: "#submit" },
+            timeoutMs: 15_000,
+          },
+        }),
+      );
+      await response.promise;
+    });
+
+    const prepared = {
+      environmentId,
+      tabId: snapshot.tabId,
+      actionId: "click-mismatch-request",
+      operation: "click",
+    };
+    expect(mocks.cancelPreparedAction).toHaveBeenCalledExactlyOnceWith(runtimeTabId, prepared);
+    expect(mocks.previewStatus).toHaveBeenCalledOnce();
+    await expect(response.promise).resolves.toMatchObject({
+      ok: false,
+      error: { _tag: "PreviewAutomationExecutionError" },
+    });
+  });
+});
+
 describe("PreviewAutomationHosts Jev browser authority", () => {
   const decisionInput = {
     runId: "run-one",
@@ -276,6 +509,25 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
     },
   };
 
+  const observeRequest: PreviewAutomationStreamEvent = {
+    type: "request",
+    connectionId: "automation-connection",
+    request: {
+      requestId: "jev-observe-request",
+      threadId,
+      tabId: snapshot.tabId,
+      operation: "jevBrowserObserve",
+      input: {
+        runId: "run-observe",
+        tabId: snapshot.tabId,
+        task: "Inspect the page",
+        inputs: [],
+        allowedOrigins: [],
+      },
+      timeoutMs: 15_000,
+    },
+  };
+
   it("cancels only this environment's active runs when its host disconnects", async () => {
     const cancelJevBrowser = vi.fn(async () => ({ cancelled: true }));
     Object.assign(window, { desktopBridge: { cancelJevBrowser } });
@@ -312,6 +564,7 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       desktopBridge: {
         getJevStatus: vi.fn(async () => ({ hasKey: true, secureStorageAvailable: true })),
         observeJevBrowser: vi.fn(),
+        verifyJevBrowser: vi.fn(),
         decideJevBrowser,
         executeJevBrowser: vi.fn(),
         cancelJevBrowser: vi.fn(),
@@ -340,6 +593,7 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       desktopBridge: {
         getJevStatus: vi.fn(async () => ({ hasKey: true, secureStorageAvailable: true })),
         observeJevBrowser: vi.fn(),
+        verifyJevBrowser: vi.fn(),
         decideJevBrowser: vi.fn(() => decision.promise),
         executeJevBrowser: vi.fn(),
         cancelJevBrowser,
@@ -386,6 +640,7 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       desktopBridge: {
         getJevStatus: vi.fn(async () => ({ hasKey: true, secureStorageAvailable: true })),
         observeJevBrowser: vi.fn(),
+        verifyJevBrowser: vi.fn(),
         decideJevBrowser: vi.fn(),
         executeJevBrowser,
         cancelJevBrowser: vi.fn(async () => ({ cancelled: true })),
@@ -421,6 +676,7 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       desktopBridge: {
         getJevStatus: vi.fn(async () => ({ hasKey: true, secureStorageAvailable: true })),
         observeJevBrowser: vi.fn(),
+        verifyJevBrowser: vi.fn(),
         decideJevBrowser: vi.fn(),
         executeJevBrowser,
         cancelJevBrowser,
@@ -435,6 +691,13 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       appAtomRegistry.set(requestsAtom, AsyncResult.success(executeRequest));
       while (!executeJevBrowser.mock.calls.length) await Promise.resolve();
     });
+    expect(mocks.prepareAction).toHaveBeenCalledExactlyOnceWith(runtimeTabId, {
+      environmentId,
+      tabId: snapshot.tabId,
+      runId: "run-readiness",
+      actionId: "jev-execute-request",
+      operation: "jevBrowserExecute:activate",
+    });
     useJevBrowserStore.getState().disable(threadRef);
 
     expect(cancelJevBrowser).toHaveBeenCalledWith({
@@ -445,6 +708,59 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
 
     await act(async () => {
       execution.resolve({ status: "rejected", detail: "Cancelled by policy." });
+      await response.promise;
+    });
+    await expect(response.promise).resolves.toMatchObject({ ok: false });
+  });
+
+  it("forwards toggle-off cancellation after native observation has started", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const observation = deferred<{
+      observation: {
+        revision: string;
+        surface: "browser";
+        controls: [];
+        candidates: [];
+      };
+    }>();
+    const observeJevBrowser = vi.fn(() => observation.promise);
+    const cancelJevBrowser = vi.fn(async () => ({ cancelled: true }));
+    Object.assign(window, {
+      desktopBridge: {
+        getJevStatus: vi.fn(async () => ({ hasKey: true, secureStorageAvailable: true })),
+        observeJevBrowser,
+        verifyJevBrowser: vi.fn(),
+        decideJevBrowser: vi.fn(),
+        executeJevBrowser: vi.fn(),
+        cancelJevBrowser,
+      },
+    });
+    const runtimeTabId = prepareReadyPreview();
+    useJevBrowserStore.getState().enable(threadRef);
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+
+    await act(async () => {
+      appAtomRegistry.set(requestsAtom, AsyncResult.success(observeRequest));
+      while (!observeJevBrowser.mock.calls.length) await Promise.resolve();
+    });
+    useJevBrowserStore.getState().disable(threadRef);
+
+    expect(cancelJevBrowser).toHaveBeenCalledWith({
+      runId: "run-observe",
+      tabId: runtimeTabId,
+      reason: "policy-disabled",
+    });
+
+    await act(async () => {
+      observation.resolve({
+        observation: {
+          revision: "revision-observe",
+          surface: "browser",
+          controls: [],
+          candidates: [],
+        },
+      });
       await response.promise;
     });
     await expect(response.promise).resolves.toMatchObject({ ok: false });

@@ -17,6 +17,9 @@ import {
   type PreviewAutomationSnapshot,
   type PreviewAutomationStatus,
   type PreviewTabId,
+  type PreviewAutomationVerifyResult,
+  type PreviewAutomationExtractResult,
+  type PreviewAutomationWaitForAssertionResult,
 } from "@t3tools/contracts";
 
 import {
@@ -30,6 +33,7 @@ import * as ServerConfig from "../../../config.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { runJevBrowserTask } from "../../JevBrowserCoordinator.ts";
+import { browserArtifactHandlers } from "./browserArtifactHandlers.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
 
 /**
@@ -188,6 +192,20 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
 });
 
 const handlers = {
+  ...browserArtifactHandlers,
+  preview_extract: (input) =>
+    invokeTargeted<PreviewAutomationExtractResult>("extract", input, input.timeoutMs),
+  preview_wait_for_assertion: (input) =>
+    invokeTargeted<PreviewAutomationWaitForAssertionResult>(
+      "waitForAssertion",
+      input,
+      input.timeoutMs + 1_000,
+    ),
+  preview_verify: (input) =>
+    invokeTargeted<PreviewAutomationVerifyResult>("verify", input, input.timeoutMs),
+  preview_select: (input) => invokeTargeted<object>("select", input, input.timeoutMs),
+  preview_check: (input) => invokeTargeted<object>("check", input, input.timeoutMs),
+  preview_hover: (input) => invokeTargeted<object>("hover", input, input.timeoutMs),
   preview_status: (input) => invokeTargeted<PreviewAutomationStatus>("status", input ?? {}),
   preview_open: (input) =>
     invokeTargeted<PreviewAutomationStatus>("open", normalizePreviewOpenInput(input)),
@@ -233,6 +251,7 @@ const handlers = {
     runJevBrowserTask({
       task: input.task,
       ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
+      ...(input.resumeFromRunId === undefined ? {} : { resumeFromRunId: input.resumeFromRunId }),
       ...(input.inputs === undefined ? {} : { inputs: input.inputs }),
       ...(input.assertions === undefined ? {} : { assertions: input.assertions }),
       ...(input.allowedOrigins === undefined ? {} : { allowedOrigins: input.allowedOrigins }),

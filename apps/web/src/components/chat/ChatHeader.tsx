@@ -51,6 +51,7 @@ import {
 import { cn } from "~/lib/utils";
 import { JevControls } from "../../jev/JevControls";
 import { JevBrowserControl } from "../../jevBrowser";
+import { useThreadDetail } from "../../state/entities";
 import { isElectron } from "../../env";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { Button } from "../ui/button";
@@ -215,6 +216,7 @@ export const ChatHeader = memo(function ChatHeader({
     () => scopeThreadRef(activeThreadEnvironmentId, activeThreadId),
     [activeThreadEnvironmentId, activeThreadId],
   );
+  const activeThreadDetail = useThreadDetail(isServerThread ? activeThreadRef : null);
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -361,6 +363,7 @@ export const ChatHeader = memo(function ChatHeader({
           <JevBrowserControl
             presentation={actionsCollapsed ? "menu" : "toolbar"}
             scope={{ environmentId: activeThreadEnvironmentId, threadId: activeThreadId }}
+            activities={activeThreadDetail?.activities ?? []}
           />
           <JevControls
             presentation={actionsCollapsed ? "menu" : "toolbar"}

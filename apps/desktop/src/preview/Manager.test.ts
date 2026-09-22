@@ -4393,6 +4393,179 @@ describe("PreviewManager", () => {
     ),
   );
 
+  effectIt.effect("bounds blocked native key cleanup and releases the control semaphore", () =>
+    withManager((manager) =>
+      Effect.gen(function* () {
+        let notifyKeyUpCleanupStarted: (() => void) | undefined;
+        const keyUpCleanupStarted = new Promise<void>((resolve) => {
+          notifyKeyUpCleanupStarted = resolve;
+        });
+        let notifyChildFocusCleanupStarted: (() => void) | undefined;
+        const childFocusCleanupStarted = new Promise<void>((resolve) => {
+          notifyChildFocusCleanupStarted = resolve;
+        });
+        let notifyDetachCleanupStarted: (() => void) | undefined;
+        const detachCleanupStarted = new Promise<void>((resolve) => {
+          notifyDetachCleanupStarted = resolve;
+        });
+        let notifyRootFocusCleanupStarted: (() => void) | undefined;
+        const rootFocusCleanupStarted = new Promise<void>((resolve) => {
+          notifyRootFocusCleanupStarted = resolve;
+        });
+        let notifyNextActionStarted: (() => void) | undefined;
+        const nextActionStarted = new Promise<void>((resolve) => {
+          notifyNextActionStarted = resolve;
+        });
+        const firstCompleted =
+          yield* Deferred.make<Exit.Exit<void, PreviewManager.PreviewManagerError>>();
+        const nextCompleted =
+          yield* Deferred.make<Exit.Exit<void, PreviewManager.PreviewManagerError>>();
+        let nextAction = false;
+
+        const neverAfter = (notifyStarted: (() => void) | undefined) => {
+          notifyStarted?.();
+          return new Promise<never>(() => undefined);
+        };
+        const sendCommand = vi.fn(
+          (
+            method: string,
+            params?: Record<string, unknown>,
+            sessionId?: string,
+          ): Promise<unknown> => {
+            if (method === "Runtime.evaluate") {
+              if (nextAction) {
+                notifyNextActionStarted?.();
+                return Promise.resolve({ result: { value: { ok: true } } });
+              }
+              return Promise.resolve({
+                result: sessionId ? { subtype: "null" } : { objectId: "focused-iframe-object" },
+              });
+            }
+            if (method === "DOM.describeNode") {
+              return Promise.resolve({ node: { frameId: "focused-frame" } });
+            }
+            if (method === "Target.getTargets") {
+              return Promise.resolve({
+                targetInfos: [{ targetId: "focused-frame", type: "iframe" }],
+              });
+            }
+            if (method === "Target.attachToTarget") {
+              return Promise.resolve({ sessionId: "child-session" });
+            }
+            if (method === "Input.dispatchKeyEvent" && params?.["type"] === "keyDown") {
+              return Promise.reject(new Error("native key dispatch failed"));
+            }
+            if (
+              method === "Input.dispatchKeyEvent" &&
+              params?.["type"] === "keyUp" &&
+              sessionId === "child-session"
+            ) {
+              return neverAfter(notifyKeyUpCleanupStarted);
+            }
+            if (method === "Emulation.setFocusEmulationEnabled" && params?.["enabled"] === false) {
+              return neverAfter(
+                sessionId === "child-session"
+                  ? notifyChildFocusCleanupStarted
+                  : notifyRootFocusCleanupStarted,
+              );
+            }
+            if (method === "Target.detachFromTarget") {
+              return neverAfter(notifyDetachCleanupStarted);
+            }
+            return Promise.resolve({});
+          },
+        );
+        const frame = { executeJavaScript: vi.fn(async () => undefined) };
+        getFocusedWebContents.mockReturnValue(null);
+        fromId.mockReturnValue({
+          id: 42,
+          mainFrame: { framesInSubtree: [frame] },
+          isDestroyed: () => false,
+          getType: () => "webview",
+          getURL: () => "https://example.com",
+          getTitle: () => "Example",
+          isLoading: () => false,
+          isDevToolsOpened: () => false,
+          getZoomFactor: () => 1,
+          setZoomFactor: vi.fn(),
+          setAudioMuted: vi.fn(),
+          isCurrentlyAudible: () => false,
+          on: vi.fn(),
+          off: vi.fn(),
+          ipc: { on: vi.fn(), off: vi.fn() },
+          send: webviewSend,
+          navigationHistory: { canGoBack: () => false, canGoForward: () => false },
+          setIgnoreMenuShortcuts: vi.fn(),
+          setWindowOpenHandler: vi.fn(),
+          debugger: {
+            isAttached: () => false,
+            attach: vi.fn(),
+            sendCommand,
+            on: vi.fn(),
+            off: vi.fn(),
+          },
+        } as never);
+
+        yield* manager.createTab("tab_cleanup_timeout");
+        yield* manager.registerWebview("tab_cleanup_timeout", 42);
+        yield* manager.automationPress("tab_cleanup_timeout", { key: "x" }).pipe(
+          Effect.exit,
+          Effect.tap((exit) => Deferred.succeed(firstCompleted, exit)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Effect.promise(() => keyUpCleanupStarted);
+
+        nextAction = true;
+        yield* manager.automationType("tab_cleanup_timeout", { text: "next", clear: true }).pipe(
+          Effect.exit,
+          Effect.tap((exit) => Deferred.succeed(nextCompleted, exit)),
+          Effect.forkChild({ startImmediately: true }),
+        );
+        let didNextActionStart = false;
+        nextActionStarted.then(() => {
+          didNextActionStart = true;
+        });
+        yield* Effect.yieldNow;
+        expect(didNextActionStart).toBe(false);
+
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(1_000);
+        yield* Effect.promise(() => childFocusCleanupStarted);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(1_000);
+        yield* Effect.promise(() => detachCleanupStarted);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(1_000);
+        yield* Effect.promise(() => rootFocusCleanupStarted);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(1_000);
+        yield* Effect.yieldNow;
+
+        expect(yield* Deferred.isDone(firstCompleted)).toBe(true);
+        expect(Exit.isFailure(yield* Deferred.await(firstCompleted))).toBe(true);
+        expect(Exit.isSuccess(yield* Deferred.await(nextCompleted))).toBe(true);
+        yield* Effect.promise(() => nextActionStarted);
+        expect(didNextActionStart).toBe(true);
+        expect(sendCommand).toHaveBeenCalledWith(
+          "Input.dispatchKeyEvent",
+          expect.objectContaining({ type: "keyUp" }),
+          "child-session",
+        );
+        expect(sendCommand).toHaveBeenCalledWith(
+          "Emulation.setFocusEmulationEnabled",
+          { enabled: false },
+          "child-session",
+        );
+        expect(sendCommand).toHaveBeenCalledWith("Target.detachFromTarget", {
+          sessionId: "child-session",
+        });
+        expect(sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", {
+          enabled: false,
+        });
+      }),
+    ),
+  );
+
   effectIt.effect("still interrupts agent control for a different human pointer event", () =>
     withManager((manager) =>
       Effect.gen(function* () {
