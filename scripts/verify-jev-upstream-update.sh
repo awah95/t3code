@@ -8,6 +8,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${T3CODE_JEV_REPO_ROOT:-${SCRIPT_DIR:h}}"
 readonly BASE_BRANCH="${T3CODE_JEV_BASE_BRANCH:-main}"
+readonly ORIGINAL_PATH="${PATH:-}"
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'USAGE'
@@ -58,11 +59,15 @@ NODE_BIN="$(resolve_node)" || {
   exit 1
 }
 readonly NODE_BIN
-export PATH="${NODE_BIN:h}:${REPO_ROOT}/node_modules/.bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="${NODE_BIN:h}:${REPO_ROOT}/node_modules/.bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${ORIGINAL_PATH}"
 
 cd "$REPO_ROOT"
 [[ -x node_modules/.bin/vp ]] || {
   print -u2 -- "Dependencies are missing; run vp i first."
+  exit 1
+}
+command -v pnpm >/dev/null 2>&1 || {
+  print -u2 -- "pnpm is unavailable; enable Corepack or add pnpm to PATH."
   exit 1
 }
 
