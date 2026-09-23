@@ -182,4 +182,50 @@ describe("Jev review presentation", () => {
     );
     expect(rendered).toContain("Cancel send");
   });
+
+  it("keeps routing logs collapsed below live actions and reveals them on demand", async () => {
+    const call: JevCall = {
+      id: "routing-1",
+      createdAt: "2026-09-21T12:00:00.000Z",
+      status: "pending",
+      notice: null,
+      request: {
+        requestId: "routing-1",
+        prompt: "Choose a model",
+        candidates: [],
+        context: {
+          existingSession: true,
+          hasAttachments: false,
+          interactionMode: "default",
+        },
+      },
+      result: null,
+    };
+    useJevStore.setState({
+      enabled: true,
+      mode: "guided",
+      panelOpen: true,
+      calls: [call, { ...call, id: "routing-2", status: "blocked", notice: "Routing failed." }],
+      notice: null,
+      billedUsd: 0,
+      estimatedUsd: 0,
+      unknownCostCalls: 0,
+    });
+
+    const root = await renderComponent(<JevPanel />);
+    const toggle = root.findByProps({ "aria-controls": "jev-routing-logs" });
+    expect(toggle.props["aria-expanded"]).toBe(false);
+    expect(toggle.findAllByType("span")[0]?.children.join("")).toBe("Routing logs (2)");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Cancel routing");
+    expect(root.findAllByType("details")).toHaveLength(2);
+
+    await act(() => toggle.props.onClick());
+
+    expect(toggle.props["aria-expanded"]).toBe(true);
+    expect(root.findAllByType("details")).toHaveLength(4);
+
+    await act(() => toggle.props.onClick());
+    expect(toggle.props["aria-expanded"]).toBe(false);
+    expect(root.findAllByType("details")).toHaveLength(2);
+  });
 });

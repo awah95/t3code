@@ -1,7 +1,7 @@
 import { JevEvaluation } from "./JevEvaluation";
 import { JEV_POLICY_VERSION, JEV_MODEL_PROFILES } from "@t3tools/shared/jevRouting";
 import { useEffect, useState } from "react";
-import { CircleAlertIcon, EllipsisIcon, RouteIcon, XIcon } from "lucide-react";
+import { ChevronDownIcon, CircleAlertIcon, EllipsisIcon, RouteIcon, XIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import {
@@ -438,8 +438,14 @@ export function JevPanel() {
     setSubagentsEnabled,
   } = useJevStore();
   const [checkingStatus, setCheckingStatus] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
   if (!isElectron || !panelOpen) return null;
   const pending = calls.some((call) => call.status === "pending");
+  const reviewCalls = calls.filter((call) => call.status === "awaiting-review");
+  const logCalls = calls.filter((call) => call.status !== "awaiting-review");
+  const failedLogCount = logCalls.filter(
+    (call) => call.status === "blocked" || call.status === "dispatch-failed",
+  ).length;
   const toggleEnabled = async () => {
     if (enabled) {
       setEnabled(false);
@@ -469,159 +475,96 @@ export function JevPanel() {
     <aside
       id="jev-routing-panel"
       aria-label="Jev routing calls"
-      className="flex h-full min-h-0 min-w-0 w-[min(25rem,42%)] shrink-0 flex-col gap-4 overflow-y-auto overscroll-contain border-l bg-background p-4 pt-[calc(var(--workspace-topbar-height,3rem)+1rem)] [overflow-wrap:anywhere]"
+      className="flex h-full min-h-0 min-w-0 w-[min(25rem,42%)] shrink-0 flex-col gap-4 overflow-hidden border-l bg-background p-4 pt-[calc(var(--workspace-topbar-height,3rem)+1rem)] [overflow-wrap:anywhere]"
     >
-      <div className="flex items-start justify-between gap-3">
-        <div>
+      <div className="shrink-0 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <RouteIcon className="size-4 text-primary" />
+              <h2 className="text-sm font-semibold tracking-tight">Jev</h2>
+              <span
+                className={`size-1.5 rounded-full ${enabled ? "bg-success" : "bg-muted-foreground/50"}`}
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {enabled
+                ? `${mode === "guided" ? "Guided" : "Automatic"} routing is on`
+                : "Routing is off"}
+            </p>
+          </div>
           <div className="flex items-center gap-2">
-            <RouteIcon className="size-4 text-primary" />
-            <h2 className="text-sm font-semibold tracking-tight">Jev</h2>
-            <span
-              className={`size-1.5 rounded-full ${enabled ? "bg-success" : "bg-muted-foreground/50"}`}
-            />
-          </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            {enabled
-              ? `${mode === "guided" ? "Guided" : "Automatic"} routing is on`
-              : "Routing is off"}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Menu>
-            <MenuTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label="Jev log actions"
-                  className="text-muted-foreground hover:text-foreground"
-                />
-              }
-            >
-              <EllipsisIcon className="size-3.5" />
-            </MenuTrigger>
-            <MenuPopup align="end">
-              <MenuItem
-                variant="destructive"
-                disabled={
-                  !calls.some(
-                    (call) => call.status !== "pending" && call.status !== "awaiting-review",
-                  )
+            <Menu>
+              <MenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label="Jev log actions"
+                    className="text-muted-foreground hover:text-foreground"
+                  />
                 }
-                onClick={clearCalls}
               >
-                Clear completed logs
-              </MenuItem>
-            </MenuPopup>
-          </Menu>
+                <EllipsisIcon className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end">
+                <MenuItem
+                  variant="destructive"
+                  disabled={
+                    !calls.some(
+                      (call) => call.status !== "pending" && call.status !== "awaiting-review",
+                    )
+                  }
+                  onClick={clearCalls}
+                >
+                  Clear completed logs
+                </MenuItem>
+              </MenuPopup>
+            </Menu>
+            <Button
+              type="button"
+              variant="ghost-muted"
+              size="icon-xs"
+              onClick={() => setPanelOpen(false)}
+              aria-label="Close Jev panel"
+            >
+              <XIcon className="size-3.5" />
+            </Button>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 rounded-lg bg-muted/35 p-2">
           <Button
-            type="button"
-            variant="ghost-muted"
-            size="icon-xs"
-            onClick={() => setPanelOpen(false)}
-            aria-label="Close Jev panel"
+            className="min-w-20"
+            size="sm"
+            variant={enabled ? "secondary" : "outline"}
+            disabled={checkingStatus}
+            aria-pressed={enabled}
+            onClick={() => void toggleEnabled()}
           >
-            <XIcon className="size-3.5" />
+            {checkingStatus ? "Checking…" : enabled ? "Jev on" : "Turn on"}
           </Button>
+          <Select value={mode} onValueChange={(value) => setMode(value as "guided" | "auto")}>
+            <SelectTrigger size="sm" aria-label="Jev routing mode">
+              <SelectValue>
+                {mode === "guided" ? "Guided · review every pick" : "Automatic"}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value="guided">Guided · review every pick</SelectItem>
+              <SelectItem value="auto">Automatic</SelectItem>
+            </SelectPopup>
+          </Select>
         </div>
-      </div>
-      <div className="flex items-center gap-2 rounded-lg bg-muted/35 p-2">
-        <Button
-          className="min-w-20"
-          size="sm"
-          variant={enabled ? "secondary" : "outline"}
-          disabled={checkingStatus}
-          aria-pressed={enabled}
-          onClick={() => void toggleEnabled()}
-        >
-          {checkingStatus ? "Checking…" : enabled ? "Jev on" : "Turn on"}
-        </Button>
-        <Select value={mode} onValueChange={(value) => setMode(value as "guided" | "auto")}>
-          <SelectTrigger size="sm" aria-label="Jev routing mode">
-            <SelectValue>
-              {mode === "guided" ? "Guided · review every pick" : "Automatic"}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectPopup alignItemWithTrigger={false}>
-            <SelectItem value="guided">Guided · review every pick</SelectItem>
-            <SelectItem value="auto">Automatic</SelectItem>
-          </SelectPopup>
-        </Select>
-      </div>
-      {notice && (
-        <p role="status" className="text-xs">
-          {notice}
-        </p>
-      )}
-      {calls
-        .filter((call) => call.status === "awaiting-review")
-        .map((call) => (
-          <JevReviewCard key={call.id} call={call} />
-        ))}
-      <div className="flex items-center justify-between gap-3 border-t border-border/60 pt-4">
-        <div>
-          <h3 className="text-xs font-semibold">Recent routing</h3>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">Decisions from this session</p>
-        </div>
-      </div>
-      <details className="text-xs text-muted-foreground">
-        <summary className="cursor-pointer">Context sharing &amp; log retention</summary>
-        <p className="mt-2">
-          Latest 50 calls, kept in memory. Full current prompts, up to ten recent chat exchanges,
-          task provenance, attached textual evidence and agreed plan context are shared with
-          OpenRouter. Common credentials are redacted; review sensitive content before sending.
-        </p>
-      </details>
-      <details className="text-xs">
-        <summary>Routing policy · {JEV_POLICY_VERSION}</summary>
-        <p>
-          Capability first, then expected completion time and rework, then remaining quota. Profiles
-          are starting guidance, not measured success rates or speed benchmarks.
-        </p>
-        {JEV_MODEL_PROFILES.map((profile) => (
-          <p key={profile.model} className="mt-2">
-            {profile.model}: {profile.summary}
+        {notice && (
+          <p role="status" className="text-xs">
+            {notice}
           </p>
-        ))}
-      </details>
-      <label className="flex items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          checked={subagentsEnabled}
-          onChange={(event) => setSubagentsEnabled(event.target.checked)}
-        />
-        Route Codex subagents
-      </label>
-      <p className="text-xs text-muted-foreground">
-        Requires Jev Auto and a local Codex thread. Enabling trusts T3's exact session-scoped
-        routing hook in Codex settings. The independent child task and declared context scope are
-        sent to OpenRouter. Explicit child model or effort choices are preserved. Turning either
-        toggle off stops routing calls. Full-history forks retain their parent model. Child routing
-        remains automatic with its policy guard, even in Guided mode; guided review applies to your
-        messages. Other providers are unsupported.
-      </p>
-      <div className="space-y-2">
-        <dl aria-label="Jev session statistics" className="grid grid-cols-2 gap-2 text-xs">
-          <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
-            <dt className="text-muted-foreground">Billed</dt>
-            <dd className="mt-1 font-medium tabular-nums">${billedUsd.toFixed(8)}</dd>
-          </div>
-          <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
-            <dt className="text-muted-foreground">Estimated</dt>
-            <dd className="mt-1 font-medium tabular-nums">${estimatedUsd.toFixed(8)}</dd>
-          </div>
-          <div className="col-span-2 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
-            <dt className="text-muted-foreground">Calls with unknown cost</dt>
-            <dd className="font-medium tabular-nums">{unknownCostCalls}</dd>
-          </div>
-        </dl>
-        <p className="text-xs text-muted-foreground">Session totals survive clearing the log.</p>
-      </div>
-      <div className="flex gap-3 text-xs">
+        )}
         {pending && (
           <button
             type="button"
+            className="text-xs"
             onClick={() => {
               cancelPending();
               if (calls.some((call) => call.status === "pending" && call.kind === "subagent"))
@@ -632,112 +575,207 @@ export function JevPanel() {
           </button>
         )}
       </div>
-      <JevEvaluation />
-      {calls.length === 0 && (
-        <p className="text-xs text-muted-foreground">No routing calls this session.</p>
+      {reviewCalls.length > 0 && (
+        <div className="flex min-h-0 max-h-[35%] shrink-0 flex-col gap-3 overflow-y-auto overscroll-contain">
+          {reviewCalls.map((call) => (
+            <JevReviewCard key={call.id} call={call} />
+          ))}
+        </div>
       )}
-      {calls
-        .filter((call) => call.status !== "awaiting-review")
-        .map((call) => (
-          <details key={call.id} className="rounded border p-2 text-xs">
-            <summary className="cursor-pointer">
-              {new Date(call.createdAt).toLocaleTimeString()} ·{" "}
-              {call.request.context.interactionMode === "subagent-status"
-                ? "local setup · "
-                : call.kind === "subagent"
-                  ? "subagent · "
-                  : ""}
-              {call.status}{" "}
-              {call.result && `· ${call.result.latencyMs} ms · ${callModelLabel(call)}`}
-            </summary>
-            {call.notice && <p className="mt-2">{call.notice}</p>}
-            {(call.result?.recommendedChoice ?? call.result?.choice) && (
-              <p className="mt-2">
-                Policy recommendation:{" "}
-                {
-                  call.request.candidates.find(
-                    (candidate) =>
-                      candidate.key === (call.result?.recommendedChoice ?? call.result?.choice),
-                  )?.description
-                }
-              </p>
-            )}
-            <p className="mt-2">
-              Proposal: {proposalLabel(call)} · Policy outcome:{" "}
-              {call.result?.policyOutcome ?? "unknown"}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain">
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Context sharing &amp; log retention</summary>
+          <p className="mt-2">
+            Latest 50 calls, kept in memory. Full current prompts, up to ten recent chat exchanges,
+            task provenance, attached textual evidence and agreed plan context are shared with
+            OpenRouter. Common credentials are redacted; review sensitive content before sending.
+          </p>
+        </details>
+        <details className="text-xs">
+          <summary>Routing policy · {JEV_POLICY_VERSION}</summary>
+          <p>
+            Capability first, then expected completion time and rework, then remaining quota.
+            Profiles are starting guidance, not measured success rates or speed benchmarks.
+          </p>
+          {JEV_MODEL_PROFILES.map((profile) => (
+            <p key={profile.model} className="mt-2">
+              {profile.model}: {profile.summary}
             </p>
-            {call.result?.reasons?.map((reason) => (
-              <p key={reason}>{reasonLabel(reason)}</p>
-            ))}
-            {call.request.context.missingContext?.map((missing) => (
-              <p key={missing}>Missing: {missing}</p>
-            ))}
-            {call.dispatch && (
-              <p>
-                Dispatched: {call.dispatch.model} / {call.dispatch.effort ?? "default"} ·{" "}
-                {call.dispatch.succeeded ? "accepted" : "failed"}
-              </p>
+          ))}
+        </details>
+        <label className="flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={subagentsEnabled}
+            onChange={(event) => setSubagentsEnabled(event.target.checked)}
+          />
+          Route Codex subagents
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Requires Jev Auto and a local Codex thread. Enabling trusts T3's exact session-scoped
+          routing hook in Codex settings. The independent child task and declared context scope are
+          sent to OpenRouter. Explicit child model or effort choices are preserved. Turning either
+          toggle off stops routing calls. Full-history forks retain their parent model. Child
+          routing remains automatic with its policy guard, even in Guided mode; guided review
+          applies to your messages. Other providers are unsupported.
+        </p>
+        <div className="space-y-2">
+          <dl aria-label="Jev session statistics" className="grid grid-cols-2 gap-2 text-xs">
+            <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
+              <dt className="text-muted-foreground">Billed</dt>
+              <dd className="mt-1 font-medium tabular-nums">${billedUsd.toFixed(8)}</dd>
+            </div>
+            <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
+              <dt className="text-muted-foreground">Estimated</dt>
+              <dd className="mt-1 font-medium tabular-nums">${estimatedUsd.toFixed(8)}</dd>
+            </div>
+            <div className="col-span-2 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
+              <dt className="text-muted-foreground">Calls with unknown cost</dt>
+              <dd className="font-medium tabular-nums">{unknownCostCalls}</dd>
+            </div>
+          </dl>
+          <p className="text-xs text-muted-foreground">Session totals survive clearing the log.</p>
+        </div>
+      </div>
+      <div
+        className={`flex min-h-0 ${reviewCalls.length > 0 ? "max-h-[25%]" : "max-h-[45%]"} shrink-0 flex-col gap-3 overflow-hidden`}
+      >
+        <section
+          className="flex min-h-8 flex-1 flex-col border-t border-border/60 pt-3"
+          aria-label="Routing logs"
+        >
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-2 rounded-sm text-left text-xs font-semibold focus-visible:outline-2 focus-visible:outline-ring"
+            aria-expanded={logsOpen}
+            aria-controls="jev-routing-logs"
+            onClick={() => setLogsOpen((open) => !open)}
+          >
+            <span>Routing logs ({logCalls.length})</span>
+            <span className="flex items-center gap-2">
+              {failedLogCount > 0 && (
+                <span className="font-normal text-warning-foreground">{failedLogCount} failed</span>
+              )}
+              <ChevronDownIcon
+                className={`size-3.5 transition-transform ${logsOpen ? "rotate-180" : ""}`}
+              />
+            </span>
+          </button>
+          <div id="jev-routing-logs" className="min-h-0 overflow-y-auto overscroll-contain">
+            {logsOpen && (
+              <div className="mt-3 space-y-2 pr-1">
+                {logCalls.length === 0 && (
+                  <p className="text-xs text-muted-foreground">No routing calls this session.</p>
+                )}
+                {logCalls.map((call) => (
+                  <details key={call.id} className="rounded border p-2 text-xs">
+                    <summary className="cursor-pointer">
+                      {new Date(call.createdAt).toLocaleTimeString()} ·{" "}
+                      {call.request.context.interactionMode === "subagent-status"
+                        ? "local setup · "
+                        : call.kind === "subagent"
+                          ? "subagent · "
+                          : ""}
+                      {call.status}{" "}
+                      {call.result && `· ${call.result.latencyMs} ms · ${callModelLabel(call)}`}
+                    </summary>
+                    {call.notice && <p className="mt-2">{call.notice}</p>}
+                    {(call.result?.recommendedChoice ?? call.result?.choice) && (
+                      <p className="mt-2">
+                        Policy recommendation:{" "}
+                        {
+                          call.request.candidates.find(
+                            (candidate) =>
+                              candidate.key ===
+                              (call.result?.recommendedChoice ?? call.result?.choice),
+                          )?.description
+                        }
+                      </p>
+                    )}
+                    <p className="mt-2">
+                      Proposal: {proposalLabel(call)} · Policy outcome:{" "}
+                      {call.result?.policyOutcome ?? "unknown"}
+                    </p>
+                    {call.result?.reasons?.map((reason) => (
+                      <p key={reason}>{reasonLabel(reason)}</p>
+                    ))}
+                    {call.request.context.missingContext?.map((missing) => (
+                      <p key={missing}>Missing: {missing}</p>
+                    ))}
+                    {call.dispatch && (
+                      <p>
+                        Dispatched: {call.dispatch.model} / {call.dispatch.effort ?? "default"} ·{" "}
+                        {call.dispatch.succeeded ? "accepted" : "failed"}
+                      </p>
+                    )}
+                    {call.decision && (
+                      <p className="mt-2">
+                        Your decision: {call.decision}. Approved for send:{" "}
+                        {call.approvedChoice
+                          ? call.request.candidates.find(
+                              (candidate) => candidate.key === call.approvedChoice,
+                            )?.description
+                          : `${call.request.context.currentModel ?? "current model"} / ${call.request.context.currentEffort ?? "default effort"}`}
+                        .
+                      </p>
+                    )}
+                    <p className="mt-2">
+                      Policy: {call.result?.policyVersion ?? JEV_POLICY_VERSION} · History:{" "}
+                      {call.request.context.historyExchangeCount ?? 0} exchanges
+                    </p>
+                    {[...new Set(call.request.context.omissions ?? [])].map((omission) => (
+                      <p key={omission} className="mt-1">
+                        {omission}
+                      </p>
+                    ))}
+                    <p className="mt-2">
+                      {call.request.context.budget
+                        ? `Quota checked ${new Date(call.request.context.budget.checkedAt).toLocaleString()}${call.request.context.budget.unavailableReason ? ` (${call.request.context.budget.unavailableReason})` : ""}`
+                        : "Quota unavailable"}
+                    </p>
+                    {call.result?.explanation && (
+                      <p className="mt-2">Assessment: {call.result.explanation}</p>
+                    )}
+                    {call.result && (
+                      <p className="mt-2">
+                        Cost:{" "}
+                        {call.result.costKind === "unknown"
+                          ? "unknown"
+                          : `${call.result.costKind} $${call.result.costUsd?.toFixed(8)}`}{" "}
+                        · Raw model-proposal confidence: {call.result.modelConfidence ?? "unknown"}{" "}
+                        · Raw effort-proposal confidence:{" "}
+                        {call.result.effortConfidence ?? "unknown"} (not task success probabilities)
+                      </p>
+                    )}
+                    {call.result?.conditionalEffort && (
+                      <p>
+                        For {call.result.conditionalEffort.model}, Jev proposed{" "}
+                        {call.result.conditionalEffort.effort} effort (confidence{" "}
+                        {call.result.conditionalEffort.confidence.toFixed(2)}).
+                      </p>
+                    )}
+                    <p className="mt-2 font-medium">Sanitized request / state</p>
+                    <pre className="whitespace-pre-wrap break-all">
+                      {JSON.stringify(call.request, null, 2)}
+                    </pre>
+                    {call.result && (
+                      <>
+                        <p className="mt-2 font-medium">Response</p>
+                        <pre className="whitespace-pre-wrap break-all">
+                          {JSON.stringify(call.result, null, 2)}
+                        </pre>
+                      </>
+                    )}
+                  </details>
+                ))}
+              </div>
             )}
-            {call.decision && (
-              <p className="mt-2">
-                Your decision: {call.decision}. Approved for send:{" "}
-                {call.approvedChoice
-                  ? call.request.candidates.find(
-                      (candidate) => candidate.key === call.approvedChoice,
-                    )?.description
-                  : `${call.request.context.currentModel ?? "current model"} / ${call.request.context.currentEffort ?? "default effort"}`}
-                .
-              </p>
-            )}
-            <p className="mt-2">
-              Policy: {call.result?.policyVersion ?? JEV_POLICY_VERSION} · History:{" "}
-              {call.request.context.historyExchangeCount ?? 0} exchanges
-            </p>
-            {[...new Set(call.request.context.omissions ?? [])].map((omission) => (
-              <p key={omission} className="mt-1">
-                {omission}
-              </p>
-            ))}
-            <p className="mt-2">
-              {call.request.context.budget
-                ? `Quota checked ${new Date(call.request.context.budget.checkedAt).toLocaleString()}${call.request.context.budget.unavailableReason ? ` (${call.request.context.budget.unavailableReason})` : ""}`
-                : "Quota unavailable"}
-            </p>
-            {call.result?.explanation && (
-              <p className="mt-2">Assessment: {call.result.explanation}</p>
-            )}
-            {call.result && (
-              <p className="mt-2">
-                Cost:{" "}
-                {call.result.costKind === "unknown"
-                  ? "unknown"
-                  : `${call.result.costKind} $${call.result.costUsd?.toFixed(8)}`}{" "}
-                · Raw model-proposal confidence: {call.result.modelConfidence ?? "unknown"} · Raw
-                effort-proposal confidence: {call.result.effortConfidence ?? "unknown"} (not task
-                success probabilities)
-              </p>
-            )}
-            {call.result?.conditionalEffort && (
-              <p>
-                For {call.result.conditionalEffort.model}, Jev proposed{" "}
-                {call.result.conditionalEffort.effort} effort (confidence{" "}
-                {call.result.conditionalEffort.confidence.toFixed(2)}).
-              </p>
-            )}
-            <p className="mt-2 font-medium">Sanitized request / state</p>
-            <pre className="whitespace-pre-wrap break-all">
-              {JSON.stringify(call.request, null, 2)}
-            </pre>
-            {call.result && (
-              <>
-                <p className="mt-2 font-medium">Response</p>
-                <pre className="whitespace-pre-wrap break-all">
-                  {JSON.stringify(call.result, null, 2)}
-                </pre>
-              </>
-            )}
-          </details>
-        ))}
+          </div>
+        </section>
+        <div className="min-h-8 max-h-32 overflow-y-auto overscroll-contain border-t border-border/60 pt-3">
+          <JevEvaluation />
+        </div>
+      </div>
     </aside>
   );
 }
