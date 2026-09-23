@@ -1,4 +1,4 @@
-import { describeJevCandidate, getJevModelProfile } from "@t3tools/shared/jevRouting";
+import { describeJevCandidate, JEV_MODEL_PROFILES } from "@t3tools/shared/jevRouting";
 import type { JevEffort, ModelSelection } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { ProviderInstanceEntry } from "../providerInstances";
@@ -19,7 +19,11 @@ export function eligibleJevModels(input: {
     // Keep Auto inside the user's chosen integration, including brand-new threads.
     if (provider.instanceId !== (input.sessionInstanceId ?? input.current.instanceId)) continue;
     for (const model of getAppModelOptionsForInstance(input.settings, provider)) {
-      if (model.isUnavailable || !getJevModelProfile(model.slug)) continue;
+      if (
+        model.isUnavailable ||
+        !JEV_MODEL_PROFILES.some((profile) => profile.model === model.slug)
+      )
+        continue;
       const descriptor = provider.models
         .find((entry) => entry.slug === model.slug)
         ?.capabilities?.optionDescriptors?.find((option) => option.id === "reasoningEffort");

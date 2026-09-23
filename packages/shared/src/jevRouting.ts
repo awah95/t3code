@@ -28,7 +28,7 @@ export const JEV_MODEL_PROFILES = [
   },
   {
     model: "gpt-6-sol",
-    capabilityRank: 2,
+    capabilityRank: 3,
     summary: "Strong coding and agentic capability for everyday and complex work.",
     goodFor: [
       "Cross-component debugging",
@@ -44,7 +44,7 @@ export const JEV_MODEL_PROFILES = [
   },
   {
     model: "gpt-6-astra",
-    capabilityRank: 3,
+    capabilityRank: 4,
     summary:
       "Most capable model for difficult end-to-end work, ambiguity, advanced reasoning and tool workflows.",
     goodFor: [
@@ -59,16 +59,46 @@ export const JEV_MODEL_PROFILES = [
   },
 ] as const;
 
-export function getJevModelProfile(model: string) {
-  return JEV_MODEL_PROFILES.find((profile) => profile.model === model);
-}
+// Historical turns can still carry these models. They are not offered for new routing.
+const LEGACY_MODEL_PROFILES = [
+  {
+    model: "gpt-5.6-luna",
+    capabilityRank: 1,
+    summary: "Efficient for explicit, bounded work.",
+    goodFor: ["Known-location edits", "Extraction and log summaries"],
+    avoidFor: ["Ambiguous diagnosis", "Cross-component invariants"],
+    inputUsdPerMillion: 0.2,
+    outputUsdPerMillion: 1.2,
+    source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+  },
+  {
+    model: "gpt-5.6-terra",
+    capabilityRank: 2,
+    summary: "Balanced capability for contained implementation and judgment.",
+    goodFor: ["Specified features", "Contained debugging"],
+    avoidFor: ["Unclear architecture", "Difficult persistence failures"],
+    inputUsdPerMillion: 2,
+    outputUsdPerMillion: 12,
+    source: "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+  },
+  {
+    model: "gpt-5.6-sol",
+    capabilityRank: 3,
+    summary: "Strong capability for complex coding and diagnosis.",
+    goodFor: ["Cross-component debugging", "Demanding code review"],
+    avoidFor: ["Routine mechanical work"],
+    inputUsdPerMillion: 4,
+    outputUsdPerMillion: 20,
+    source: "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+  },
+] as const;
 
-// Ongoing 5.6 turns can still report an unresolved failure after the candidate pool migrates.
-const LEGACY_FAILURE_RANKS: Readonly<Record<string, number>> = {
-  "gpt-5.6-luna": 1,
-  "gpt-5.6-terra": 2,
-  "gpt-5.6-sol": 2,
-};
+export function getJevModelProfile(model: string) {
+  return (
+    JEV_MODEL_PROFILES.find((profile) => profile.model === model) ??
+    LEGACY_MODEL_PROFILES.find((profile) => profile.model === model)
+  );
+}
 
 export const JEV_EFFORT_GUIDANCE: Readonly<Record<JevEffort, string>> = {
   low: "Known approach and few dependencies; avoid unnecessary deliberation.",
@@ -126,8 +156,7 @@ export function isJevCandidateAllowed(
   if (!context.failure?.unresolved) return true;
   const priorModel = context.failure.model ?? context.currentModel;
   if (!priorModel) return false;
-  const priorRank =
-    getJevModelProfile(priorModel)?.capabilityRank ?? LEGACY_FAILURE_RANKS[priorModel];
+  const priorRank = getJevModelProfile(priorModel)?.capabilityRank;
   if (priorRank === undefined) return false;
   if (profile.capabilityRank < priorRank) return false;
   const priorEffort = context.failure.effort ?? context.currentEffort;
