@@ -25,13 +25,13 @@ describe("Jev capability and effort guard", () => {
     };
     expect(
       isJevCandidateAllowed(
-        { key: "a", description: "", model: "gpt-5.6-luna", effort: "xhigh" },
+        { key: "a", description: "", model: "gpt-6-luna", effort: "xhigh" },
         unresolved,
       ),
     ).toBe(false);
     expect(
       isJevCandidateAllowed(
-        { key: "b", description: "", model: "gpt-5.6-sol", effort: "low" },
+        { key: "b", description: "", model: "gpt-6-sol", effort: "low" },
         unresolved,
       ),
     ).toBe(false);
@@ -45,8 +45,31 @@ describe("Jev capability and effort guard", () => {
   it("allows a fresh simple task to use a smaller model without a forced escalation ladder", () => {
     expect(
       isJevCandidateAllowed(
-        { key: "a", description: "", model: "gpt-5.6-luna", effort: "low" },
+        { key: "a", description: "", model: "gpt-6-luna", effort: "low" },
         context,
+      ),
+    ).toBe(true);
+  });
+  it("keeps unresolved 5.6 work at its previous capability floor", () => {
+    const unresolved = {
+      ...context,
+      failure: {
+        unresolved: true,
+        signals: ["same issue"],
+        model: "gpt-5.6-terra",
+        effort: "medium",
+      },
+    };
+    expect(
+      isJevCandidateAllowed(
+        { key: "a", description: "", model: "gpt-6-luna", effort: "xhigh" },
+        unresolved,
+      ),
+    ).toBe(false);
+    expect(
+      isJevCandidateAllowed(
+        { key: "b", description: "", model: "gpt-6-sol", effort: "medium" },
+        unresolved,
       ),
     ).toBe(true);
   });
@@ -73,7 +96,7 @@ describe("Jev capability and effort guard", () => {
     ).toBe(false);
   });
   it("includes both model identity and effort guidance in candidate descriptions", () => {
-    expect(describeJevCandidate("gpt-5.6-luna", "low")).toContain("gpt-5.6-luna, effort low");
+    expect(describeJevCandidate("gpt-6-luna", "low")).toContain("gpt-6-luna, effort low");
   });
 });
 describe("Jev context sanitization", () => {

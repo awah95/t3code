@@ -347,6 +347,7 @@ const EMPTY_TOKENS: CodexLedgerTokens = {
   processedTokens: null,
 };
 const now = () => new Date().toISOString();
+const PREVIOUS_STANDARD_RATE_SNAPSHOT_ID = "openai-standard-scenario-2026-09-20-v1";
 const iso = (timestamp: number | null): string =>
   timestamp === null ? now() : new Date(timestamp).toISOString();
 const sha = (value: string): string => NodeCrypto.createHash("sha256").update(value).digest("hex");
@@ -514,9 +515,10 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
     yield* sql`INSERT OR IGNORE INTO codex_ledger_rate_snapshots(snapshot_id,captured_at,source_url,rules_json,calculation_version)
     VALUES(${CODEX_STANDARD_RATE_SNAPSHOT.id},${CODEX_STANDARD_RATE_SNAPSHOT.retrievedOn},
     'https://developers.openai.com/api/docs/pricing',${JSON.stringify(CODEX_STANDARD_RATE_SNAPSHOT)},'1')`;
+    // Capture-era estimates belong to v1; the current snapshot is revalued from observations.
     yield* sql`INSERT OR IGNORE INTO codex_ledger_valuations
     (source_domain,response_id,valuation_id,snapshot_id,estimate_kind,components_json,total_usd,missing_reasons_json,created_at)
-    SELECT source_domain,response_id,${`scenario:${CODEX_STANDARD_RATE_SNAPSHOT.id}`},snapshot_id,
+    SELECT source_domain,response_id,${`scenario:${PREVIOUS_STANDARD_RATE_SNAPSHOT_ID}`},snapshot_id,
       estimate_kind,components_json,total_usd,missing_reasons_json,created_at
     FROM codex_ledger_valuations WHERE valuation_id='capture-v1'`;
 
@@ -621,6 +623,13 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
           lastResponse = batch.at(-1)!.response_id;
         }
       });
+
+    if ((yield* activeSnapshotId) === PREVIOUS_STANDARD_RATE_SNAPSHOT_ID) {
+      yield* revalueSnapshot(CODEX_STANDARD_RATE_SNAPSHOT);
+      yield* sql`UPDATE codex_ledger_settings
+        SET active_snapshot_id=${CODEX_STANDARD_RATE_SNAPSHOT.id},updated_at=${now()}
+        WHERE id=1 AND active_snapshot_id=${PREVIOUS_STANDARD_RATE_SNAPSHOT_ID}`;
+    }
 
     const ingestEvent = (event: CodexLedgerEvent, sourceDomain: string) =>
       Effect.gen(function* () {

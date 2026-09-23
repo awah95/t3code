@@ -15,7 +15,7 @@ function provider(instance: string, overrides: Partial<ServerProvider> = {}): Se
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-09-20T00:00:00.000Z",
-    models: ["gpt-5.6-sol", "gpt-5.6-terra"].map((slug) => ({
+    models: ["gpt-6-sol", "gpt-6-luna"].map((slug) => ({
       slug,
       name: slug,
       isCustom: false,
@@ -35,8 +35,27 @@ function provider(instance: string, overrides: Partial<ServerProvider> = {}): Se
     ...overrides,
   };
 }
-const current = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" };
+const current = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" };
 describe("eligible Jev models", () => {
+  it("offers GPT-6 models and excludes legacy 5.6 models", () => {
+    const base = provider("codex");
+    const candidates = eligibleJevModels({
+      providers: deriveProviderInstanceEntries([
+        {
+          ...base,
+          models: [...base.models, { ...base.models[0]!, slug: "gpt-5.6-sol" }],
+        },
+      ]),
+      settings: DEFAULT_UNIFIED_SETTINGS,
+      current,
+      sessionInstanceId: null,
+      hasStartedSession: false,
+    });
+    expect(candidates.map((candidate) => candidate.selection.model)).toEqual([
+      "gpt-6-sol",
+      "gpt-6-luna",
+    ]);
+  });
   it("keeps a new thread inside the manually chosen integration", () => {
     const candidates = eligibleJevModels({
       providers: deriveProviderInstanceEntries([provider("codex"), provider("codex_work")]),
@@ -91,7 +110,7 @@ describe("eligible Jev models", () => {
       sessionInstanceId: current.instanceId,
       hasStartedSession: true,
     });
-    expect(candidates.map((candidate) => candidate.selection.model)).toEqual(["gpt-5.6-sol"]);
+    expect(candidates.map((candidate) => candidate.selection.model)).toEqual(["gpt-6-sol"]);
   });
   it("uses only declared supported effort pairs and preserves non-reasoning options", () => {
     const base = provider("codex");

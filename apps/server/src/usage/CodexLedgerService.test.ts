@@ -40,6 +40,101 @@ const receipt = (id: string, input: number) =>
     },
   });
 
+it.effect("moves the bundled rate selection to v2 and reprices existing responses", () =>
+  Effect.gen(function* () {
+    const home = yield* Effect.promise(() =>
+      NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "codex-ledger-rate-upgrade-")),
+    );
+    try {
+      const dir = NodePath.join(home, "sessions", "2026", "09", "20");
+      yield* Effect.promise(() => NodeFSP.mkdir(dir, { recursive: true }));
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(dir, "rollout.jsonl"),
+          row("session_meta", { id: "rate-upgrade-thread" }) +
+            row("event_msg", { type: "task_started", turn_id: "turn" }) +
+            row("turn_context", { turn_id: "turn", model: "gpt-6-sol" }) +
+            row("token_usage_record", {
+              ...(JSON.parse(receipt("rate-upgrade-response", 10)) as { payload: object }).payload,
+              model: "gpt-6-sol",
+            }),
+        ),
+      );
+      const db = NodePath.join(home, "state.sqlite");
+      const dbLayer = NodeSqliteClient.layer({ filename: db });
+      yield* runMigrations().pipe(Effect.provide(dbLayer));
+      const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.provide(
+            layerForHome(home).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: db }))),
+          ),
+        );
+      const initial = yield* run(
+        Effect.gen(function* () {
+          const ledger = yield* CodexLedgerService;
+          const summary = yield* ledger.getSummary();
+          const snapshots = yield* ledger.listRateSnapshots();
+          return { summary, snapshots };
+        }),
+      );
+      assert.equal(initial.summary.responseCount, 1);
+      assert.equal(initial.summary.valuation.unpricedResponseCount, 0);
+      assert.equal(
+        initial.snapshots.items.find((item) => item.active)?.snapshotId,
+        CODEX_STANDARD_RATE_SNAPSHOT.id,
+      );
+
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const previousId = "openai-standard-scenario-2026-09-20-v1";
+        yield* sql`INSERT INTO codex_ledger_rate_snapshots
+          (snapshot_id,captured_at,source_url,rules_json,calculation_version)
+          VALUES(${previousId},'2026-09-20','https://developers.openai.com/api/docs/pricing',
+            ${JSON.stringify({ ...CODEX_STANDARD_RATE_SNAPSHOT, id: previousId })},'1')`;
+        yield* sql`UPDATE codex_ledger_settings SET active_snapshot_id=${previousId} WHERE id=1`;
+        yield* sql`INSERT INTO codex_ledger_valuations
+          (source_domain,response_id,valuation_id,snapshot_id,estimate_kind,components_json,total_usd,missing_reasons_json,created_at)
+          SELECT source_domain,response_id,'capture-v1',${previousId},estimate_kind,
+            components_json,'999',missing_reasons_json,created_at
+          FROM codex_ledger_valuations WHERE valuation_id=${`scenario:${CODEX_STANDARD_RATE_SNAPSHOT.id}`}`;
+        yield* sql`DELETE FROM codex_ledger_valuations
+          WHERE valuation_id=${`scenario:${CODEX_STANDARD_RATE_SNAPSHOT.id}`}`;
+      }).pipe(Effect.provide(dbLayer));
+
+      const upgraded = yield* run(
+        Effect.gen(function* () {
+          const ledger = yield* CodexLedgerService;
+          const summary = yield* ledger.getSummary();
+          const snapshots = yield* ledger.listRateSnapshots();
+          const sql = yield* SqlClient.SqlClient;
+          const valuations = yield* sql`SELECT valuation_id,snapshot_id,total_usd
+            FROM codex_ledger_valuations WHERE response_id='rate-upgrade-response'`;
+          return { summary, snapshots, valuations };
+        }),
+      );
+      assert.equal(upgraded.summary.valuation.unpricedResponseCount, 0);
+      assert.equal(
+        upgraded.snapshots.items.find((item) => item.active)?.snapshotId,
+        CODEX_STANDARD_RATE_SNAPSHOT.id,
+      );
+      assert.equal(
+        upgraded.valuations.find(
+          (item) => item.valuation_id === `scenario:${CODEX_STANDARD_RATE_SNAPSHOT.id}`,
+        )?.total_usd,
+        "0.00005",
+      );
+      assert.equal(
+        upgraded.valuations.find(
+          (item) => item.valuation_id === "scenario:openai-standard-scenario-2026-09-20-v1",
+        )?.total_usd,
+        "999",
+      );
+    } finally {
+      yield* Effect.promise(() => NodeFSP.rm(home, { recursive: true, force: true }));
+    }
+  }),
+);
+
 it.effect("links a Jev child receipt after its transcript and spawn edge arrive", () =>
   Effect.gen(function* () {
     const home = yield* Effect.promise(() =>

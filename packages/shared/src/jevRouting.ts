@@ -1,6 +1,6 @@
 import type { JevCandidate, JevEffort, JevRoutingContext } from "@t3tools/contracts";
 
-export const JEV_POLICY_VERSION = "2026-09-21.routing-brief.v5.3";
+export const JEV_POLICY_VERSION = "2026-09-22.gpt-6.v5.4";
 export const JEV_MAX_REQUEST_CHARS = 240_000;
 export const JEV_HISTORY_CHAR_BUDGET = 100_000;
 export const JEV_EFFORTS: readonly JevEffort[] = ["low", "medium", "high", "xhigh"];
@@ -9,9 +9,9 @@ export const JEV_EFFORTS: readonly JevEffort[] = ["low", "medium", "high", "xhig
 // Prices are standard short-context API comparisons, never the user's subscription balance.
 export const JEV_MODEL_PROFILES = [
   {
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     capabilityRank: 1,
-    summary: "Nano-tier, fast and economical for explicit, bounded work.",
+    summary: "Efficient for explicit, focused and repeatable work.",
     goodFor: [
       "Known-location mechanical edits",
       "Extraction and log summaries",
@@ -22,32 +22,14 @@ export const JEV_MODEL_PROFILES = [
       "Cross-component invariants",
       "High-consequence autonomous changes",
     ],
-    inputUsdPerMillion: 0.2,
-    outputUsdPerMillion: 1.2,
-    source: "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
+    inputUsdPerMillion: 0.1,
+    outputUsdPerMillion: 0.5,
+    source: "https://developers.openai.com/api/docs/models/gpt-6-luna",
   },
   {
-    model: "gpt-5.6-terra",
+    model: "gpt-6-sol",
     capabilityRank: 2,
-    summary:
-      "Mini-tier balance of capability and cost for everyday implementation and sound judgment.",
-    goodFor: [
-      "Specified feature following an existing pattern",
-      "Contained debugging",
-      "Focused regression tests and review",
-    ],
-    avoidFor: [
-      "Unclear architecture spanning several systems",
-      "Difficult concurrency or persistence failures without an established cause",
-    ],
-    inputUsdPerMillion: 2,
-    outputUsdPerMillion: 12,
-    source: "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
-  },
-  {
-    model: "gpt-5.6-sol",
-    capabilityRank: 3,
-    summary: "Flagship GPT-5.6 capability for complex coding, diagnosis, research, and judgment.",
+    summary: "Strong coding and agentic capability for everyday and complex work.",
     goodFor: [
       "Cross-component debugging",
       "Frontend/PHP/generated-metadata consistency",
@@ -56,13 +38,13 @@ export const JEV_MODEL_PROFILES = [
     avoidFor: [
       "Routine mechanical work already fully specified when a smaller model is sufficient",
     ],
-    inputUsdPerMillion: 4,
-    outputUsdPerMillion: 20,
-    source: "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+    inputUsdPerMillion: 2,
+    outputUsdPerMillion: 10,
+    source: "https://developers.openai.com/api/docs/models/gpt-6-sol",
   },
   {
     model: "gpt-6-astra",
-    capabilityRank: 4,
+    capabilityRank: 3,
     summary:
       "Most capable model for difficult end-to-end work, ambiguity, advanced reasoning and tool workflows.",
     goodFor: [
@@ -80,6 +62,13 @@ export const JEV_MODEL_PROFILES = [
 export function getJevModelProfile(model: string) {
   return JEV_MODEL_PROFILES.find((profile) => profile.model === model);
 }
+
+// Ongoing 5.6 turns can still report an unresolved failure after the candidate pool migrates.
+const LEGACY_FAILURE_RANKS: Readonly<Record<string, number>> = {
+  "gpt-5.6-luna": 1,
+  "gpt-5.6-terra": 2,
+  "gpt-5.6-sol": 2,
+};
 
 export const JEV_EFFORT_GUIDANCE: Readonly<Record<JevEffort, string>> = {
   low: "Known approach and few dependencies; avoid unnecessary deliberation.",
@@ -137,13 +126,14 @@ export function isJevCandidateAllowed(
   if (!context.failure?.unresolved) return true;
   const priorModel = context.failure.model ?? context.currentModel;
   if (!priorModel) return false;
-  const prior = getJevModelProfile(priorModel);
-  if (!prior) return false;
-  if (profile.capabilityRank < prior.capabilityRank) return false;
+  const priorRank =
+    getJevModelProfile(priorModel)?.capabilityRank ?? LEGACY_FAILURE_RANKS[priorModel];
+  if (priorRank === undefined) return false;
+  if (profile.capabilityRank < priorRank) return false;
   const priorEffort = context.failure.effort ?? context.currentEffort;
   const effortOrder = ["none", "minimal", ...JEV_EFFORTS, "max", "ultra"];
   return (
-    profile.capabilityRank > prior.capabilityRank ||
+    profile.capabilityRank > priorRank ||
     priorEffort === undefined ||
     (effortOrder.includes(priorEffort) &&
       effortOrder.indexOf(candidate.effort) >= effortOrder.indexOf(priorEffort))
