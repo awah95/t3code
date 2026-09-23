@@ -175,6 +175,29 @@ beforeEach(() => {
 });
 
 describe("CodexTurnUsage", () => {
+  it("does not claim there were no calls when the loaded activity window is empty", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    await act(() => {
+      renderer = create(
+        <CodexTurnUsage
+          environmentId={EnvironmentId.make("environment")}
+          threadId={ThreadId.make("thread")}
+          turnId={TurnId.make("turn")}
+          isLatestTurn={false}
+          isUnsettled={false}
+        />,
+      );
+    });
+    await act(() =>
+      renderer!.root.findByProps({ "aria-label": "Codex turn usage" }).props.onClick(),
+    );
+    const text = JSON.stringify(renderer!.toJSON());
+    expect(text).toContain("No completed calls in loaded activity history");
+    expect(text).toContain("earlier calls may be missing");
+    await act(() => renderer?.unmount());
+  });
+
   it("shows a compact receipt and expands into usage, routing, comparisons and thread totals", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     let renderer: ReactTestRenderer | undefined;
@@ -186,6 +209,17 @@ describe("CodexTurnUsage", () => {
           turnId={TurnId.make("turn")}
           isLatestTurn={false}
           isUnsettled={false}
+          toolCalls={[
+            {
+              label: "Git",
+              durationMs: 1500,
+              timedCount: 2,
+              calls: [
+                { id: "one", label: "git status", durationMs: 500 },
+                { id: "two", label: "git diff", durationMs: 1000 },
+              ],
+            },
+          ]}
         />,
       );
     });
@@ -208,6 +242,11 @@ describe("CodexTurnUsage", () => {
     await act(() => button.props.onClick());
     const text = renderer!.toJSON();
     expect(JSON.stringify(text)).toContain("Usage this turn");
+    expect(JSON.stringify(text)).toContain("Git");
+    expect(JSON.stringify(text)).toContain("2 calls");
+    expect(JSON.stringify(text)).toContain("1.5s");
+    expect(JSON.stringify(text)).toContain("git status");
+    expect(JSON.stringify(text)).toContain("earlier calls may be missing");
     expect(JSON.stringify(text)).toContain("Before Jev");
     expect(JSON.stringify(text)).toContain("Same observed tokens with");
     expect(JSON.stringify(text)).toContain("+$0.09 (+141%) vs used");

@@ -19,8 +19,12 @@ import { ChevronDownIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { cn } from "../../lib/utils";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { serverEnvironment } from "../../state/server";
+import type { ToolCallReportGroup } from "./toolCallReport";
+
+const EMPTY_TOOL_CALLS: ReadonlyArray<ToolCallReportGroup> = [];
 
 /** Query by T3 ownership IDs so a client never guesses a Codex turn ID. */
 export function CodexTurnUsage({
@@ -29,12 +33,14 @@ export function CodexTurnUsage({
   turnId,
   isLatestTurn,
   isUnsettled,
+  toolCalls = EMPTY_TOOL_CALLS,
 }: {
   environmentId: EnvironmentId;
   threadId: ThreadId;
   turnId: TurnId;
   isLatestTurn: boolean;
   isUnsettled: boolean;
+  toolCalls?: ReadonlyArray<ToolCallReportGroup>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const query = serverEnvironment.codexLedgerTurns({
@@ -99,7 +105,9 @@ export function CodexTurnUsage({
           )}
         />
       </button>
-      {expanded ? <CodexTurnReceipt environmentId={environmentId} turn={turn} /> : null}
+      {expanded ? (
+        <CodexTurnReceipt environmentId={environmentId} turn={turn} toolCalls={toolCalls} />
+      ) : null}
     </div>
   );
 }
@@ -248,9 +256,11 @@ function comparisonDelta(
 function CodexTurnReceipt({
   environmentId,
   turn,
+  toolCalls,
 }: {
   environmentId: EnvironmentId;
   turn: CodexLedgerTurn;
+  toolCalls: ReadonlyArray<ToolCallReportGroup>;
 }) {
   const result = useAtomValue(
     serverEnvironment.codexLedgerTurn({
@@ -270,10 +280,16 @@ function CodexTurnReceipt({
       </div>
     );
   }
-  return <TurnReceiptContent detail={detail} />;
+  return <TurnReceiptContent detail={detail} toolCalls={toolCalls} />;
 }
 
-function TurnReceiptContent({ detail }: { detail: CodexLedgerTurnDetail }) {
+function TurnReceiptContent({
+  detail,
+  toolCalls,
+}: {
+  detail: CodexLedgerTurnDetail;
+  toolCalls: ReadonlyArray<ToolCallReportGroup>;
+}) {
   const { turn } = detail;
   const ordinaryInput =
     turn.tokens.inputTokens === null ||
@@ -326,6 +342,43 @@ function TurnReceiptContent({ detail }: { detail: CodexLedgerTurnDetail }) {
           </dl>
           <p className="mt-2 text-[11px] text-muted-foreground">
             {countLabel(turn.responseCount, "model call")} · reasoning is included in output
+          </p>
+        </section>
+
+        <section className="border-t border-border/60 pt-3" aria-label="Tool calls">
+          <SectionHeading>Tool calls</SectionHeading>
+          {toolCalls.length === 0 ? (
+            <p className="mt-1.5 text-muted-foreground">
+              No completed calls in loaded activity history.
+            </p>
+          ) : (
+            <div className="mt-1.5 space-y-1.5">
+              {toolCalls.map((group) => (
+                <details key={group.label} className="rounded-md bg-muted/25 px-2 py-1.5">
+                  <summary className="cursor-pointer font-medium text-foreground/85">
+                    {group.label} · {countLabel(group.calls.length, "call")} ·{" "}
+                    {group.timedCount === 0 ? "Unknown time" : formatDuration(group.durationMs)}
+                    {group.timedCount < group.calls.length
+                      ? ` (${group.calls.length - group.timedCount} unknown)`
+                      : ""}
+                  </summary>
+                  <ul className="mt-1.5 space-y-1 border-t border-border/50 pt-1.5">
+                    {group.calls.map((call) => (
+                      <li key={call.id} className="flex justify-between gap-3 text-[11px]">
+                        <span className="min-w-0 break-all">{call.label}</span>
+                        <span className="shrink-0 tabular-nums">
+                          {call.durationMs === null ? "Unknown" : formatDuration(call.durationMs)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ))}
+            </div>
+          )}
+          <p className="mt-1.5 text-[10px] text-muted-foreground">
+            Times are summed per call; parallel calls can overlap. Missing start times are unknown.{" "}
+            Only loaded activity history is counted; earlier calls may be missing.
           </p>
         </section>
 

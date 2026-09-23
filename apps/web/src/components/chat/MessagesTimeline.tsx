@@ -17,6 +17,7 @@ import {
   type AssistantCitation,
   type EnvironmentId,
   type MessageId,
+  type OrchestrationThreadActivity,
   type ScopedThreadRef,
   type ServerProviderSkill,
   type ToolActivityIcon,
@@ -50,12 +51,16 @@ import {
 const EMPTY_AGENT_PANEL_MODEL = emptyAgentPanelModel();
 const NOOP_OPEN_AGENTS = () => {};
 const EMPTY_QUEUED_MESSAGES: ReadonlyArray<QueuedComposerMessage> = [];
+const EMPTY_TOOL_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = [];
+const EMPTY_TOOL_CALLS: ReadonlyArray<ToolCallReportGroup> = [];
 const NOOP_QUEUED_MESSAGE_ACTION = (_id: string) => {};
 const NOOP_USE_ARTIFACT_TEMPLATE = () => {};
 const NOOP_OPEN_ATTACHMENT = (_attachment: ChatFileAttachment) => {};
 import { resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { toolCallReportByTurn } from "./toolCallReport";
+import type { ToolCallReportGroup } from "./toolCallReport";
 import { getProjectFaviconCacheKey } from "@t3tools/shared/projectFavicon";
 import { observeVisibleAnimation } from "../../lib/visibleAnimation";
 import {
@@ -284,6 +289,7 @@ interface TimelineRowSharedState {
   skills: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   activeThreadEnvironmentId: EnvironmentId;
   showCodexTurnUsage: boolean;
+  toolCallsByTurn: ReadonlyMap<TurnId, ToolCallReportGroup[]>;
   turnIdsWithUsageFold: ReadonlySet<TurnId>;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -441,6 +447,7 @@ interface MessagesTimelineProps {
   onFileDownload?: (attachment: ChatFileAttachment) => void;
   activeThreadEnvironmentId: EnvironmentId;
   showCodexTurnUsage?: boolean;
+  toolActivities?: ReadonlyArray<OrchestrationThreadActivity>;
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   timestampFormat: TimestampFormat;
@@ -511,6 +518,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onFileDownload = NOOP_OPEN_ATTACHMENT,
   activeThreadEnvironmentId,
   showCodexTurnUsage = false,
+  toolActivities = EMPTY_TOOL_ACTIVITIES,
   markdownCwd,
   resolvedTheme,
   timestampFormat,
@@ -533,6 +541,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   steerQueuedMessageShortcutLabel = null,
   onRemoveQueuedMessage = NOOP_QUEUED_MESSAGE_ACTION,
 }: MessagesTimelineProps) {
+  const toolCallsByTurn = useMemo(() => toolCallReportByTurn(toolActivities), [toolActivities]);
   const listIdentityKey = displayThreadKey ?? routeThreadKey;
   const rememberedPosition = useMemo(
     () => readTimelinePosition(listIdentityKey),
@@ -1153,6 +1162,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       showCodexTurnUsage,
+      toolCallsByTurn,
       turnIdsWithUsageFold,
       onRevertToTurnCount,
       onUseArtifactTemplate,
@@ -1190,6 +1200,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       activeThreadEnvironmentId,
       showCodexTurnUsage,
+      toolCallsByTurn,
       turnIdsWithUsageFold,
       onRevertToTurnCount,
       onUseArtifactTemplate,
@@ -2375,6 +2386,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
             turnId={row.turnId}
             isLatestTurn={activity.latestTurnId === row.turnId}
             isUnsettled={activity.unsettledTurnId === row.turnId}
+            toolCalls={ctx.toolCallsByTurn.get(row.turnId) ?? EMPTY_TOOL_CALLS}
           />
         </div>
       ) : null}
@@ -2436,6 +2448,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
               turnId={row.message.turnId}
               isLatestTurn={activity.latestTurnId === row.message.turnId}
               isUnsettled={activity.unsettledTurnId === row.message.turnId}
+              toolCalls={ctx.toolCallsByTurn.get(row.message.turnId) ?? EMPTY_TOOL_CALLS}
             />
           </div>
         ) : null}
@@ -2471,6 +2484,7 @@ function AssistantMetaTimelineRow({
             turnId={row.message.turnId}
             isLatestTurn={activity.latestTurnId === row.message.turnId}
             isUnsettled={activity.unsettledTurnId === row.message.turnId}
+            toolCalls={ctx.toolCallsByTurn.get(row.message.turnId) ?? EMPTY_TOOL_CALLS}
           />
         </div>
       ) : null}
