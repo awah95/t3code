@@ -14,6 +14,35 @@ import * as WorktreeSetupTracker from "./WorktreeSetupTracker.ts";
 const threadId = ThreadId.make("thread-1");
 
 describe("WorktreeSetupTracker", () => {
+  it.effect("keeps the first running setup when another send arrives for the same thread", () =>
+    Effect.gen(function* () {
+      const tracker = yield* WorktreeSetupTracker.make;
+      expect(
+        yield* tracker.begin({
+          threadId,
+          branch: "first",
+          baseRef: "main",
+          stages: ["checkout", "agent"],
+          fiber: null,
+        }),
+      ).toBe(true);
+      expect(
+        yield* tracker.begin({
+          threadId,
+          branch: "second",
+          baseRef: "other",
+          stages: ["checkout", "agent"],
+          fiber: null,
+        }),
+      ).toBe(false);
+      expect(yield* tracker.get(threadId)).toMatchObject({
+        branch: "first",
+        baseRef: "main",
+        phase: "running",
+      });
+    }),
+  );
+
   it.effect("records stage transitions, checkout progress, and the final phase", () =>
     Effect.gen(function* () {
       const tracker = yield* WorktreeSetupTracker.make;

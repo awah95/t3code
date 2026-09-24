@@ -790,9 +790,15 @@ export const ThreadPullRequestLink = Schema.Struct({
 });
 export type ThreadPullRequestLink = typeof ThreadPullRequestLink.Type;
 
+export const SideChatMode = Schema.Literals(["discuss", "implement"]);
+export type SideChatMode = typeof SideChatMode.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
+  sideChatMode: Schema.optional(SideChatMode),
+  sideChatOwnsWorktree: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -880,6 +886,9 @@ export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
+  sideChatMode: Schema.optional(SideChatMode),
+  sideChatOwnsWorktree: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -1116,6 +1125,8 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
+  sideChatMode: Schema.optional(SideChatMode),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode,
@@ -1265,6 +1276,14 @@ const ThreadRuntimeModeSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   runtimeMode: RuntimeMode,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSideChatModeSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.side-chat-mode.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  sideChatMode: SideChatMode,
   createdAt: IsoDateTime,
 });
 
@@ -1431,6 +1450,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadSideChatModeSetCommand,
   ThreadInteractionModeSetCommand,
   ThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1464,6 +1484,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadPullRequestLinkCommand,
   ThreadPullRequestUnlinkCommand,
   ThreadRuntimeModeSetCommand,
+  ThreadSideChatModeSetCommand,
   ThreadInteractionModeSetCommand,
   ClientThreadTurnStartCommand,
   ThreadTurnInterruptCommand,
@@ -1482,6 +1503,14 @@ const ThreadSessionSetCommand = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
   createdAt: IsoDateTime,
+});
+
+const ThreadWorktreePreparedCommand = Schema.Struct({
+  type: Schema.Literal("thread.worktree.prepared"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  branch: TrimmedNonEmptyString,
+  worktreePath: TrimmedNonEmptyString,
 });
 
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
@@ -1644,6 +1673,7 @@ const ThreadPullRequestLinkSyncCommand = Schema.Struct({
 });
 
 const InternalOrchestrationCommand = Schema.Union([
+  ThreadWorktreePreparedCommand,
   ThreadAutoSettleCommand,
   ThreadPullRequestSyncCommand,
   ThreadPullRequestLinkSyncCommand,
@@ -1748,6 +1778,9 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(ThreadId),
+  sideChatMode: Schema.optional(SideChatMode),
+  sideChatOwnsWorktree: Schema.optional(Schema.Boolean),
   title: TrimmedNonEmptyString,
   modelSelection: ModelSelection,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),
@@ -1840,6 +1873,9 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   modelSelection: Schema.optional(ModelSelection),
+  runtimeMode: Schema.optional(RuntimeMode),
+  sideChatMode: Schema.optional(SideChatMode),
+  sideChatOwnsWorktree: Schema.optional(Schema.Boolean),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   // No longer produced; kept so persisted events from before

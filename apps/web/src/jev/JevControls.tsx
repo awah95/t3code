@@ -263,6 +263,11 @@ function JevReviewCard({ call }: { call: JevCall }) {
             {unavailable ? "Jev routing unavailable" : "Review required"}
           </p>
         </div>
+        {call.receiptContext && (
+          <p className="text-xs font-medium text-muted-foreground">
+            {call.threadLabel ?? `Thread ${call.receiptContext.threadId.slice(0, 8)}`}
+          </p>
+        )}
 
         <div className="rounded-lg border border-border/70 bg-background/70 p-3">
           <div className="flex items-center justify-between gap-3">
@@ -410,7 +415,11 @@ function JevReviewCard({ call }: { call: JevCall }) {
           >
             {unavailable ? "Choose model" : "Choose another"}
           </Button>
-          <Button size="sm" variant="ghost-muted" onClick={cancelPending}>
+          <Button
+            size="sm"
+            variant="ghost-muted"
+            onClick={() => cancelPending({ requestId: call.id })}
+          >
             Cancel send
           </Button>
         </div>
@@ -571,7 +580,7 @@ export function JevPanel() {
                 setSubagentsEnabled(false);
             }}
           >
-            Cancel routing
+            Cancel all routing
           </button>
         )}
       </div>
@@ -671,6 +680,8 @@ export function JevPanel() {
                   <details key={call.id} className="rounded border p-2 text-xs">
                     <summary className="cursor-pointer">
                       {new Date(call.createdAt).toLocaleTimeString()} ·{" "}
+                      {call.receiptContext &&
+                        `${call.threadLabel ?? `Thread ${call.receiptContext.threadId.slice(0, 8)}`} · `}
                       {call.request.context.interactionMode === "subagent-status"
                         ? "local setup · "
                         : call.kind === "subagent"

@@ -398,7 +398,7 @@ const make = Effect.gen(function* () {
       }
 
       const thread = yield* resolveThreadDetail(event.threadId);
-      if (!thread) {
+      if (!thread || (thread.parentThreadId !== undefined && thread.sideChatMode !== "implement")) {
         return;
       }
 
@@ -466,7 +466,7 @@ const make = Effect.gen(function* () {
       }
 
       const thread = yield* resolveThreadDetail(event.threadId);
-      if (!thread) {
+      if (!thread || (thread.parentThreadId !== undefined && thread.sideChatMode !== "implement")) {
         return;
       }
 
@@ -678,7 +678,7 @@ const make = Effect.gen(function* () {
 
     const threadId = event.payload.threadId;
     const thread = yield* resolveThreadDetail(threadId);
-    if (!thread) {
+    if (!thread || (thread.parentThreadId !== undefined && thread.sideChatMode !== "implement")) {
       return;
     }
 

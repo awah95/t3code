@@ -18,6 +18,7 @@ import {
   isRecoverableThreadResumeError,
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
+  openCodexFork,
   readCodexThread,
   rollbackCodexThread,
   toMcpElicitationResponse,
@@ -25,6 +26,119 @@ import {
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 describe("Codex thread history", () => {
+  it.effect("forks through the last completed turn while the main turn is running", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ method: string; payload: unknown }> = [];
+      const client = {
+        raw: {
+          request: (method: string, payload: unknown) =>
+            Effect.sync(() => {
+              requests.push({ method, payload });
+              return { thread: { historyMode: "legacy" } };
+            }),
+        },
+        request: (method: string, payload: unknown) =>
+          Effect.sync(() => {
+            requests.push({ method, payload });
+            if (method === "thread/read")
+              return {
+                thread: {
+                  id: "main-native",
+                  turns: [
+                    { id: "completed-turn", items: [] },
+                    { id: "active-turn", items: [] },
+                  ],
+                },
+              };
+            return { thread: { id: "side-native" }, cwd: "/workspace", model: "gpt" };
+          }),
+      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
+      yield* openCodexFork({
+        client,
+        threadId: ThreadId.make("side"),
+        forkSource: {
+          threadId: "main-native",
+          activeTurnId: "active-turn",
+        },
+        cwd: "/workspace",
+        runtimeMode: "approval-required",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        sideChat: true,
+      });
+      const fork = requests.find((request) => request.method === "thread/fork");
+      NodeAssert.deepEqual(fork?.payload, {
+        threadId: "main-native",
+        lastTurnId: "completed-turn",
+        cwd: "/workspace",
+        approvalPolicy: "untrusted",
+        sandbox: "read-only",
+        approvalsReviewer: "user",
+        ephemeral: false,
+      });
+    }),
+  );
+
+  it.effect("starts fresh when the first main turn is still running", () =>
+    Effect.gen(function* () {
+      const methods: string[] = [];
+      const client = {
+        raw: { request: () => Effect.succeed({ thread: { historyMode: "legacy" } }) },
+        request: (method: string) =>
+          Effect.sync(() => {
+            methods.push(method);
+            if (method === "thread/read")
+              return { thread: { id: "main-native", turns: [{ id: "active-turn", items: [] }] } };
+            return { thread: { id: "side-native" }, cwd: "/workspace", model: "gpt" };
+          }),
+      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
+      yield* openCodexFork({
+        client,
+        threadId: ThreadId.make("side"),
+        forkSource: {
+          threadId: "main-native",
+          activeTurnId: "active-turn",
+        },
+        cwd: "/workspace",
+        runtimeMode: "approval-required",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        sideChat: true,
+      });
+      NodeAssert.deepEqual(methods, ["thread/read", "thread/start"]);
+    }),
+  );
+
+  it.effect("forks a side chat with its selected access level", () =>
+    Effect.gen(function* () {
+      const requests: Array<{ method: string; payload: unknown }> = [];
+      const client = {
+        request: (method: string, payload: unknown) =>
+          Effect.sync(() => {
+            requests.push({ method, payload });
+            return { thread: { id: "implement-native" }, cwd: "/isolated", model: "gpt" };
+          }),
+      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
+      yield* openCodexFork({
+        client,
+        threadId: ThreadId.make("implement-side"),
+        forkSource: { threadId: "main-native" },
+        cwd: "/isolated",
+        runtimeMode: "auto",
+        requestedModel: undefined,
+        serviceTier: undefined,
+        sideChat: true,
+      });
+      NodeAssert.deepEqual(requests[0]?.payload, {
+        threadId: "main-native",
+        cwd: "/isolated",
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        approvalsReviewer: "auto_review",
+        ephemeral: false,
+      });
+    }),
+  );
   for (const numTurns of [1, 2, 3, 5]) {
     it.effect(`reverts ${numTurns} paginated turns at the durable boundary`, () =>
       Effect.gen(function* () {
@@ -154,6 +268,44 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it("uses the selected supervised access for a side chat turn", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "side-provider-thread",
+        runtimeMode: "approval-required",
+        sideChat: true,
+        prompt: "Investigate this change",
+      }),
+    );
+    NodeAssert.equal(params.approvalPolicy, "untrusted");
+    NodeAssert.equal(params.approvalsReviewer, "user");
+    NodeAssert.deepEqual(params.sandboxPolicy, { type: "readOnly" });
+  });
+  it("uses workspace write and on-request approval for a side chat when selected", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "implement-provider-thread",
+        runtimeMode: "auto-accept-edits",
+        sideChat: true,
+        prompt: "Make the change",
+      }),
+    );
+    NodeAssert.equal(params.approvalPolicy, "on-request");
+    NodeAssert.equal(params.approvalsReviewer, "user");
+    NodeAssert.deepEqual(params.sandboxPolicy, { type: "workspaceWrite" });
+  });
+  it("allows full access for a side chat when selected", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "side-full-access",
+        runtimeMode: "full-access",
+        sideChat: true,
+        prompt: "Make the change",
+      }),
+    );
+    NodeAssert.equal(params.approvalPolicy, "never");
+    NodeAssert.deepEqual(params.sandboxPolicy, { type: "dangerFullAccess" });
+  });
   it.effect("sends currency skill aliases in Codex's canonical dollar form", () =>
     Effect.gen(function* () {
       for (const symbol of ["€", "£", "¥", "₹", "₩", "₿", "𑿝"]) {

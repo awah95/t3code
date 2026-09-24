@@ -216,7 +216,7 @@ describe("Jev review presentation", () => {
     const toggle = root.findByProps({ "aria-controls": "jev-routing-logs" });
     expect(toggle.props["aria-expanded"]).toBe(false);
     expect(toggle.findAllByType("span")[0]?.children.join("")).toBe("Routing logs (2)");
-    expect(JSON.stringify(renderer!.toJSON())).toContain("Cancel routing");
+    expect(JSON.stringify(renderer!.toJSON())).toContain("Cancel all routing");
     expect(root.findAllByType("details")).toHaveLength(2);
 
     await act(() => toggle.props.onClick());

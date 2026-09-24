@@ -1268,14 +1268,38 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
 
       const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
       const persistedModelSelection = readPersistedModelSelection(input.binding.runtimePayload);
+      const recoveredThread = Option.isSome(projectionQuery)
+        ? Option.getOrUndefined(
+            yield* projectionQuery.value.getThreadShellById(input.binding.threadId),
+          )
+        : undefined;
+      const parentThreadId = recoveredThread?.parentThreadId;
+      const sideChatMode = parentThreadId
+        ? (recoveredThread?.sideChatMode ?? "discuss")
+        : undefined;
+      if (
+        sideChatMode === "implement" &&
+        (!recoveredThread?.worktreePath || recoveredThread.sideChatOwnsWorktree !== true)
+      ) {
+        return yield* toValidationError(
+          input.operation,
+          "Implementation side chat worktree is not ready.",
+        );
+      }
 
-      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      if (!parentThreadId) yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
+          ...(parentThreadId ? { parentThreadId } : {}),
+          ...(sideChatMode ? { sideChatMode } : {}),
           provider: input.binding.provider,
           providerInstanceId: bindingInstanceId,
-          ...(persistedCwd ? { cwd: persistedCwd } : {}),
+          ...(sideChatMode === "implement"
+            ? { cwd: recoveredThread?.worktreePath as string }
+            : persistedCwd
+              ? { cwd: persistedCwd }
+              : {}),
           ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
@@ -1428,6 +1452,21 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           threadId,
           provider: resolvedProvider,
         };
+        const savedThread = Option.isSome(projectionQuery)
+          ? Option.getOrUndefined(yield* projectionQuery.value.getThreadShellById(threadId))
+          : undefined;
+        const sideChatMode = savedThread?.parentThreadId
+          ? (savedThread.sideChatMode ?? "discuss")
+          : undefined;
+        if (
+          sideChatMode === "implement" &&
+          (!savedThread?.worktreePath || savedThread.sideChatOwnsWorktree !== true)
+        ) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            "Implementation side chat worktree is not ready.",
+          );
+        }
         if (!instanceInfo.enabled) {
           return yield* toValidationError(
             "ProviderService.startSession",
@@ -1460,8 +1499,46 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           (persistedBinding?.providerInstanceId === resolvedInstanceId
             ? persistedBinding.resumeCursor
             : undefined);
+        const parentThreadId = savedThread?.parentThreadId ?? input.parentThreadId;
+        const parentBinding = parentThreadId
+          ? Option.getOrUndefined(yield* directory.getBinding(parentThreadId))
+          : undefined;
+        const parentCursor = parentBinding?.resumeCursor;
+        const parentNativeThreadId =
+          parentBinding?.provider === "codex" &&
+          parentBinding.providerInstanceId === resolvedInstanceId &&
+          typeof parentCursor === "object" &&
+          parentCursor !== null &&
+          "threadId" in parentCursor &&
+          typeof parentCursor.threadId === "string"
+            ? parentCursor.threadId
+            : undefined;
+        if (parentThreadId && resolvedProvider !== "codex") {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            "Side chat history is currently supported only for Codex sessions.",
+          );
+        }
+        if (parentThreadId && !effectiveResumeCursor && !parentNativeThreadId) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Main thread '${parentThreadId}' has no compatible saved Codex history to fork.`,
+          );
+        }
+        const parentActiveSession = parentThreadId
+          ? (yield* listSessions()).find((session) => session.threadId === parentThreadId)
+          : undefined;
+        const forkSource =
+          parentThreadId && !effectiveResumeCursor && parentNativeThreadId
+            ? {
+                threadId: parentNativeThreadId,
+                ...(parentActiveSession?.activeTurnId
+                  ? { activeTurnId: String(parentActiveSession.activeTurnId) }
+                  : {}),
+              }
+            : undefined;
         const effectiveCwd =
-          input.cwd ??
+          (sideChatMode === "implement" ? (savedThread?.worktreePath ?? undefined) : input.cwd) ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
             ? readPersistedCwd(persistedBinding.runtimePayload)
             : undefined);
@@ -1500,10 +1577,15 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        yield* prepareMcpSession(threadId, resolvedInstanceId);
+        if (!parentThreadId) yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
             ...input,
+            ...(parentThreadId ? { parentThreadId } : {}),
+            ...(sideChatMode ? { sideChatMode } : {}),
+            // The fork source is always derived from the saved parent binding.
+            forkSource,
+            runtimeMode: input.runtimeMode,
             providerInstanceId: resolvedInstanceId,
             ...(effectiveCwd !== undefined ? { cwd: effectiveCwd } : {}),
             ...(effectiveResumeCursor !== undefined ? { resumeCursor: effectiveResumeCursor } : {}),

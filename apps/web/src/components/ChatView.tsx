@@ -124,13 +124,12 @@ import {
   decideWithJev,
   jevPriorAttempts,
   registerJevSubagentPolicy,
-  sanitizeJevPrompt,
   useJevStore,
 } from "../jev/jevStore";
 import { setJevLedgerReceiptWriter } from "../jev/jevLedgerReceipts";
 import { buildJevContext, isMediaOnlyJevTurn, textOnlyJevPrompt } from "../jev/context";
 import { isJevCandidateAllowed } from "@t3tools/shared/jevRouting";
-import { eligibleJevModels } from "../jev/routing";
+import { eligibleJevModels, prepareJevTurn } from "../jev/routing";
 import { readLocalApi } from "../localApi";
 import { useDiffPanelStore } from "../diffPanelStore";
 import {
@@ -229,6 +228,7 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
+import { SideChatPanelHost, useSideChats } from "./chat/useSideChats";
 import { AgentsPanel } from "./AgentsPanel";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
 import { ThreadPullRequestsPanel } from "./pullRequest/ThreadPullRequestsPanel";
@@ -1489,7 +1489,14 @@ export default function ChatView(props: ChatViewProps) {
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
   const threadDetailLoading = threadSyncPhase === "loading";
   const handleNewThread = useNewThreadHandler();
-  const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
+  const {
+    settleThread,
+    pinThread,
+    confirmAndUnpinThread,
+    archiveThread,
+    unarchiveThread,
+    deleteThread: deleteSideThread,
+  } = useThreadActions();
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -1836,12 +1843,6 @@ export default function ChatView(props: ChatViewProps) {
   const fanoutState = useAtomValue(fanoutStateAtom);
   const sendInFlightRef = fanoutState.sendInFlight;
   const composerSendGenerationRef = useRef(0);
-  useEffect(
-    () => () => {
-      useJevStore.getState().cancelPending();
-    },
-    [routeThreadKey],
-  );
   const multipleModelSelections = fanoutState.selections;
   const setMultipleModelSelections = useCallback(
     (selections: SetStateAction<ReadonlyArray<ModelSelection> | null>) => {
@@ -2931,6 +2932,7 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
+  const jevEnabled = useJevStore((state) => state.enabled);
   const jevSubagentsEnabled = useJevStore((state) => state.enabled && state.subagentsEnabled);
   useEffect(() => {
     if (!isElectron || !activeThread || !jevSubagentsEnabled) return;
@@ -4095,10 +4097,12 @@ export default function ChatView(props: ChatViewProps) {
     () => {},
   );
   const onInterrupt = useCallback(async () => {
-    useJevStore.getState().cancelPending();
     const { activeThread, phase, setThreadError } = interruptContextRef.current;
     const input = buildRunningThreadTurnInterruptInput(activeThread, phase);
     if (!input || !activeThread) return;
+    useJevStore
+      .getState()
+      .cancelPending({ environmentId: activeThread.environmentId, threadId: activeThread.id });
     restoreQueuedMessagesRef.current(
       useQueuedMessageStore
         .getState()
@@ -4700,6 +4704,26 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadRef],
   );
+  const sideEnvironmentTarget = activeThreadRef
+    ? environmentById.get(activeThreadRef.environmentId)?.entry.target
+    : undefined;
+  const sideEnvironmentIsLocal =
+    sideEnvironmentTarget !== undefined &&
+    (sideEnvironmentTarget._tag === "PrimaryConnectionTarget" ||
+      isDesktopLocalConnectionTarget(sideEnvironmentTarget));
+  const sideChats = useSideChats({
+    activeThreadRef,
+    activeServerThread,
+    selectedProvider,
+    providerInstanceEntries,
+    settings,
+    sideEnvironmentIsLocal,
+    composerDraftTarget,
+    sideThreadId:
+      renderedRightPanelSurface?.kind === "side-chat" ? renderedRightPanelSurface.threadId : null,
+    lifecycle: { archiveThread, unarchiveThread, deleteSideThread },
+  });
+  const { addSideChatSurface, askInSideChat } = sideChats;
   const supportsThreadPullRequests =
     serverConfig?.environment.capabilities.threadPullRequests === true;
   const visiblePullRequests = visibleThreadPullRequests(
@@ -7892,36 +7916,28 @@ export default function ChatView(props: ChatViewProps) {
         if (!mediaOnlyJevBypass)
           toastManager.add({ type: "info", title: "Jev Auto", description: bypassReason });
       } else {
-        const routingProvider = providerInstanceEntries.find(
-          (entry) => entry.instanceId === ctxSelectedModelSelection.instanceId,
-        );
-        const routingContext = buildJevContext({
+        jevRequestId = randomUUID();
+        const { request: jevRequest, candidates } = prepareJevTurn({
+          requestId: jevRequestId,
+          providers: providerInstanceEntries,
+          settings,
           priorAttempts: jevPriorAttempts(activeThread.id, activeThread.messages),
           messages: activeThread.messages,
-          prompt: jevPrompt,
+          prompt: messageTextForSend,
           outgoingContext: outgoingMessageContext,
           historyCompleteness: threadHasOlderTurns(routeThreadState) ? "windowed" : "complete",
           current: ctxSelectedModelSelection,
-          existingSession: activeThread.session !== null,
-          interactionMode: sendInteractionMode,
-          plans: activeThread.proposedPlans,
-          ...(routingProvider?.snapshot.usageLimits
-            ? { usageLimits: routingProvider.snapshot.usageLimits }
-            : {}),
-        });
-        const candidates = eligibleJevModels({
-          providers: providerInstanceEntries,
-          settings,
-          current:
+          candidateCurrent:
             activeThread.session !== null || activeThread.messages.length > 0
               ? activeThread.modelSelection
               : ctxSelectedModelSelection,
           sessionInstanceId: activeThread.session?.providerInstanceId ?? null,
           hasStartedSession: activeThread.session !== null || activeThread.messages.length > 0,
-        }).filter(
-          (candidate) =>
-            !getAntigravitySendBlockReason(candidate.provider.snapshot, candidate.selection.model),
-        );
+          existingSession: activeThread.session !== null,
+          interactionMode: sendInteractionMode,
+          plans: activeThread.proposedPlans,
+        });
+        const routingContext = jevRequest.context;
         if (candidates.length === 0) {
           useJevStore.setState({
             notice:
@@ -7935,21 +7951,11 @@ export default function ChatView(props: ChatViewProps) {
           const promptBeforeRouting = promptRef.current;
           sendInFlightRef.current = true;
           let decision;
-          jevRequestId = randomUUID();
           try {
             decision = await decideWithJev(
-              {
-                requestId: jevRequestId,
-                prompt: jevPrompt,
-                candidates: candidates.map(({ key, description, model, effort }) => ({
-                  key,
-                  model,
-                  effort,
-                  description: sanitizeJevPrompt(description),
-                })),
-                context: routingContext,
-              },
+              jevRequest,
               { environmentId, projectId: activeProject.id, threadId: activeThread.id },
+              activeThread.title,
             );
           } finally {
             sendInFlightRef.current = false;
@@ -10177,6 +10183,8 @@ export default function ChatView(props: ChatViewProps) {
         focusedAgentId={focusedAgentId}
         focusedAgentRequestId={focusedAgentRequestId}
       />
+    ) : renderedRightPanelSurface?.kind === "side-chat" ? (
+      <SideChatPanelHost controller={sideChats} threadId={renderedRightPanelSurface.threadId} />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
@@ -10372,6 +10380,17 @@ export default function ChatView(props: ChatViewProps) {
                 {...(!paintOnlyDisplayedTimeline
                   ? {
                       onCiteAssistantText: citeAssistantText,
+                      ...(selectedProvider === "codex" && activeServerThread
+                        ? {
+                            onAskInSideChat: (
+                              citation: AssistantCitation,
+                              destination: { kind: "new" } | { kind: "existing"; threadId: string },
+                            ) => {
+                              void askInSideChat(citation, destination);
+                            },
+                            sideChatDestinations: sideChats.sideChatDestinations,
+                          }
+                        : {}),
                       agentPanelModel,
                       onOpenAgents: addAgentsSurface,
                       onUseArtifactTemplate: useArtifactTemplate,
@@ -10845,6 +10864,13 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddAgents={addAgentsSurface}
+          {...(selectedProvider === "codex"
+            ? {
+                onAddSideChat: () => {
+                  void addSideChatSurface();
+                },
+              }
+            : {})}
           onAddDevice={addDeviceSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
@@ -10903,6 +10929,13 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddAgents={addAgentsSurface}
+            {...(selectedProvider === "codex"
+              ? {
+                  onAddSideChat: () => {
+                    void addSideChatSurface();
+                  },
+                }
+              : {})}
             onAddDevice={addDeviceSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}

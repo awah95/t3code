@@ -5,6 +5,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -1088,13 +1089,24 @@ const makeWsRpcLayer = (
         Effect.gen(function* () {
           const bootstrap = command.bootstrap;
           const { bootstrap: _bootstrap, ...finalTurnStartCommand } = command;
+          const savedThread = Option.getOrUndefined(
+            yield* projectionSnapshotQuery
+              .getThreadShellById(command.threadId)
+              .pipe(
+                Effect.mapError((cause) =>
+                  toDispatchCommandError(cause, "Failed to inspect side chat worktree state"),
+                ),
+              ),
+          );
+          const isImplementationSideChat = savedThread?.sideChatMode === "implement";
           let createdThread = false;
-          let targetProjectId = bootstrap?.createThread?.projectId;
+          let targetProjectId = bootstrap?.createThread?.projectId ?? savedThread?.projectId;
           let targetProjectCwd = bootstrap?.prepareWorktree?.projectCwd;
           let targetWorktreePath = bootstrap?.createThread?.worktreePath ?? null;
           // The setup script's terminal, once started. Cancel closes only this
           // one so terminals the user opened meanwhile survive.
           let setupTerminalId: string | null = null;
+          let worktreePrepared = false;
 
           // Set once the checkout starts; see the session.set below.
           let preparingSessionSet = false;
@@ -1592,13 +1604,24 @@ const makeWsRpcLayer = (
                 }),
               }));
               targetWorktreePath = worktree.worktree.path;
-              yield* dispatchFromClient({
-                type: "thread.meta.update",
-                commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
-                threadId,
-                branch: worktree.worktree.refName,
-                worktreePath: targetWorktreePath,
-              });
+              yield* dispatchFromClient(
+                isImplementationSideChat
+                  ? {
+                      type: "thread.worktree.prepared",
+                      commandId: yield* serverCommandId("bootstrap-side-worktree-prepared"),
+                      threadId,
+                      branch: worktree.worktree.refName,
+                      worktreePath: targetWorktreePath,
+                    }
+                  : {
+                      type: "thread.meta.update",
+                      commandId: yield* serverCommandId("bootstrap-thread-meta-update"),
+                      threadId,
+                      branch: worktree.worktree.refName,
+                      worktreePath: targetWorktreePath,
+                    },
+              );
+              worktreePrepared = true;
               yield* refreshGitStatus(targetWorktreePath);
             }
 
@@ -1697,7 +1720,10 @@ const makeWsRpcLayer = (
                     })
                   : Effect.void;
                 const removeCreatedWorktree =
-                  tracked && targetWorktreePath && bootstrap?.prepareWorktree
+                  tracked &&
+                  targetWorktreePath &&
+                  bootstrap?.prepareWorktree &&
+                  (!isImplementationSideChat || !worktreePrepared)
                     ? closeSetupTerminal.pipe(
                         Effect.ignoreCause({ log: true }),
                         Effect.andThen(
@@ -1737,6 +1763,26 @@ const makeWsRpcLayer = (
                   ),
                 );
               }
+              const discardIncompleteWorktree =
+                isImplementationSideChat &&
+                !worktreePrepared &&
+                targetWorktreePath &&
+                bootstrap?.prepareWorktree
+                  ? gitWorkflow
+                      .removeWorktree({
+                        cwd: bootstrap.prepareWorktree.projectCwd,
+                        path: targetWorktreePath,
+                        force: true,
+                      })
+                      .pipe(
+                        Effect.catchCause((cleanupCause) =>
+                          Effect.logWarning("failed to remove incomplete side chat worktree", {
+                            threadId,
+                            cause: Cause.pretty(cleanupCause),
+                          }),
+                        ),
+                      )
+                  : Effect.void;
               return track(
                 worktreeSetupTracker
                   .finish(threadId, "failed", dispatchError.message)
@@ -1745,7 +1791,10 @@ const makeWsRpcLayer = (
                       snapshot ? recordWorktreeSetup(snapshot) : Effect.void,
                     ),
                   ),
-              ).pipe(Effect.andThen(cleanupAndFail(cause, dispatchError)));
+              ).pipe(
+                Effect.andThen(discardIncompleteWorktree),
+                Effect.andThen(cleanupAndFail(cause, dispatchError)),
+              );
             }),
             // Cancellation must finish recording and rollback after the bootstrap is interrupted.
             Effect.uninterruptible,
@@ -1763,14 +1812,24 @@ const makeWsRpcLayer = (
                 // the tracker entry that cancel and the stage updates key on.
                 const fiber = yield* Effect.uninterruptible(
                   Effect.gen(function* () {
-                    const fiber = yield* Effect.forkDetach(settledBootstrapProgram);
-                    yield* worktreeSetupTracker.begin({
+                    const gate = yield* Deferred.make<void>();
+                    const fiber = yield* Effect.forkDetach(
+                      Deferred.await(gate).pipe(Effect.andThen(settledBootstrapProgram)),
+                    );
+                    const registered = yield* worktreeSetupTracker.begin({
                       threadId,
                       branch: bootstrap?.prepareWorktree?.branch ?? null,
                       baseRef: bootstrap?.prepareWorktree?.baseBranch ?? null,
                       stages: ["fetch", "checkout", "submodules", "setup-script", "agent"],
                       fiber,
                     });
+                    if (!registered) {
+                      yield* Fiber.interrupt(fiber);
+                      return yield* new OrchestrationDispatchCommandError({
+                        message: "This thread is already preparing a worktree.",
+                      });
+                    }
+                    yield* Deferred.succeed(gate, undefined);
                     return fiber;
                   }),
                 );
@@ -1783,32 +1842,117 @@ const makeWsRpcLayer = (
 
       const dispatchNormalizedCommand = (
         normalizedCommand: OrchestrationCommand,
-      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> => {
-        const dispatchEffect =
-          normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap
-            ? dispatchBootstrapTurnStart(normalizedCommand)
-            : dispatchFromClient(normalizedCommand).pipe(
-                Effect.tap(({ sequence }) =>
-                  // Returning from thread.create is the handoff point at which
-                  // clients may start resources for the new incarnation. Use
-                  // its event sequence as the exact deletion-cleanup fence.
-                  normalizedCommand.type === "thread.create"
-                    ? threadDeletionReactor.drainThrough(sequence)
-                    : Effect.void,
-                ),
-                Effect.mapError((cause) =>
-                  toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-                ),
-              );
+      ): Effect.Effect<{ readonly sequence: number }, OrchestrationDispatchCommandError> =>
+        Effect.gen(function* () {
+          if (normalizedCommand.type === "thread.meta.update") {
+            const thread = Option.getOrUndefined(
+              yield* projectionSnapshotQuery.getThreadShellById(normalizedCommand.threadId),
+            );
+            if (
+              thread?.parentThreadId &&
+              (normalizedCommand.branch !== undefined ||
+                normalizedCommand.worktreePath !== undefined)
+            ) {
+              return yield* new OrchestrationDispatchCommandError({
+                message: "A side chat's worktree is managed by the server.",
+              });
+            }
+          }
+          if (normalizedCommand.type === "thread.side-chat-mode.set") {
+            const setup = yield* worktreeSetupTracker.get(normalizedCommand.threadId);
+            if (setup?.phase === "running") {
+              return yield* new OrchestrationDispatchCommandError({
+                message:
+                  "Wait for the side chat worktree setup to finish before changing its mode.",
+              });
+            }
+          }
+          let command = normalizedCommand;
+          if (command.type === "thread.turn.start") {
+            const thread = Option.getOrUndefined(
+              yield* projectionSnapshotQuery.getThreadShellById(command.threadId),
+            );
+            if (
+              thread?.parentThreadId &&
+              (thread.sideChatMode ?? "discuss") === "discuss" &&
+              command.bootstrap?.prepareWorktree
+            ) {
+              return yield* new OrchestrationDispatchCommandError({
+                message: "A discussion side chat cannot prepare a worktree.",
+              });
+            }
+            if (thread?.parentThreadId && (thread.sideChatMode ?? "discuss") === "implement") {
+              if (!thread.worktreePath || thread.sideChatOwnsWorktree !== true) {
+                const parent = Option.getOrUndefined(
+                  yield* projectionSnapshotQuery.getThreadShellById(thread.parentThreadId),
+                );
+                const project = Option.getOrUndefined(
+                  yield* projectionSnapshotQuery.getProjectShellById(thread.projectId),
+                );
+                if (!parent || !project || parent.projectId !== thread.projectId) {
+                  return yield* new OrchestrationDispatchCommandError({
+                    message: "The main thread or project for this side chat is unavailable.",
+                  });
+                }
+                const projectCwd = project.workspaceRoot;
+                const baseBranch =
+                  parent.branch ??
+                  (yield* gitWorkflow.localStatus({
+                    cwd: parent.worktreePath ?? projectCwd,
+                  })).refName;
+                if (!baseBranch) {
+                  return yield* new OrchestrationDispatchCommandError({
+                    message:
+                      "The main thread needs a Git branch before this side chat can implement changes.",
+                  });
+                }
+                command = {
+                  ...command,
+                  bootstrap: {
+                    prepareWorktree: {
+                      projectCwd,
+                      baseBranch,
+                      requireWorktree: true,
+                    },
+                    runSetupScript: true,
+                  },
+                };
+              } else if (command.bootstrap?.prepareWorktree || command.bootstrap?.createThread) {
+                return yield* new OrchestrationDispatchCommandError({
+                  message: "This side chat already has its own worktree.",
+                });
+              }
+            }
+          }
+          const dispatchEffect =
+            command.type === "thread.turn.start" && command.bootstrap
+              ? dispatchBootstrapTurnStart(command)
+              : dispatchFromClient(command).pipe(
+                  Effect.tap(({ sequence }) =>
+                    // Returning from thread.create is the handoff point at which
+                    // clients may start resources for the new incarnation. Use
+                    // its event sequence as the exact deletion-cleanup fence.
+                    command.type === "thread.create"
+                      ? threadDeletionReactor.drainThrough(sequence)
+                      : Effect.void,
+                  ),
+                  Effect.mapError((cause) =>
+                    toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+                  ),
+                );
 
-        return startup
-          .enqueueCommand(dispatchEffect)
-          .pipe(
-            Effect.mapError((cause) =>
-              toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
-            ),
-          );
-      };
+          return yield* startup
+            .enqueueCommand(dispatchEffect)
+            .pipe(
+              Effect.mapError((cause) =>
+                toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+              ),
+            );
+        }).pipe(
+          Effect.mapError((cause) =>
+            toDispatchCommandError(cause, "Failed to dispatch orchestration command"),
+          ),
+        );
 
       // Only clients that answer /usage-limits themselves see it in the catalogs;
       // an older client would send the injected command to the provider.

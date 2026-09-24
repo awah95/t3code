@@ -11,7 +11,45 @@ import { isElectron } from "../env";
 import { jevUsdDecimal, queueJevLedgerReceipt } from "./jevLedgerReceipts";
 
 type ReceiptContext = { environmentId: string; projectId: string | null; threadId: string };
+type CancellationTarget =
+  | Pick<ReceiptContext, "environmentId" | "threadId">
+  | { requestId: string };
+type SideRoutingMode = "auto" | "manual";
+const sideRoutingStorageKey = "t3:jev-side-routing-modes:v1";
+const sideRoutingKey = (environmentId: string, threadId: string) =>
+  JSON.stringify([environmentId, threadId]);
+
+function loadSideRoutingModes(): Record<string, "manual"> {
+  try {
+    const stored = globalThis.localStorage?.getItem(sideRoutingStorageKey);
+    const parsed: unknown = stored ? JSON.parse(stored) : null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const modes: Record<string, "manual"> = {};
+    for (const [key, value] of Object.entries(parsed)) if (value === "manual") modes[key] = value;
+    return modes;
+  } catch {
+    return {};
+  }
+}
+
+function saveSideRoutingModes(modes: Record<string, "manual">): void {
+  try {
+    globalThis.localStorage?.setItem(sideRoutingStorageKey, JSON.stringify(modes));
+  } catch {
+    useJevStore.setState({ notice: "Could not save this side chat's routing preference." });
+  }
+}
 const subagentReceiptContexts = new Map<string, ReceiptContext>();
+
+function dispatchMatchesReceiptContext(call: JevCall, dispatch: NonNullable<JevCall["dispatch"]>) {
+  const context = call.receiptContext;
+  return (
+    !context ||
+    (context.threadId === dispatch.threadId &&
+      (dispatch.environmentId === undefined || context.environmentId === dispatch.environmentId) &&
+      (dispatch.projectId === undefined || context.projectId === dispatch.projectId))
+  );
+}
 
 export interface JevCall {
   id: string;
@@ -34,6 +72,7 @@ export interface JevCall {
   notice: string | null;
   kind?: "turn" | "subagent";
   receiptContext?: ReceiptContext | undefined;
+  threadLabel?: string | undefined;
   toolUseId?: string | undefined;
   attemptId?: string | undefined;
   parentProviderTurnId?: string | undefined;
@@ -53,7 +92,8 @@ export interface JevCall {
 
 type SubagentPolicy = JevSubagentPolicy;
 const subagentPolicies = new Map<string, SubagentPolicy>();
-const pendingTurnRequests = new Set<string>();
+const pendingTurnRequests = new Map<string, ReceiptContext | undefined>();
+const cancelledTurnRequests = new Set<string>();
 type ReviewResolution = { action: "suggestion" | "current" | "alternative"; choice: string | null };
 const pendingReviews = new Map<string, (resolution: ReviewResolution | null) => void>();
 let listeningForSubagents = false;
@@ -303,6 +343,9 @@ export const useJevStore = create<{
   billedUsd: number;
   estimatedUsd: number;
   unknownCostCalls: number;
+  sideRoutingModes: Record<string, "manual">;
+  getSideRoutingMode: (environmentId: string, threadId: string) => SideRoutingMode;
+  setSideRoutingMode: (environmentId: string, threadId: string, mode: SideRoutingMode) => void;
   setEnabled: (enabled: boolean) => void;
   setPanelOpen: (open: boolean) => void;
   pinManual: () => void;
@@ -311,7 +354,7 @@ export const useJevStore = create<{
   recordPreparedDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => boolean;
   recordDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => void;
   clearCalls: () => void;
-  cancelPending: () => void;
+  cancelPending: (target?: CancellationTarget) => void;
 }>((set, get) => ({
   enabled: false,
   mode: "guided",
@@ -358,6 +401,17 @@ export const useJevStore = create<{
   billedUsd: 0,
   estimatedUsd: 0,
   unknownCostCalls: 0,
+  sideRoutingModes: loadSideRoutingModes(),
+  getSideRoutingMode: (environmentId, threadId) =>
+    get().sideRoutingModes[sideRoutingKey(environmentId, threadId)] ?? "auto",
+  setSideRoutingMode: (environmentId, threadId, mode) => {
+    const key = sideRoutingKey(environmentId, threadId);
+    const sideRoutingModes = { ...get().sideRoutingModes };
+    if (mode === "manual") sideRoutingModes[key] = "manual";
+    else delete sideRoutingModes[key];
+    set({ sideRoutingModes });
+    saveSideRoutingModes(sideRoutingModes);
+  },
   setEnabled: (enabled) => {
     get().cancelPending();
     if (!enabled) disableSubagentPolicies();
@@ -429,7 +483,7 @@ export const useJevStore = create<{
     }),
   recordPreparedDispatch: (id, dispatch) => {
     const call = get().calls.find((entry) => entry.id === id);
-    if (!call) return false;
+    if (!call || !dispatchMatchesReceiptContext(call, dispatch)) return false;
     const prepared = {
       ...call,
       dispatch: { ...dispatch, succeeded: null },
@@ -439,6 +493,8 @@ export const useJevStore = create<{
     return recordJevReceipt(prepared);
   },
   recordDispatch: (id, dispatch) => {
+    const current = get().calls.find((call) => call.id === id);
+    if (!current || !dispatchMatchesReceiptContext(current, dispatch)) return;
     set({
       calls: get().calls.map((call) =>
         call.id === id
@@ -462,21 +518,40 @@ export const useJevStore = create<{
         (call) => call.status === "pending" || call.status === "awaiting-review",
       ),
     }),
-  cancelPending: () => {
-    for (const resolve of pendingReviews.values()) resolve(null);
-    pendingReviews.clear();
+  cancelPending: (target) => {
+    const matches = (id: string, context: ReceiptContext | undefined) =>
+      target === undefined ||
+      ("requestId" in target
+        ? id === target.requestId
+        : context?.environmentId === target.environmentId && context.threadId === target.threadId);
+    const cancelledIds = new Set(
+      get()
+        .calls.filter(
+          (call) =>
+            call.kind !== "subagent" &&
+            (call.status === "pending" || call.status === "awaiting-review") &&
+            matches(call.id, call.receiptContext),
+        )
+        .map((call) => call.id),
+    );
+    for (const [id, resolve] of pendingReviews) {
+      if (!cancelledIds.has(id)) continue;
+      pendingReviews.delete(id);
+      resolve(null);
+    }
+    for (const id of cancelledIds) cancelledTurnRequests.add(id);
     set({
       calls: get().calls.map((call) =>
-        call.status === "awaiting-review"
+        cancelledIds.has(call.id)
           ? { ...call, status: "cancelled", notice: "Review cancelled. Message was not sent." }
           : call,
       ),
     });
-    if (!isElectron) return;
-    for (const id of pendingTurnRequests) {
-      void window.desktopBridge?.cancelJevRoute?.(id);
-    }
-    set({ revision: get().revision + 1 });
+    if (isElectron)
+      for (const [id, context] of pendingTurnRequests) {
+        if (matches(id, context)) void window.desktopBridge?.cancelJevRoute?.(id);
+      }
+    if (target === undefined) set({ revision: get().revision + 1 });
   },
 }));
 
@@ -508,11 +583,12 @@ export const sanitizeJevPrompt = sanitizeJevText;
 export async function decideWithJev(
   request: JevRouteRequest,
   receiptContext?: ReceiptContext,
+  threadLabel?: string,
 ): Promise<JevRouteResult | null> {
   const store = useJevStore.getState();
   if (!isElectron || !store.enabled) return null;
   const revision = store.revision;
-  pendingTurnRequests.add(request.requestId);
+  pendingTurnRequests.set(request.requestId, receiptContext);
   store.addCall({
     id: request.requestId,
     createdAt: new Date().toISOString(),
@@ -521,6 +597,7 @@ export async function decideWithJev(
     status: "pending",
     notice: null,
     receiptContext,
+    threadLabel,
     kind: "turn",
   });
   let result: JevRouteResult;
@@ -548,11 +625,15 @@ export async function decideWithJev(
   } finally {
     pendingTurnRequests.delete(request.requestId);
   }
-  const cancelled = useJevStore.getState().revision !== revision;
+  const cancelled =
+    useJevStore.getState().revision !== revision || cancelledTurnRequests.has(request.requestId);
   useJevStore.getState().finishCall(request.requestId, result, cancelled);
   const completedCall = useJevStore.getState().calls.find((call) => call.id === request.requestId);
   if (completedCall) recordJevReceipt(completedCall);
-  if (cancelled) return null;
+  if (cancelled) {
+    cancelledTurnRequests.delete(request.requestId);
+    return null;
+  }
   const automaticChoiceAllowed =
     result.choice !== null &&
     (!result.policyOutcome || result.policyOutcome === "route") &&
@@ -569,7 +650,15 @@ export async function decideWithJev(
       ),
     }));
   });
-  if (!resolution || useJevStore.getState().revision !== revision) return null;
+  if (
+    !resolution ||
+    useJevStore.getState().revision !== revision ||
+    cancelledTurnRequests.has(request.requestId)
+  ) {
+    cancelledTurnRequests.delete(request.requestId);
+    return null;
+  }
+  cancelledTurnRequests.delete(request.requestId);
   useJevStore.setState((state) => ({
     calls: state.calls.map((call) =>
       call.id === request.requestId

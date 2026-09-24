@@ -110,6 +110,30 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("keeps side-chat parent links in live shell updates", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      yield* sql`INSERT INTO projection_projects
+        (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES ('project-1', 'Project', '/repo', '[]', '2026-09-09T00:00:00Z', '2026-09-09T00:00:00Z')`;
+      yield* sql`INSERT INTO projection_threads
+        (thread_id, project_id, parent_thread_id, side_chat_mode, side_chat_owns_worktree, title, model_selection_json, runtime_mode, interaction_mode, worktree_path, created_at, updated_at)
+        VALUES ('side-1', 'project-1', 'main-1', 'implement', 1, 'Side chat', '{"provider":"codex","model":"gpt-5"}', 'auto-accept-edits', 'default', '/repo-side', '2026-09-09T00:00:00Z', '2026-09-09T00:00:00Z')`;
+
+      const live = yield* query.getThreadShellById(ThreadId.make("side-1"));
+      const snapshot = yield* query.getShellSnapshot();
+      assert.equal(Option.getOrThrow(live).parentThreadId, "main-1");
+      assert.equal(snapshot.threads[0]?.parentThreadId, "main-1");
+      assert.equal(Option.getOrThrow(live).sideChatMode, "implement");
+      assert.equal(snapshot.threads[0]?.sideChatMode, "implement");
+      assert.equal(Option.getOrThrow(live).sideChatOwnsWorktree, true);
+      assert.equal(snapshot.threads[0]?.sideChatOwnsWorktree, true);
+      yield* sql`DELETE FROM projection_threads WHERE thread_id = 'side-1'`;
+      yield* sql`DELETE FROM projection_projects WHERE project_id = 'project-1'`;
+    }),
+  );
+
   it.effect("hydrates read model from projection tables and computes snapshot sequence", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;

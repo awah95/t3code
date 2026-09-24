@@ -424,6 +424,15 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            ...(payload.parentThreadId !== undefined
+              ? { parentThreadId: payload.parentThreadId }
+              : {}),
+            ...(payload.parentThreadId !== undefined
+              ? { sideChatMode: payload.sideChatMode ?? "discuss" }
+              : {}),
+            ...(payload.parentThreadId !== undefined
+              ? { sideChatOwnsWorktree: payload.sideChatOwnsWorktree ?? false }
+              : {}),
             title: payload.title,
             modelSelection: payload.modelSelection,
             runtimeMode: payload.runtimeMode,
@@ -620,6 +629,11 @@ export function projectEvent(
                 : {}),
               ...(payload.modelSelection !== undefined
                 ? { modelSelection: payload.modelSelection }
+                : {}),
+              ...(payload.runtimeMode !== undefined ? { runtimeMode: payload.runtimeMode } : {}),
+              ...(payload.sideChatMode !== undefined ? { sideChatMode: payload.sideChatMode } : {}),
+              ...(payload.sideChatOwnsWorktree !== undefined
+                ? { sideChatOwnsWorktree: payload.sideChatOwnsWorktree }
                 : {}),
               ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
               ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),

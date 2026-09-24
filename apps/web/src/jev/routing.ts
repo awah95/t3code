@@ -1,9 +1,70 @@
-import { describeJevCandidate, JEV_MODEL_PROFILES } from "@t3tools/shared/jevRouting";
-import type { JevEffort, ModelSelection } from "@t3tools/contracts";
+import {
+  describeJevCandidate,
+  JEV_MODEL_PROFILES,
+  sanitizeJevText,
+} from "@t3tools/shared/jevRouting";
+import type { JevEffort, JevRouteRequest, ModelSelection } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { getAppModelOptionsForInstance } from "../modelSelection";
 import { getStartedThreadModelChangeBlockReason } from "../components/ChatView.logic";
+import { buildJevContext, textOnlyJevPrompt } from "./context";
+
+type ContextInput = Parameters<typeof buildJevContext>[0];
+
+/** Build the same routing envelope for a main or side thread from that thread's own history. */
+export function prepareJevTurn(input: {
+  requestId: string;
+  prompt: string;
+  messages: ContextInput["messages"];
+  priorAttempts?: ContextInput["priorAttempts"];
+  current: ModelSelection;
+  candidateCurrent: ModelSelection;
+  providers: readonly ProviderInstanceEntry[];
+  settings: UnifiedSettings;
+  sessionInstanceId: ModelSelection["instanceId"] | null;
+  hasStartedSession: boolean;
+  existingSession?: boolean;
+  interactionMode: string;
+  plans?: ContextInput["plans"];
+  outgoingContext?: ContextInput["outgoingContext"];
+  historyCompleteness?: ContextInput["historyCompleteness"];
+}): { request: JevRouteRequest; candidates: ReturnType<typeof eligibleJevModels> } {
+  const provider = input.providers.find((entry) => entry.instanceId === input.current.instanceId);
+  const context = buildJevContext({
+    messages: input.messages,
+    ...(input.priorAttempts ? { priorAttempts: input.priorAttempts } : {}),
+    prompt: input.prompt,
+    current: input.current,
+    existingSession: input.existingSession ?? input.sessionInstanceId !== null,
+    interactionMode: input.interactionMode,
+    ...(input.plans ? { plans: input.plans } : {}),
+    ...(input.outgoingContext ? { outgoingContext: input.outgoingContext } : {}),
+    ...(input.historyCompleteness ? { historyCompleteness: input.historyCompleteness } : {}),
+    ...(provider?.snapshot.usageLimits ? { usageLimits: provider.snapshot.usageLimits } : {}),
+  });
+  const candidates = eligibleJevModels({
+    providers: input.providers,
+    settings: input.settings,
+    current: input.candidateCurrent,
+    sessionInstanceId: input.sessionInstanceId,
+    hasStartedSession: input.hasStartedSession,
+  });
+  return {
+    request: {
+      requestId: input.requestId,
+      prompt: textOnlyJevPrompt(input.prompt),
+      context,
+      candidates: candidates.map(({ key, description, model, effort }) => ({
+        key,
+        model,
+        effort,
+        description: sanitizeJevText(description),
+      })),
+    },
+    candidates,
+  };
+}
 
 export function eligibleJevModels(input: {
   providers: readonly ProviderInstanceEntry[];

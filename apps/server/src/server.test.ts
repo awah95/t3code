@@ -10911,6 +10911,198 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   );
 
   it.effect(
+    "prepares an implementation side chat worktree on first send and keeps setup failures retryable",
+    () =>
+      Effect.gen(function* () {
+        const sideThreadId = ThreadId.make("side-implement-first-send");
+        const parentThreadId = ThreadId.make("main-implement-parent");
+        const dispatchedCommands: Array<OrchestrationCommand> = [];
+        let checkoutFails = true;
+        const createWorktree = vi.fn(
+          (
+            _: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[0],
+            options?: Parameters<GitVcsDriver.GitVcsDriver["Service"]["createWorktree"]>[1],
+          ) =>
+            Effect.gen(function* () {
+              if (checkoutFails) {
+                checkoutFails = false;
+                yield* (
+                  options?.progress?.onWorktreeClaimed?.("/tmp/incomplete-side-worktree") ??
+                    Effect.void
+                );
+                return yield* new GitCommandError({
+                  operation: "createWorktree",
+                  command: "git worktree add",
+                  cwd: "/tmp/project",
+                  detail: "checkout failed after claiming a path",
+                });
+              }
+              return {
+                worktree: { refName: "side-implementation", path: "/tmp/side-implementation" },
+              };
+            }),
+        );
+        const removeWorktree = vi.fn(
+          (_: Parameters<GitVcsDriver.GitVcsDriver["Service"]["removeWorktree"]>[0]) => Effect.void,
+        );
+        const runForThread = vi.fn(
+          (
+            _: Parameters<
+              ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"]
+            >[0],
+          ) => Effect.succeed({ status: "no-script" as const }),
+        );
+        let repositoryAvailable = false;
+        yield* buildAppUnderTest({
+          layers: {
+            vcsDriver: {
+              isInsideWorkTree: () => Effect.succeed(repositoryAvailable),
+            },
+            gitVcsDriver: {
+              execute: () => Effect.succeed(SUCCESSFUL_GIT_EXECUTION),
+              createWorktree,
+              removeWorktree,
+            },
+            vcsStatusBroadcaster: {
+              refreshStatus: () =>
+                Effect.succeed({
+                  isRepo: true,
+                  hasPrimaryRemote: false,
+                  isDefaultRef: false,
+                  refName: "side-implementation",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: false,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: null,
+                }),
+            },
+            projectSetupScriptRunner: { runForThread },
+            orchestrationEngine: {
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  dispatchedCommands.push(command);
+                  return { sequence: dispatchedCommands.length };
+                }),
+              readEvents: () => Stream.empty,
+            },
+            projectionSnapshotQuery: {
+              getThreadShellById: (threadId) =>
+                Effect.succeed(
+                  threadId === sideThreadId
+                    ? Option.some(
+                        makeDefaultOrchestrationThreadShell({
+                          id: sideThreadId,
+                          parentThreadId,
+                          sideChatMode: "implement",
+                          runtimeMode: "auto-accept-edits",
+                        }),
+                      )
+                    : threadId === parentThreadId
+                      ? Option.some(
+                          makeDefaultOrchestrationThreadShell({
+                            id: parentThreadId,
+                            branch: "main",
+                          }),
+                        )
+                      : Option.none(),
+                ),
+              getProjectShellById: () =>
+                Effect.succeed(
+                  Option.some({
+                    id: defaultProjectId,
+                    title: "Project",
+                    workspaceRoot: "/tmp/project",
+                    defaultModelSelection,
+                    scripts: [],
+                    createdAt: "2026-01-01T00:00:00.000Z",
+                    updatedAt: "2026-01-01T00:00:00.000Z",
+                  }),
+                ),
+            },
+          },
+        });
+
+        const wsUrl = yield* getWsServerUrl("/ws");
+        const send = (
+          commandId: string,
+          bootstrap?: {
+            prepareWorktree: { projectCwd: string; baseBranch: string };
+          },
+        ) =>
+          Effect.scoped(
+            withWsRpcClient(wsUrl, (client) =>
+              client[ORCHESTRATION_WS_METHODS.dispatchCommand]({
+                type: "thread.turn.start",
+                commandId: CommandId.make(commandId),
+                threadId: sideThreadId,
+                message: {
+                  messageId: MessageId.make(`message-${commandId}`),
+                  role: "user",
+                  text: "Implement this",
+                  attachments: [],
+                },
+                runtimeMode: "auto-accept-edits",
+                interactionMode: "default",
+                ...(bootstrap ? { bootstrap } : {}),
+                createdAt: "2026-01-01T00:00:00.000Z",
+              }),
+            ),
+          );
+
+        const failed = yield* send("missing-git-worktree").pipe(Effect.result);
+        assertTrue(failed._tag === "Failure");
+        assert.include(failed.failure.message, "separate worktree requires a Git repository");
+        assert.equal(createWorktree.mock.calls.length, 0);
+        assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+        assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.delete"));
+
+        repositoryAvailable = true;
+        const incomplete = yield* send("incomplete-git-worktree").pipe(Effect.result);
+        assertTrue(incomplete._tag === "Failure");
+        assert.include(incomplete.failure.message, "checkout failed after claiming a path");
+        assert.deepEqual(removeWorktree.mock.calls[0]?.[0], {
+          cwd: "/tmp/project",
+          path: "/tmp/incomplete-side-worktree",
+          force: true,
+        });
+        assert.isFalse(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+
+        yield* send("retry-git-worktree", {
+          prepareWorktree: { projectCwd: "/tmp/untrusted", baseBranch: "untrusted" },
+        });
+        assert.deepEqual(createWorktree.mock.calls[0]?.[0], {
+          cwd: "/tmp/project",
+          refName: "main",
+          baseRefName: "main",
+          newRefName: undefined,
+          path: null,
+        });
+        assert.isTrue(
+          dispatchedCommands.some(
+            (command) =>
+              command.type === "thread.worktree.prepared" &&
+              command.worktreePath === "/tmp/side-implementation",
+          ),
+        );
+        assert.deepEqual(
+          runForThread.mock.calls[0]?.[0] && {
+            projectId: runForThread.mock.calls[0]?.[0].projectId,
+            projectCwd: runForThread.mock.calls[0]?.[0].projectCwd,
+            worktreePath: runForThread.mock.calls[0]?.[0].worktreePath,
+          },
+          {
+            projectId: defaultProjectId,
+            projectCwd: "/tmp/project",
+            worktreePath: "/tmp/side-implementation",
+          },
+        );
+        assert.isTrue(dispatchedCommands.some((command) => command.type === "thread.turn.start"));
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
     "bootstraps first-send worktree turns on the server before dispatching turn start",
     () =>
       Effect.gen(function* () {

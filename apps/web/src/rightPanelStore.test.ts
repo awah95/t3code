@@ -21,6 +21,29 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("keeps independent side-chat tabs scoped to their main thread", () => {
+    const store = useRightPanelStore.getState();
+    store.openSideChat(refA, "side-1", "First question");
+    store.openSideChat(refA, "side-2", "Second question");
+    store.openSideChat(refA, "side-1", "Updated title");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "side-chat:side-1",
+      "side-chat:side-2",
+    ]);
+    expect(state.surfaces[0]).toMatchObject({ title: "Updated title" });
+    expect(state.activeSurfaceId).toBe("side-chat:side-1");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+
+    store.closeSurface(refA, "side-chat:side-1");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toHaveLength(1);
+  });
+
   it("gives each host/device its own tab and preserves renamed tabs", () => {
     const store = useRightPanelStore.getState();
     const android = {

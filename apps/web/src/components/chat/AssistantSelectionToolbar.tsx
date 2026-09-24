@@ -4,7 +4,7 @@ import {
   type AssistantCitation,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { QuoteIcon } from "lucide-react";
+import { MessageSquarePlus, QuoteIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -18,21 +18,39 @@ import {
 } from "~/lib/selectionActions";
 import { Button } from "../ui/button";
 
+export type AssistantSideChatDestination = { kind: "new" } | { kind: "existing"; threadId: string };
+
+export interface AssistantSideChatOption {
+  threadId: string;
+  title: string;
+}
+
+const EMPTY_SIDE_CHAT_DESTINATIONS: ReadonlyArray<AssistantSideChatOption> = [];
+
 export function AssistantSelectionToolbar({
   viewport,
   threadRef,
   onCite,
+  onAskInSideChat,
+  sideChatDestinations,
 }: {
   viewport: HTMLElement | null;
   threadRef: ScopedThreadRef;
   onCite: (citation: AssistantCitation, sourceAnchor: AssistantCitationSourceAnchor) => boolean;
+  onAskInSideChat?: (
+    citation: AssistantCitation,
+    destination: AssistantSideChatDestination,
+  ) => void;
+  sideChatDestinations?: ReadonlyArray<AssistantSideChatOption>;
 }) {
+  const destinations = sideChatDestinations ?? EMPTY_SIDE_CHAT_DESTINATIONS;
   const [selection, setSelection] = useState<{
     citation: AssistantCitation;
     position: SelectionActionPoint;
     sourceAnchor: AssistantCitationSourceAnchor;
   } | null>(null);
-  const toolbarRef = useRef<HTMLButtonElement>(null);
+  const [destinationPickerOpen, setDestinationPickerOpen] = useState(false);
+  const toolbarRef = useRef<HTMLDivElement>(null);
   const actionsRef = useRef<ReturnType<typeof observeSelectionActions> | null>(null);
 
   useLayoutEffect(() => {
@@ -45,7 +63,10 @@ export function AssistantSelectionToolbar({
 
   useEffect(() => {
     if (!viewport) return;
-    const clear = () => setSelection(null);
+    const clear = () => {
+      setDestinationPickerOpen(false);
+      setSelection(null);
+    };
     const update = (pointer: SelectionActionPoint | null) => {
       const nativeSelection = window.getSelection();
       const captured = captureAssistantTextSelection(viewport, nativeSelection);
@@ -61,6 +82,7 @@ export function AssistantSelectionToolbar({
         return;
       }
       const rects = captured.range.getClientRects();
+      setDestinationPickerOpen(false);
       setSelection({
         sourceAnchor: { source: captured.source, range: captured.range, viewport },
         citation: {
@@ -99,10 +121,11 @@ export function AssistantSelectionToolbar({
       ) {
         return;
       }
-      if (toolbar.disabled) return;
+      const firstAction = toolbar.querySelector("button");
+      if (!firstAction || firstAction.disabled) return;
       event.preventDefault();
       event.stopPropagation();
-      toolbar.focus({ preventScroll: true });
+      firstAction.focus({ preventScroll: true });
     };
     document.addEventListener("keydown", focusActions, true);
     document.addEventListener("selectionchange", actions.selectionChanged);
@@ -126,29 +149,109 @@ export function AssistantSelectionToolbar({
     dismiss();
     return true;
   };
+  const askInSideChat = (destination: AssistantSideChatDestination) => {
+    if (tooLong || !onAskInSideChat) return;
+    onAskInSideChat(selection.citation, destination);
+    setDestinationPickerOpen(false);
+    window.getSelection()?.removeAllRanges();
+    dismiss();
+  };
   return createPortal(
-    <Button
+    <div
       ref={toolbarRef}
-      type="button"
-      size="xs"
-      variant="glass"
-      disabled={tooLong}
-      aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
-      className="fixed z-50 max-w-[calc(100vw-1rem)] rounded-full px-2.5"
+      className="fixed z-50 flex max-w-[calc(100vw-1rem)] items-center gap-1 rounded-full border border-border/70 bg-background/95 p-1 shadow-lg backdrop-blur"
       style={{ left: selection.position.x, top: selection.position.y }}
       onPointerDown={(event) => event.preventDefault()}
-      onClick={cite}
       onKeyDown={(event) => {
         event.stopPropagation();
         if (event.key === "Escape" && !event.nativeEvent.isComposing) {
           event.preventDefault();
+          setDestinationPickerOpen(false);
           dismiss();
         }
       }}
     >
-      <QuoteIcon aria-hidden="true" className="size-3.5" />
-      {tooLong ? "Shorten selection" : "Cite"}
-    </Button>,
+      <Button
+        type="button"
+        size="xs"
+        variant="glass"
+        disabled={tooLong}
+        aria-label={tooLong ? "Selection is too long to cite" : "Cite selection in composer"}
+        onClick={cite}
+      >
+        <QuoteIcon aria-hidden="true" className="size-3.5" />
+        {tooLong ? "Shorten selection" : "Cite"}
+      </Button>
+      {tooLong ? (
+        <span role="status" className="px-1 text-xs text-muted-foreground">
+          Selection is too long to cite
+        </span>
+      ) : null}
+      {onAskInSideChat ? (
+        <div className="relative">
+          <Button
+            type="button"
+            size="xs"
+            variant="glass"
+            disabled={tooLong}
+            aria-label={tooLong ? "Selection is too long to ask about" : "Ask in side chat"}
+            aria-haspopup="menu"
+            aria-expanded={destinationPickerOpen}
+            onClick={() => setDestinationPickerOpen((open) => !open)}
+          >
+            <MessageSquarePlus aria-hidden="true" className="size-3.5" />
+            Ask in side chat
+          </Button>
+          {destinationPickerOpen ? (
+            <div
+              role="menu"
+              aria-label="Choose a side chat"
+              className={`absolute left-0 z-[130] w-64 max-w-[calc(100vw-1rem)] rounded-lg border bg-popover p-1.5 text-popover-foreground shadow-lg [&_[data-slot=button]]:w-full [&_[data-slot=button]]:justify-start ${selection.position.y > window.innerHeight / 2 ? "bottom-full mb-2" : "top-full mt-2"}`}
+            >
+              <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                Start a side chat with this citation
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                role="menuitem"
+                onClick={() => askInSideChat({ kind: "new" })}
+              >
+                <MessageSquarePlus aria-hidden="true" className="size-4 shrink-0" />
+                New side chat
+              </Button>
+              {destinations.length > 0 ? (
+                <>
+                  <div className="my-1 border-t" />
+                  <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                    Continue in an existing side chat
+                  </div>
+                  <div className="max-h-48 overflow-y-auto">
+                    {destinations.map((destination) => (
+                      <Button
+                        key={destination.threadId}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        role="menuitem"
+                        title={destination.title}
+                        onClick={() =>
+                          askInSideChat({ kind: "existing", threadId: destination.threadId })
+                        }
+                      >
+                        <MessageSquarePlus aria-hidden="true" className="size-4 shrink-0" />
+                        <span className="min-w-0 truncate">{destination.title}</span>
+                      </Button>
+                    ))}
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>,
     document.body,
   );
 }

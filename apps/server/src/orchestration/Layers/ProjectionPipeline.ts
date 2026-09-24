@@ -613,6 +613,11 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            parentThreadId: event.payload.parentThreadId ?? null,
+            sideChatMode: event.payload.parentThreadId
+              ? (event.payload.sideChatMode ?? "discuss")
+              : null,
+            sideChatOwnsWorktree: event.payload.sideChatOwnsWorktree === true ? 1 : 0,
             title: event.payload.title,
             modelSelection: event.payload.modelSelection,
             runtimeMode: event.payload.runtimeMode,
@@ -821,6 +826,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               : {}),
             ...(event.payload.modelSelection !== undefined
               ? { modelSelection: event.payload.modelSelection }
+              : {}),
+            ...(event.payload.runtimeMode !== undefined
+              ? { runtimeMode: event.payload.runtimeMode }
+              : {}),
+            ...(event.payload.sideChatMode !== undefined
+              ? { sideChatMode: event.payload.sideChatMode }
+              : {}),
+            ...(event.payload.sideChatOwnsWorktree !== undefined
+              ? { sideChatOwnsWorktree: event.payload.sideChatOwnsWorktree ? 1 : 0 }
               : {}),
             ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
             ...(event.payload.worktreePath !== undefined

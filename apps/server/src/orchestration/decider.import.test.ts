@@ -4,6 +4,7 @@ import {
   CommandId,
   EventId,
   MessageId,
+  type OrchestrationEvent,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -15,6 +16,318 @@ import { decideOrchestrationCommand } from "./decider.ts";
 import { createEmptyReadModel, projectEvent } from "./projector.ts";
 
 it.layer(NodeServices.layer)("thread history import", (it) => {
+  it.effect("creates a side thread linked to its parent in the same project", () =>
+    Effect.gen(function* () {
+      const createdAt = "2026-08-24T10:00:00.000Z";
+      const projectId = ProjectId.make("side-project");
+      const parentThreadId = ThreadId.make("main-thread");
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" };
+      const withProject = yield* projectEvent(createEmptyReadModel(createdAt), {
+        sequence: 1,
+        eventId: EventId.make("side-project-created"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        type: "project.created",
+        occurredAt: createdAt,
+        commandId: CommandId.make("side-project-command"),
+        causationEventId: null,
+        correlationId: CommandId.make("side-project-command"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Project",
+          workspaceRoot: "/tmp/side-project",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      const withParent = yield* projectEvent(withProject, {
+        sequence: 2,
+        eventId: EventId.make("main-thread-created"),
+        aggregateKind: "thread",
+        aggregateId: parentThreadId,
+        type: "thread.created",
+        occurredAt: createdAt,
+        commandId: CommandId.make("main-thread-command"),
+        causationEventId: null,
+        correlationId: CommandId.make("main-thread-command"),
+        metadata: {},
+        payload: {
+          threadId: parentThreadId,
+          projectId,
+          title: "Main",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "parent-branch",
+          worktreePath: "/tmp/parent-worktree",
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      const sideThreadId = ThreadId.make("side-thread");
+      const created = yield* decideOrchestrationCommand({
+        readModel: withParent,
+        command: {
+          type: "thread.create",
+          commandId: CommandId.make("side-thread-command"),
+          threadId: sideThreadId,
+          projectId,
+          parentThreadId,
+          title: "Question",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: "parent-branch",
+          worktreePath: "/tmp/parent-worktree",
+          createdAt,
+        },
+      });
+      expect(created).toMatchObject({
+        type: "thread.created",
+        payload: { parentThreadId },
+      });
+      if (!("type" in created) || created.type !== "thread.created") {
+        return yield* Effect.die("Expected one thread.created event");
+      }
+      const projected = yield* projectEvent(withParent, {
+        ...(created as Extract<OrchestrationEvent, { type: "thread.created" }>),
+        sequence: 3,
+      });
+      expect(projected.threads.find((thread) => thread.id === sideThreadId)?.parentThreadId).toBe(
+        parentThreadId,
+      );
+      expect(projected.threads.find((thread) => thread.id === sideThreadId)?.sideChatMode).toBe(
+        "discuss",
+      );
+      const accessChange = yield* decideOrchestrationCommand({
+        readModel: projected,
+        command: {
+          type: "thread.runtime-mode.set",
+          commandId: CommandId.make("side-chat-full-access"),
+          threadId: sideThreadId,
+          runtimeMode: "full-access",
+          createdAt,
+        },
+      });
+      expect(accessChange).toMatchObject({
+        type: "thread.runtime-mode-set",
+        payload: { runtimeMode: "full-access" },
+      });
+      const activeSideChat = {
+        ...projected,
+        threads: projected.threads.map((thread) =>
+          thread.id === sideThreadId
+            ? {
+                ...thread,
+                session: {
+                  threadId: sideThreadId,
+                  status: "running" as const,
+                  providerName: "codex" as const,
+                  runtimeMode: "approval-required" as const,
+                  activeTurnId: null,
+                  lastError: null,
+                  updatedAt: createdAt,
+                },
+              }
+            : thread,
+        ),
+      };
+      const activeModeSwitch = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: activeSideChat,
+          command: {
+            type: "thread.side-chat-mode.set",
+            commandId: CommandId.make("switch-active-side-chat"),
+            threadId: sideThreadId,
+            sideChatMode: "implement",
+            createdAt,
+          },
+        }),
+      );
+      expect(String(activeModeSwitch)).toContain("current turn to finish");
+      const toImplement = yield* decideOrchestrationCommand({
+        readModel: projected,
+        command: {
+          type: "thread.side-chat-mode.set",
+          commandId: CommandId.make("switch-discuss-to-implement"),
+          threadId: sideThreadId,
+          sideChatMode: "implement",
+          createdAt,
+        },
+      });
+      expect(toImplement).toMatchObject({
+        type: "thread.meta-updated",
+        payload: {
+          sideChatMode: "implement",
+          runtimeMode: "auto-accept-edits",
+          branch: null,
+          worktreePath: null,
+        },
+      });
+      const pendingSwitchedImplementation = yield* projectEvent(projected, {
+        ...(toImplement as Extract<OrchestrationEvent, { type: "thread.meta-updated" }>),
+        sequence: 4,
+      });
+      const switchedThread = pendingSwitchedImplementation.threads.find(
+        (thread) => thread.id === sideThreadId,
+      );
+      expect(switchedThread?.sideChatOwnsWorktree).toBe(false);
+      const backToDiscuss = yield* decideOrchestrationCommand({
+        readModel: pendingSwitchedImplementation,
+        command: {
+          type: "thread.side-chat-mode.set",
+          commandId: CommandId.make("switch-pending-implement-to-discuss"),
+          threadId: sideThreadId,
+          sideChatMode: "discuss",
+          createdAt,
+        },
+      });
+      expect(backToDiscuss).toMatchObject({
+        type: "thread.meta-updated",
+        payload: {
+          sideChatMode: "discuss",
+          runtimeMode: "approval-required",
+          branch: "parent-branch",
+          worktreePath: "/tmp/parent-worktree",
+        },
+      });
+      const implementThreadId = ThreadId.make("implement-thread");
+      const implementCreated = yield* decideOrchestrationCommand({
+        readModel: withParent,
+        command: {
+          type: "thread.create",
+          commandId: CommandId.make("implement-thread-command"),
+          threadId: implementThreadId,
+          projectId,
+          parentThreadId,
+          sideChatMode: "implement",
+          title: "Implement issue",
+          modelSelection,
+          runtimeMode: "auto-accept-edits",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      });
+      expect(implementCreated).toMatchObject({
+        type: "thread.created",
+        payload: { sideChatMode: "implement", worktreePath: null },
+      });
+      if (!("type" in implementCreated) || implementCreated.type !== "thread.created") {
+        return yield* Effect.die("Expected an implementation side thread");
+      }
+      const pendingImplementation = yield* projectEvent(withParent, {
+        ...(implementCreated as Extract<OrchestrationEvent, { type: "thread.created" }>),
+        sequence: 3,
+      });
+      const earlyTurn = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: pendingImplementation,
+          command: {
+            type: "thread.turn.start",
+            commandId: CommandId.make("implement-before-worktree"),
+            threadId: implementThreadId,
+            message: {
+              messageId: MessageId.make("implement-message"),
+              role: "user",
+              text: "Make the change",
+              attachments: [],
+            },
+            runtimeMode: "auto-accept-edits",
+            interactionMode: "default",
+            createdAt,
+          },
+        }),
+      );
+      expect(String(earlyTurn)).toContain("worktree is not ready");
+      const spoofedWorktree = yield* Effect.flip(
+        decideOrchestrationCommand({
+          readModel: pendingImplementation,
+          command: {
+            type: "thread.meta.update",
+            commandId: CommandId.make("spoofed-worktree"),
+            threadId: implementThreadId,
+            worktreePath: "/tmp/side-project",
+          },
+        }),
+      );
+      expect(String(spoofedWorktree)).toContain("managed by the server");
+      const prepared = yield* decideOrchestrationCommand({
+        readModel: pendingImplementation,
+        command: {
+          type: "thread.worktree.prepared",
+          commandId: CommandId.make("server-worktree-prepared"),
+          threadId: implementThreadId,
+          branch: "side-branch",
+          worktreePath: "/tmp/side-project-worktree",
+        },
+      });
+      expect(prepared).toMatchObject({
+        type: "thread.meta-updated",
+        payload: { worktreePath: "/tmp/side-project-worktree", sideChatOwnsWorktree: true },
+      });
+      const ownedImplementation = yield* projectEvent(pendingImplementation, {
+        ...(prepared as Extract<OrchestrationEvent, { type: "thread.meta-updated" }>),
+        sequence: 4,
+      });
+      const ownedToDiscuss = yield* decideOrchestrationCommand({
+        readModel: ownedImplementation,
+        command: {
+          type: "thread.side-chat-mode.set",
+          commandId: CommandId.make("switch-owned-to-discuss"),
+          threadId: implementThreadId,
+          sideChatMode: "discuss",
+          createdAt,
+        },
+      });
+      expect(ownedToDiscuss).toMatchObject({
+        type: "thread.meta-updated",
+        payload: { sideChatMode: "discuss", runtimeMode: "approval-required" },
+      });
+      const ownedDiscussion = yield* projectEvent(ownedImplementation, {
+        ...(ownedToDiscuss as Extract<OrchestrationEvent, { type: "thread.meta-updated" }>),
+        sequence: 5,
+      });
+      const ownedSideThread = ownedDiscussion.threads.find(
+        (thread) => thread.id === implementThreadId,
+      );
+      expect(ownedSideThread).toMatchObject({
+        sideChatOwnsWorktree: true,
+        worktreePath: "/tmp/side-project-worktree",
+      });
+      const ownedBackToImplement = yield* decideOrchestrationCommand({
+        readModel: ownedDiscussion,
+        command: {
+          type: "thread.side-chat-mode.set",
+          commandId: CommandId.make("switch-owned-to-implement"),
+          threadId: implementThreadId,
+          sideChatMode: "implement",
+          createdAt,
+        },
+      });
+      expect(ownedBackToImplement).toMatchObject({
+        type: "thread.meta-updated",
+        payload: { sideChatMode: "implement", runtimeMode: "auto-accept-edits" },
+      });
+      const deletion = yield* decideOrchestrationCommand({
+        readModel: projected,
+        command: {
+          type: "thread.delete",
+          commandId: CommandId.make("delete-main-with-side"),
+          threadId: parentThreadId,
+        },
+      });
+      expect(Array.isArray(deletion) ? deletion.map((event) => event.aggregateId) : []).toEqual([
+        sideThreadId,
+        parentThreadId,
+      ]);
+    }),
+  );
+
   it.effect("marks imported thread creation without changing live creation", () =>
     Effect.gen(function* () {
       const createdAt = "2026-08-24T10:00:00.000Z";

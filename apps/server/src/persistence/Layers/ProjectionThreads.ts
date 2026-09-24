@@ -33,6 +33,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         INSERT INTO projection_threads (
           thread_id,
           project_id,
+          parent_thread_id,
+          side_chat_mode,
+          side_chat_owns_worktree,
           title,
           title_state_json,
           model_selection_json,
@@ -65,6 +68,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         VALUES (
           ${row.threadId},
           ${row.projectId},
+          ${row.parentThreadId ?? null},
+          ${row.sideChatMode ?? null},
+          ${row.sideChatOwnsWorktree ?? 0},
           ${row.title},
           ${row.titleState == null ? null : JSON.stringify(row.titleState)},
           ${JSON.stringify(row.modelSelection)},
@@ -97,6 +103,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           project_id = excluded.project_id,
+          parent_thread_id = excluded.parent_thread_id,
+          side_chat_mode = excluded.side_chat_mode,
+          side_chat_owns_worktree = excluded.side_chat_owns_worktree,
           title = excluded.title,
           title_state_json = excluded.title_state_json,
           model_selection_json = excluded.model_selection_json,
@@ -136,6 +145,9 @@ const makeProjectionThreadRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          parent_thread_id AS "parentThreadId",
+          side_chat_mode AS "sideChatMode",
+          side_chat_owns_worktree AS "sideChatOwnsWorktree",
           title,
           title_state_json AS "titleState",
           model_selection_json AS "modelSelection",

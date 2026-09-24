@@ -42,7 +42,7 @@ export class WorktreeSetupTracker extends Context.Service<
       readonly stages: ReadonlyArray<WorktreeSetupStageId>;
       /** Interrupting this fiber cancels the bootstrap. */
       readonly fiber: Fiber.Fiber<unknown, unknown> | null;
-    }) => Effect.Effect<void>;
+    }) => Effect.Effect<boolean>;
     readonly update: (
       threadId: ThreadId,
       mutate: (snapshot: WorktreeSetupSnapshot) => WorktreeSetupSnapshot,
@@ -186,13 +186,18 @@ export const make = Effect.gen(function* () {
         error: null,
         sequence: (lastSequenceByThread.get(input.threadId) ?? -1) + 1,
       };
-      lastSequenceByThread.set(input.threadId, snapshot.sequence);
-      yield* Ref.update(setups, (current) => {
+      const registered = yield* Ref.modify(setups, (current) => {
+        if (current.get(input.threadId)?.snapshot.phase === "running") {
+          return [false, current] as const;
+        }
         const next = new Map(current);
         next.set(input.threadId, { snapshot, fiber: input.fiber });
-        return next;
+        return [true, next] as const;
       });
+      if (!registered) return false;
+      lastSequenceByThread.set(input.threadId, snapshot.sequence);
       yield* publish(input.threadId, snapshot);
+      return true;
     });
 
   const update: WorktreeSetupTracker["Service"]["update"] = (threadId, mutate) =>

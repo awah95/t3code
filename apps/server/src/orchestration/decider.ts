@@ -343,13 +343,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         return yield* decideCommandSequence({
           readModel,
           commands: [
-            ...activeThreads.map(
-              (thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+            ...activeThreads
+              .filter((thread) => thread.parentThreadId === undefined)
+              .map((thread): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
                 type: "thread.delete",
                 commandId: command.commandId,
                 threadId: thread.id,
-              }),
-            ),
+              })),
             {
               type: "project.delete",
               commandId: command.commandId,
@@ -381,6 +381,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         projectId: command.projectId,
       });
+      if (command.parentThreadId !== undefined) {
+        const parent = yield* requireThread({
+          readModel,
+          command,
+          threadId: command.parentThreadId,
+        });
+        if (parent.projectId !== command.projectId || parent.parentThreadId !== undefined) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Side chat parent '${command.parentThreadId}' must be a main thread in the same project.`,
+          });
+        }
+        if (command.sideChatMode === "implement") {
+          if (command.branch !== null || command.worktreePath !== null) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail:
+                "An implementation side chat must prepare its own worktree before its first turn.",
+            });
+          }
+        }
+      } else if (command.sideChatMode !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only side chats can have a side chat mode.",
+        });
+      }
       yield* requireThreadAbsent({
         readModel,
         command,
@@ -398,6 +425,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          ...(command.parentThreadId !== undefined
+            ? { parentThreadId: command.parentThreadId }
+            : {}),
+          ...(command.parentThreadId !== undefined
+            ? { sideChatMode: command.sideChatMode ?? "discuss" }
+            : {}),
+          ...(command.parentThreadId !== undefined ? { sideChatOwnsWorktree: false } : {}),
           title: command.title,
           modelSelection: command.modelSelection,
           runtimeMode: command.runtimeMode,
@@ -411,11 +445,31 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (thread.parentThreadId === undefined) {
+        const children = readModel.threads.filter(
+          (child) => child.parentThreadId === thread.id && child.deletedAt === null,
+        );
+        if (children.length > 0) {
+          return yield* decideCommandSequence({
+            readModel,
+            commands: [
+              ...children.map(
+                (child): Extract<OrchestrationCommand, { type: "thread.delete" }> => ({
+                  type: "thread.delete",
+                  commandId: command.commandId,
+                  threadId: child.id,
+                }),
+              ),
+              command,
+            ],
+          });
+        }
+      }
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -896,12 +950,56 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.worktree.prepared": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.parentThreadId === undefined ||
+        (thread.sideChatMode ?? "discuss") !== "implement" ||
+        thread.worktreePath !== null
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only a pending implementation side chat can receive a prepared worktree.",
+        });
+      }
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          branch: command.branch,
+          worktreePath: command.worktreePath,
+          sideChatOwnsWorktree: true,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (
+        thread.parentThreadId !== undefined &&
+        (command.branch !== undefined || command.worktreePath !== undefined)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A side chat's worktree is managed by the server.",
+        });
+      }
       // Old clients only see the derived single link. Unlink that request through
       // the same command path as modern clients, including stack dismissal, while
       // retaining other links they cannot see. Historical metadata events still replay unchanged.
@@ -1342,6 +1440,57 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.side-chat-mode.set": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.parentThreadId === undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Only side chats have a Discuss or Implement mode.",
+        });
+      }
+      if (
+        thread.latestTurn?.state === "running" ||
+        thread.session?.status === "starting" ||
+        thread.session?.status === "running"
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Wait for the side chat's current turn to finish before changing its mode.",
+        });
+      }
+      const currentMode = thread.sideChatMode ?? "discuss";
+      const ownsWorktree = thread.sideChatOwnsWorktree === true;
+      const parent = readModel.threads.find((entry) => entry.id === thread.parentThreadId);
+      const nextWorkspace =
+        command.sideChatMode === "implement" && !ownsWorktree
+          ? { branch: null, worktreePath: null }
+          : command.sideChatMode === "discuss" && !ownsWorktree && currentMode === "implement"
+            ? { branch: parent?.branch ?? null, worktreePath: parent?.worktreePath ?? null }
+            : {};
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.meta-updated",
+        payload: {
+          threadId: command.threadId,
+          sideChatMode: command.sideChatMode,
+          runtimeMode:
+            command.sideChatMode === "implement" ? "auto-accept-edits" : "approval-required",
+          ...nextWorkspace,
+          updatedAt: currentMode === command.sideChatMode ? thread.updatedAt : occurredAt,
+        },
+      };
+    }
+
     case "thread.interaction-mode.set": {
       yield* requireThread({
         readModel,
@@ -1377,6 +1526,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        targetThread.parentThreadId !== undefined &&
+        (targetThread.sideChatMode ?? "discuss") === "implement" &&
+        (targetThread.sideChatOwnsWorktree !== true || targetThread.worktreePath === null)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Implementation side chat worktree is not ready. Retry the worktree setup.",
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({

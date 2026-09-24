@@ -2289,6 +2289,10 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ),
         ).pipe(Effect.catch(() => Effect.succeed(undefined)));
         const runtimeInput: CodexSessionRuntimeOptions = {
+          ...(input.forkSource ? { forkSource: input.forkSource } : {}),
+          ...(input.parentThreadId
+            ? { sideChat: true, sideChatMode: input.sideChatMode ?? "discuss" }
+            : {}),
           ...(jevHook ? { jevHookCommand: jevHook.command } : {}),
           ...(strictResume ? { strictResume: true } : {}),
           threadId: input.threadId,

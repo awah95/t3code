@@ -300,9 +300,11 @@ function ThreadNavigationSidebarPane(
       threadListV2Enabled
         ? []
         : selectedProjectRefs === null
-          ? threads
-          : threads.filter((thread) =>
-              selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+          ? threads.filter((thread) => thread.parentThreadId === undefined)
+          : threads.filter(
+              (thread) =>
+                thread.parentThreadId === undefined &&
+                selectedProjectRefs.has(scopedProjectKey(thread.environmentId, thread.projectId)),
             ),
     [threadListV2Enabled, selectedProjectRefs, threads],
   );
@@ -532,7 +534,9 @@ function ThreadNavigationSidebarPane(
       };
     return buildThreadListV2Items({
       pendingOrder,
-      threads: threads.filter((thread) => thread.archivedAt === null),
+      threads: threads.filter(
+        (thread) => thread.archivedAt === null && thread.parentThreadId === undefined,
+      ),
       environmentId: options.selectedEnvironmentId,
       projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
       searchQuery: props.searchQuery,

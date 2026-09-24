@@ -211,6 +211,8 @@ describe("environment entity projections", () => {
       ...THREAD_SHELL,
       environmentId: ENVIRONMENT_ID,
       title: "Cached thread",
+      sideChatMode: "discuss",
+      sideChatOwnsWorktree: false,
       branch: "stale-branch",
       worktreePath: "/repo/stale-worktree",
       activeOrderKey: "t",
@@ -225,6 +227,9 @@ describe("environment entity projections", () => {
       ...THREAD_SHELL,
       environmentId: ENVIRONMENT_ID,
       title: "Current thread",
+      parentThreadId: ThreadId.make("main-thread"),
+      sideChatMode: "implement" as const,
+      sideChatOwnsWorktree: true,
       branch: "current-branch",
       worktreePath: "/repo/current-worktree",
       activeOrderKey: "f",
@@ -235,6 +240,9 @@ describe("environment entity projections", () => {
 
     expect(merged).toMatchObject({
       title: "Current thread",
+      parentThreadId: "main-thread",
+      sideChatMode: "implement",
+      sideChatOwnsWorktree: true,
       branch: "current-branch",
       worktreePath: "/repo/current-worktree",
       activeOrderKey: "f",

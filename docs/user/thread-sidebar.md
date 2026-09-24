@@ -3,6 +3,33 @@
 Use a new thread for a separate task. Choose **New worktree** when its code changes
 need a separate branch and working directory.
 
+## Ask in a side chat
+
+On web and desktop, open **Side chat** from a Codex thread's right panel. Each
+side chat has its own saved conversation, model, effort, and access selection.
+It uses the main thread's checkout, so you can ask questions or request edits in
+the same conversation. Choose **Supervised**, **Auto-accept edits**, **Auto**, or
+**Full access** in the side chat composer as you would in the main chat. Search,
+rename, and reopen side chats from the panel; closing a tab keeps its conversation.
+Archive a finished side chat to
+hide it from the active list, then expand **Archived side chats** to restore it.
+Deleting a side chat permanently removes its conversation. Older side chats that
+already own an isolated worktree retain that checkout until deleted; cleanup
+follows your storage settings.
+
+Select text in a main-chat answer and choose **Ask in side chat** to cite it in a
+new or existing side chat. New side chats begin with **Supervised** access. Side
+chats can inherit completed main-chat history, but the current in-progress turn is not
+included. If the main chat has not completed a turn yet, the side chat begins
+without that history. Browser and device tools are not available in side chats.
+When Jev Auto is enabled in the desktop app, its shared panel also shows decisions
+for side-chat turns. Switch an individual side chat to **Manual** to use its selected
+model and effort for that chat; its routing choice is saved in the desktop client.
+
+On a side-chat answer, **Add to main draft** puts its text in the main composer for
+editing. **Send to main** sends the answer to the main Codex conversation. On mobile,
+open **Side chats** in the main thread header to view its existing side conversations.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

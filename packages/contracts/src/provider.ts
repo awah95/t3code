@@ -53,6 +53,14 @@ export type ProviderSession = typeof ProviderSession.Type;
 
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
+  parentThreadId: Schema.optional(ThreadId),
+  sideChatMode: Schema.optional(Schema.Literals(["discuss", "implement"])),
+  forkSource: Schema.optional(
+    Schema.Struct({
+      threadId: Schema.String,
+      activeTurnId: Schema.optional(Schema.String),
+    }),
+  ),
   provider: Schema.optional(ProviderDriverKind),
   // See ProviderSession for the migration story.
   providerInstanceId: Schema.optional(ProviderInstanceId),

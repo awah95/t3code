@@ -29,6 +29,9 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  parentThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  sideChatMode: Schema.optional(Schema.NullOr(Schema.Literals(["discuss", "implement"]))),
+  sideChatOwnsWorktree: Schema.optional(Schema.Literals([0, 1])),
   title: Schema.String,
   titleState: Schema.optional(Schema.NullOr(ThreadTitleState)),
   modelSelection: ModelSelection,

@@ -718,6 +718,7 @@ const make = Effect.gen(function* () {
       providerService
         .startSession(threadId, {
           threadId,
+          ...(thread.parentThreadId ? { parentThreadId: thread.parentThreadId } : {}),
           ...(preferredProvider ? { provider: preferredProvider } : {}),
           providerInstanceId: desiredInstanceId,
           ...(effectiveCwd ? { cwd: effectiveCwd } : {}),

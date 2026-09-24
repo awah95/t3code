@@ -176,6 +176,9 @@ type CodexThreadItem =
 
 export interface CodexSessionRuntimeOptions {
   readonly threadId: ThreadId;
+  readonly forkSource?: { readonly threadId: string; readonly activeTurnId?: string | undefined };
+  readonly sideChat?: boolean;
+  readonly sideChatMode?: "discuss" | "implement";
   readonly providerInstanceId?: ProviderInstanceId;
   readonly binaryPath: string;
   readonly homePath?: string;
@@ -628,6 +631,8 @@ const SKILL_MENTION_PATTERN =
 export function buildTurnStartParams(input: {
   readonly threadId: string;
   readonly runtimeMode: RuntimeMode;
+  readonly sideChat?: boolean;
+  readonly sideChatMode?: "discuss" | "implement";
   readonly prompt?: string;
   readonly attachments?: ReadonlyArray<{
     readonly type: "localImage";
@@ -1287,6 +1292,51 @@ export const readCodexThread = Effect.fn("readCodexThread")(function* (
     cursor = page.nextCursor;
   } while (cursor !== null);
   return { threadId, turns };
+});
+
+export const openCodexFork = Effect.fn("openCodexFork")(function* (input: {
+  readonly client: CodexHistoryClient & CodexThreadOpenClient;
+  readonly threadId: ThreadId;
+  readonly forkSource: NonNullable<CodexSessionRuntimeOptions["forkSource"]>;
+  readonly cwd: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly requestedModel: string | undefined;
+  readonly serviceTier: CodexServiceTier | undefined;
+  readonly sideChat?: boolean;
+  readonly sideChatMode?: "discuss" | "implement";
+}) {
+  const { threadId: sourceThreadId, activeTurnId } = input.forkSource;
+  const history = activeTurnId ? yield* readCodexThread(input.client, sourceThreadId) : undefined;
+  const completedTurn = history?.turns.filter((turn) => turn.id !== activeTurnId).at(-1);
+  if (activeTurnId && !completedTurn) {
+    yield* Effect.logWarning(
+      "Codex side chat source has no completed turn; starting without inherited history",
+      {
+        sourceThreadId,
+      },
+    );
+    return yield* openCodexThread({
+      client: input.client,
+      threadId: input.threadId,
+      runtimeMode: input.runtimeMode,
+      cwd: input.cwd,
+      requestedModel: input.requestedModel,
+      serviceTier: input.serviceTier,
+      resumeThreadId: undefined,
+    });
+  }
+  const config = runtimeModeToThreadConfig(input.runtimeMode);
+  return yield* input.client.request("thread/fork", {
+    threadId: sourceThreadId,
+    ...(completedTurn ? { lastTurnId: completedTurn.id } : {}),
+    cwd: input.cwd,
+    ...(input.requestedModel ? { model: input.requestedModel } : {}),
+    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+    approvalPolicy: config.approvalPolicy,
+    sandbox: config.sandbox,
+    approvalsReviewer: config.approvalsReviewer,
+    ephemeral: false,
+  });
 });
 
 export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
@@ -2533,16 +2583,31 @@ export const makeCodexSessionRuntime = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
-      const opened = yield* openCodexThread({
-        client,
-        threadId: options.threadId,
-        runtimeMode: options.runtimeMode,
-        cwd: options.cwd,
-        requestedModel,
-        serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
-        ...(options.strictResume ? { strictResume: true } : {}),
-      });
+      const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+      const opened =
+        options.forkSource && !resumeThreadId
+          ? yield* openCodexFork({
+              client,
+              threadId: options.threadId,
+              forkSource: options.forkSource,
+              cwd: options.cwd,
+              runtimeMode: options.runtimeMode,
+              requestedModel,
+              serviceTier: options.serviceTier,
+              ...(options.sideChat
+                ? { sideChat: true, sideChatMode: options.sideChatMode ?? "discuss" }
+                : {}),
+            })
+          : yield* openCodexThread({
+              client,
+              threadId: options.threadId,
+              runtimeMode: options.runtimeMode,
+              cwd: options.cwd,
+              requestedModel,
+              serviceTier: options.serviceTier,
+              resumeThreadId,
+              ...(options.strictResume ? { strictResume: true } : {}),
+            });
 
       const providerThreadId = opened.thread.id;
       const session = {
@@ -2628,6 +2693,9 @@ export const makeCodexSessionRuntime = (
           );
           const params = yield* buildTurnStartParams({
             jevSubagentsEnabled: jevSubagentsEnabled === true,
+            ...(options.sideChat
+              ? { sideChat: true, sideChatMode: options.sideChatMode ?? "discuss" }
+              : {}),
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
             ...(input.input ? { prompt: input.input } : {}),

@@ -116,6 +116,7 @@ export function applyThreadDetailEvent(
         thread: {
           id: event.payload.threadId,
           projectId: event.payload.projectId,
+          parentThreadId: event.payload.parentThreadId,
           title: event.payload.title,
           modelSelection: event.payload.modelSelection,
           runtimeMode: event.payload.runtimeMode,
@@ -264,6 +265,15 @@ export function applyThreadDetailEvent(
             : {}),
           ...(event.payload.modelSelection !== undefined
             ? { modelSelection: event.payload.modelSelection }
+            : {}),
+          ...(event.payload.runtimeMode !== undefined
+            ? { runtimeMode: event.payload.runtimeMode }
+            : {}),
+          ...(event.payload.sideChatMode !== undefined
+            ? { sideChatMode: event.payload.sideChatMode }
+            : {}),
+          ...(event.payload.sideChatOwnsWorktree !== undefined
+            ? { sideChatOwnsWorktree: event.payload.sideChatOwnsWorktree }
             : {}),
           ...(event.payload.branch !== undefined ? { branch: event.payload.branch } : {}),
           ...(event.payload.worktreePath !== undefined

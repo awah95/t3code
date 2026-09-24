@@ -372,9 +372,13 @@ export function HomeScreen(props: HomeScreenProps) {
       threadListV2Enabled
         ? []
         : selectedProjectRefKeys === null
-          ? props.threads
-          : props.threads.filter((thread) =>
-              selectedProjectRefKeys.has(scopedProjectKey(thread.environmentId, thread.projectId)),
+          ? props.threads.filter((thread) => thread.parentThreadId === undefined)
+          : props.threads.filter(
+              (thread) =>
+                thread.parentThreadId === undefined &&
+                selectedProjectRefKeys.has(
+                  scopedProjectKey(thread.environmentId, thread.projectId),
+                ),
             ),
     [threadListV2Enabled, props.threads, selectedProjectRefKeys],
   );
@@ -706,7 +710,9 @@ export function HomeScreen(props: HomeScreenProps) {
     // "hidden from lists" meaning.
     return buildThreadListV2Items({
       pendingOrder,
-      threads: props.threads.filter((thread) => thread.archivedAt === null),
+      threads: props.threads.filter(
+        (thread) => thread.archivedAt === null && thread.parentThreadId === undefined,
+      ),
       environmentId: props.selectedEnvironmentId,
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,

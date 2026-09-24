@@ -104,13 +104,18 @@ function ThreadHeader(
     readonly onToggleInspector: () => void;
     readonly onOpenGitInspector: () => void;
     readonly onOpenFilesInspector: () => void;
+    readonly sideThreads?: ReadonlyArray<{
+      id: string;
+      title: string;
+    }>;
+    readonly onOpenSideThread?: (id: string) => void;
   },
 ) {
   const navigation = useNavigation();
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal } = props.gitControls;
   const native = useThreadHeaderOptions(props);
-  const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
+  const headerActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
     const actions: ScreenHeaderAction[] = [];
     if (props.onReturnToThread) {
       actions.push({
@@ -140,6 +145,21 @@ function ThreadHeader(
       icon: "point.topleft.down.curvedto.point.bottomright.up",
       onPress: props.onOpenGitInspector,
     });
+    if (props.sideThreads?.length) {
+      actions.push({
+        accessibilityLabel: `Open side chats (${props.sideThreads.length})`,
+        icon: { ios: "bubble.left", android: "chat_bubble" },
+        onPress: () => {
+          Alert.alert("Side chats", undefined, [
+            ...props.sideThreads!.map((thread) => ({
+              text: thread.title,
+              onPress: () => props.onOpenSideThread?.(thread.id),
+            })),
+            { text: "Cancel", style: "cancel" },
+          ]);
+        },
+      });
+    }
     return actions;
   }, [
     props.inspectorMode,
@@ -151,6 +171,8 @@ function ThreadHeader(
     props.onReturnToThread,
     props.hasThreadCwd,
     props.hasWorkspaceRoot,
+    props.sideThreads,
+    props.onOpenSideThread,
   ]);
 
   return (
@@ -185,7 +207,7 @@ function ThreadHeader(
                 else navigation.dispatch(StackActions.replace("Home"));
               }
         }
-        actions={androidHeaderActions}
+        actions={headerActions}
         hideBottomBorder
       />
       {native.fallback}
@@ -274,6 +296,15 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
       ? null
       : scopedThreadKey(selectedThread.environmentId, selectedThread.id);
   const selectedThreadDetailState = useSelectedThreadDetailState();
+  const returnToParentThread = useCallback(() => {
+    if (!selectedThread?.parentThreadId || !environmentId) return;
+    navigation.dispatch(
+      StackActions.replace("Thread", {
+        environmentId: String(environmentId),
+        threadId: String(selectedThread.parentThreadId),
+      }),
+    );
+  }, [environmentId, navigation, selectedThread]);
 
   if (environmentId === null || threadIdRaw === null) {
     return <OpeningThreadLoadingScreen />;
@@ -285,7 +316,15 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   // composer reports loading/syncing, and the composer's connection pill
   // reports connecting/reconnecting status.
   if (selectedThread !== null && selectedThreadKey === routeThreadKey) {
-    return <ThreadRouteContent {...props} selectedThreadDetailState={selectedThreadDetailState} />;
+    return (
+      <ThreadRouteContent
+        {...props}
+        onReturnToThread={
+          selectedThread.parentThreadId ? returnToParentThread : props.onReturnToThread
+        }
+        selectedThreadDetailState={selectedThreadDetailState}
+      />
+    );
   }
 
   const stillHydrating = threadRouteIsHydrating({
@@ -338,6 +377,15 @@ function ThreadRouteContent(
     selectedEnvironmentConnection,
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
+  const environmentShellState = useEnvironmentShellState(selectedThread?.environmentId ?? null);
+  const shellSnapshot = Option.getOrNull(environmentShellState.snapshot);
+  const sideThreads = selectedThread
+    ? (shellSnapshot?.threads
+        .filter(
+          (thread) => thread.parentThreadId === selectedThread.id && thread.archivedAt === null,
+        )
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)) ?? [])
+    : [];
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
   // "Load earlier turns" header state for windowed (paginated) thread loads.
   const loadEarlierTurns = useMemo(() => {
@@ -1107,6 +1155,15 @@ function ThreadRouteContent(
         onToggleInspector={handleToggleInspector}
         onOpenGitInspector={handleOpenGitInspector}
         onOpenFilesInspector={handleOpenFilesInspector}
+        sideThreads={sideThreads}
+        onOpenSideThread={(id) =>
+          navigation.dispatch(
+            StackActions.push("Thread", {
+              environmentId: String(selectedThread.environmentId),
+              threadId: id,
+            }),
+          )
+        }
         onReturnToThread={props.onReturnToThread}
       />
 

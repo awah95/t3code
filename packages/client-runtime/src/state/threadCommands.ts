@@ -26,6 +26,7 @@ import {
   type RevertThreadCheckpointInput,
   type SetThreadInteractionModeInput,
   type SetThreadRuntimeModeInput,
+  type SetSideChatModeInput,
   type PinThreadInput,
   type ReorderPinnedThreadInput,
   type ReorderActiveThreadInput,
@@ -50,6 +51,7 @@ import {
   revertThreadCheckpoint,
   setThreadInteractionMode,
   setThreadRuntimeMode,
+  setSideChatMode,
   pinThread,
   reorderPinnedThread,
   reorderActiveThread,
@@ -197,6 +199,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     setRuntimeMode: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:set-runtime-mode",
       execute: (input: SetThreadRuntimeModeInput) => setThreadRuntimeMode(input),
+      scheduler,
+      concurrency,
+    }),
+    setSideChatMode: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:set-side-chat-mode",
+      execute: (input: SetSideChatModeInput) => setSideChatMode(input),
       scheduler,
       concurrency,
     }),

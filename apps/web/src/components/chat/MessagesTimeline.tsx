@@ -173,7 +173,11 @@ import {
 import { MessageCopyButton } from "./MessageCopyButton";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { inferEntryKindFromPath } from "../../pierre-icons";
-import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
+import {
+  AssistantSelectionToolbar,
+  type AssistantSideChatDestination,
+  type AssistantSideChatOption,
+} from "./AssistantSelectionToolbar";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import {
   AssistantCitationSource,
@@ -414,6 +418,11 @@ interface MessagesTimelineProps {
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
   ) => boolean;
+  onAskInSideChat?: (
+    citation: AssistantCitation,
+    destination: AssistantSideChatDestination,
+  ) => void;
+  sideChatDestinations?: ReadonlyArray<AssistantSideChatOption>;
   agentPanelModel?: AgentPanelModel;
   onOpenAgents?: (agentId?: string) => void;
   isWorking: boolean;
@@ -491,6 +500,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   citationRequest = null,
   citationHistoryLoading = false,
   onCiteAssistantText,
+  onAskInSideChat,
+  sideChatDestinations,
   isWorking,
   worktreeSetup = null,
   onCancelWorktreeSetup,
@@ -1293,11 +1304,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           className="relative h-full min-h-0"
           data-assistant-citation-viewport="true"
         >
-          {onCiteAssistantText && citationThreadRef ? (
+          {(onCiteAssistantText || onAskInSideChat) && citationThreadRef ? (
             <AssistantSelectionToolbar
               viewport={timelineViewportElement}
               threadRef={citationThreadRef}
-              onCite={onCiteAssistantText}
+              onCite={onCiteAssistantText ?? (() => false)}
+              {...(onAskInSideChat ? { onAskInSideChat } : {})}
+              {...(sideChatDestinations ? { sideChatDestinations } : {})}
             />
           ) : null}
           <LegendList<MessagesTimelineRow>

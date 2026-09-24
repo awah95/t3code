@@ -47,6 +47,7 @@ export type UpdateThreadMetadataInput = CommandInput<"thread.meta.update">;
 export type LinkThreadPullRequestInput = CommandInput<"thread.pull-request.link">;
 export type UnlinkThreadPullRequestInput = CommandInput<"thread.pull-request.unlink">;
 export type SetThreadRuntimeModeInput = CommandInput<"thread.runtime-mode.set">;
+export type SetSideChatModeInput = CommandInput<"thread.side-chat-mode.set">;
 export type SetThreadInteractionModeInput = CommandInput<"thread.interaction-mode.set">;
 export type StartThreadTurnInput = CommandInput<"thread.turn.start">;
 export type InterruptThreadTurnInput = CommandInput<"thread.turn.interrupt">;
@@ -281,6 +282,18 @@ export const setThreadRuntimeMode: (input: SetThreadRuntimeModeInput) => Command
   return yield* dispatch({
     ...input,
     type: "thread.runtime-mode.set",
+    commandId: metadata.commandId,
+    createdAt: metadata.createdAt,
+  });
+});
+
+export const setSideChatMode: (input: SetSideChatModeInput) => CommandEffect = Effect.fn(
+  "EnvironmentCommands.setSideChatMode",
+)(function* (input) {
+  const metadata = yield* timestampedCommandMetadata(input);
+  return yield* dispatch({
+    ...input,
+    type: "thread.side-chat-mode.set",
     commandId: metadata.commandId,
     createdAt: metadata.createdAt,
   });

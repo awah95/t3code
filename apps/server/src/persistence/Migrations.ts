@@ -68,6 +68,9 @@ import Migration0053 from "./Migrations/053_PullRequestFilesViewed.ts";
 import Migration0054 from "./Migrations/054_CodexUsageLedger.ts";
 import Migration0055 from "./Migrations/055_CodexLedgerTurnOwnershipIndexes.ts";
 import Migration0056 from "./Migrations/056_CodexLedgerReadIndexes.ts";
+import Migration0057 from "./Migrations/057_ProjectionThreadParent.ts";
+import Migration0058 from "./Migrations/058_ProjectionThreadSideChatMode.ts";
+import Migration0059 from "./Migrations/059_ProjectionThreadSideChatWorktreeOwnership.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -136,6 +139,9 @@ const migrationEntries = [
   [54, "CodexUsageLedger", Migration0054],
   [55, "CodexLedgerTurnOwnershipIndexes", Migration0055],
   [56, "CodexLedgerReadIndexes", Migration0056],
+  [57, "ProjectionThreadParent", Migration0057],
+  [58, "ProjectionThreadSideChatMode", Migration0058],
+  [59, "ProjectionThreadSideChatWorktreeOwnership", Migration0059],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

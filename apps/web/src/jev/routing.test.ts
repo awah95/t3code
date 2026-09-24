@@ -3,7 +3,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { deriveProviderInstanceEntries } from "../providerInstances";
 import { getComposerProviderState } from "../components/chat/composerProviderState";
-import { eligibleJevModels } from "./routing";
+import { eligibleJevModels, prepareJevTurn } from "./routing";
 
 function provider(instance: string, overrides: Partial<ServerProvider> = {}): ServerProvider {
   return {
@@ -37,6 +37,33 @@ function provider(instance: string, overrides: Partial<ServerProvider> = {}): Se
 }
 const current = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6-sol" };
 describe("eligible Jev models", () => {
+  it("routes a side task using its own conversation and selection", () => {
+    const { request, candidates } = prepareJevTurn({
+      requestId: "side-request",
+      prompt: "Implement the parser fix",
+      messages: [
+        { role: "user", text: "Investigate the parser", turnId: "side-turn" },
+        { role: "assistant", text: "The parser drops nested values." },
+      ],
+      current,
+      candidateCurrent: current,
+      providers: deriveProviderInstanceEntries([provider("codex")]),
+      settings: DEFAULT_UNIFIED_SETTINGS,
+      sessionInstanceId: current.instanceId,
+      hasStartedSession: true,
+      existingSession: true,
+      interactionMode: "default",
+    });
+    expect(request.context.originalTask).toBe("Investigate the parser");
+    expect(request.context.history?.map((message) => message.text)).toEqual([
+      "Investigate the parser",
+      "The parser drops nested values.",
+    ]);
+    expect(request.prompt).toBe("Implement the parser fix");
+    expect(request.candidates.map((candidate) => candidate.key)).toEqual(
+      candidates.map((candidate) => candidate.key),
+    );
+  });
   it("offers GPT-6 models and excludes legacy 5.6 models", () => {
     const base = provider("codex");
     const candidates = eligibleJevModels({
