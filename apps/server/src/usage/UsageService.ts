@@ -1,9 +1,9 @@
 /**
- * UsageService - scans provider transcripts and returns priced usage buckets.
+ * UsageService - reads provider history and T3 Cursor receipts into usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
- * turns driven outside T3 Code too. This is the approach `ccusage` takes.
+ * The scan reads provider-owned history (Claude Code, Codex, Grok Build, and
+ * OpenCode), so their usage covers turns driven outside T3 Code too. Cursor
+ * receipts cover T3-driven turns only when its ACP response supplies usage.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
  * `(size, mtime)`. A cold 30-day scan of ~1.4 GB lands around 2-3 seconds; warm
@@ -17,6 +17,7 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
+  OpenCodeSettings,
   type ProviderInstanceConfig,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
@@ -64,6 +65,8 @@ import {
   type ScanCache,
 } from "./usageScanCache.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
+import { readOpenCodeUsage } from "./openCodeUsageReader.ts";
+import { cursorUsageReceiptPath, readCursorUsageReceipts } from "./cursorUsageReceipts.ts";
 
 const LITELLM_RATES_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -86,6 +89,7 @@ const CACHE_RETENTION_DAYS = 90;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+const decodeOpenCodeSettings = Schema.decodeOption(OpenCodeSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -559,6 +563,110 @@ export const make = Effect.gen(function* () {
     });
 
     const sources: UsageSource[] = [];
+
+    const cursorPath = cursorUsageReceiptPath(config.stateDir);
+    const cursorResult = yield* Effect.tryPromise(() =>
+      readCursorUsageReceipts(cursorPath, windowStartMs),
+    ).pipe(
+      Effect.match({
+        onFailure: () => ({ read: null, failed: true }),
+        onSuccess: (read) => ({ read, failed: false }),
+      }),
+    );
+    const cursorRead = cursorResult.read;
+    const cursorConfigured =
+      settings.providers.cursor.enabled ||
+      Object.values(settings.providerInstances).some(
+        (instance) => instance.driver === "cursor" && instance.enabled === true,
+      );
+    if (cursorRead !== null || cursorResult.failed || cursorConfigured) {
+      const cursorSessions = new Set<string>();
+      for (const record of cursorRead?.records ?? []) {
+        if (aggregator.add(record)) cursorSessions.add(record.sessionId);
+      }
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider: "cursor",
+          resolvedHomePath: config.stateDir,
+          volumeId: yield* Effect.promise(() => readDirectoryVolumeId(config.stateDir)),
+        },
+        status: cursorResult.failed
+          ? "failed"
+          : cursorRead === null
+            ? "missing"
+            : cursorRead.malformed > 0
+              ? "partial"
+              : "ok",
+        scannedFiles: cursorRead === null ? 0 : 1,
+        skippedFiles: 0,
+        malformedRecords: cursorRead?.malformed ?? 0,
+        distinctSessions: cursorSessions.size,
+        message: cursorResult.failed
+          ? "Cursor usage receipts could not be read."
+          : cursorRead === null
+            ? "No Cursor token receipts. This Cursor ACP CLI may not report usage."
+            : (cursorRead?.malformed ?? 0) > 0
+              ? `${cursorRead?.malformed} invalid Cursor usage receipts.`
+              : null,
+      });
+    }
+
+    // Provider-owned history is the common input to the same pricing and
+    // aggregation path. OpenCode uses SQLite instead of JSONL transcripts.
+    const openCodeHomes = new Set<string>();
+    const openCodeInstances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
+      Object.values(settings.providerInstances).filter(
+        (instance) => instance.driver === "opencode",
+      );
+    if (!Object.hasOwn(settings.providerInstances, "opencode")) {
+      openCodeInstances.push({ config: settings.providers.opencode });
+    }
+    for (const instance of openCodeInstances) {
+      const decoded = decodeOpenCodeSettings(instance.config ?? {});
+      if (Option.isNone(decoded) || decoded.value.serverUrl.trim()) continue;
+      const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
+      const dataHome =
+        environment.XDG_DATA_HOME?.trim() ||
+        path.join(
+          environment.HOME || environment.USERPROFILE || NodeOS.homedir(),
+          ".local",
+          "share",
+        );
+      const home = path.resolve(expandHomePath(dataHome), "opencode");
+      openCodeHomes.add(yield* fileSystem.realPath(home).pipe(Effect.orElseSucceed(() => home)));
+    }
+    for (const home of openCodeHomes) {
+      const databasePath = path.join(home, "opencode.db");
+      const exists = yield* fileSystem
+        .exists(databasePath)
+        .pipe(Effect.catchCause(() => Effect.succeed(false)));
+      if (!exists) continue;
+      const read = yield* Effect.sync(() => readOpenCodeUsage(databasePath, windowStartMs));
+      const sessionIds = new Set<string>();
+      for (const record of read?.records ?? []) {
+        if (aggregator.add(record)) sessionIds.add(record.sessionId);
+      }
+      sources.push({
+        fingerprint: {
+          hostId,
+          provider: "opencode",
+          resolvedHomePath: home,
+          volumeId: yield* Effect.promise(() => readDirectoryVolumeId(home)),
+        },
+        status: read === null || read.malformedRecords > 0 ? "partial" : "ok",
+        scannedFiles: read === null ? 0 : 1,
+        skippedFiles: 0,
+        malformedRecords: read?.malformedRecords ?? 0,
+        distinctSessions: sessionIds.size,
+        message:
+          read === null
+            ? "OpenCode history could not be read."
+            : read.malformedRecords > 0
+              ? `${read.malformedRecords} OpenCode responses could not be read.`
+              : null,
+      });
+    }
 
     for (const { provider, dir, volumeId, files } of scannedDirs) {
       const retainedFiles = [...(files ?? [])];

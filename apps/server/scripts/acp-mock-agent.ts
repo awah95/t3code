@@ -1333,7 +1333,21 @@ const program = Effect.gen(function* () {
         },
       });
 
-      return { stopReason: "end_turn" };
+      return {
+        stopReason: "end_turn",
+        ...(process.env.T3_ACP_PROMPT_USAGE === "1"
+          ? {
+              usage: {
+                inputTokens: 100,
+                outputTokens: 25,
+                cachedReadTokens: 30,
+                cachedWriteTokens: 10,
+                thoughtTokens: 5,
+                totalTokens: 125,
+              },
+            }
+          : {}),
+      };
     }),
   );
 

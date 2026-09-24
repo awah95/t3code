@@ -2,15 +2,27 @@
 
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, and Grok Build session history from your connected
+**Usage** combines Codex, Claude Code, Grok Build, OpenCode, and Cursor usage from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost. These estimates are not your subscription bill.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 
+OpenCode usage reads its local history database, including sessions run outside T3. It includes
+child sessions. OpenCode's reported cost is a model-rate calculation, not a bill; a reported zero
+can also mean OpenCode lacked pricing data. Check the model's current terms before treating a zero
+as a free request. External OpenCode servers do not expose their history to this local scan.
+
+Cursor tokens are recorded for turns run through T3 Code when Cursor supplies token counts in its
+ACP response. Cursor sessions run elsewhere and turns without reported counts are not included.
+Cursor cost uses a model-rate estimate when a rate is known; it is not the amount charged against
+your Cursor plan. If no rate is available, the tokens remain visible with unpriced cost.
+Some Cursor CLI versions omit usage from ACP responses, so those turns have no token or cost
+record in Usage. Cursor's monthly allowance indicator is a separate account-level observation.
+
 Usage includes each configured account's history, including disabled accounts. Custom homes follow
-the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `GROK_HOME` environment
+the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, or `XDG_DATA_HOME` environment
 variable. Use absolute paths or `~/` paths in the account's environment settings; relative
 environment paths depend on each project's working directory and cannot be reliably discovered
 by Usage. Accounts sharing a history directory count once.

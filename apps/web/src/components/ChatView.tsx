@@ -7897,6 +7897,9 @@ export default function ChatView(props: ChatViewProps) {
     let jevRequestId: string | undefined;
     const jev = useJevStore.getState();
     if (isElectron && jev.enabled) {
+      const selectedProvider = providerInstanceEntries.find(
+        (provider) => provider.instanceId === ctxSelectedModelSelection.instanceId,
+      );
       const environmentTarget = environmentById.get(environmentId)?.entry.target;
       const localEnvironment =
         environmentTarget !== undefined &&
@@ -7910,7 +7913,9 @@ export default function ChatView(props: ChatViewProps) {
             ? "Jev Auto skipped: provider commands use the selected model."
             : mediaOnlyJevBypass
               ? "Jev Auto skipped: media-only turns use the selected model."
-              : null;
+              : selectedProvider && selectedProvider.driverKind !== "codex"
+                ? "Jev Auto supports Codex routing; this turn uses the selected provider and model."
+                : null;
       if (bypassReason) {
         useJevStore.setState({ notice: bypassReason });
         if (!mediaOnlyJevBypass)

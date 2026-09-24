@@ -47,3 +47,6 @@ restart before T3 Code can see configuration changes.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.
+
+If Jev Auto is enabled on desktop, OpenCode turns use the model you selected; Jev's
+automatic model routing currently applies to Codex only.

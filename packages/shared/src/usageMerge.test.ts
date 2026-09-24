@@ -1,5 +1,6 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
@@ -178,7 +179,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],
@@ -189,7 +190,7 @@ describe("mergeUsage", () => {
     expect(merged.staleEnvironments).toEqual(["env-b"]);
   });
 
-  it("keeps the previous compatible contract version so additive provider expansions still merge", () => {
+  it("keeps the earliest compatible contract version across additive provider expansions", () => {
     const merged = mergeUsage(
       [
         environment(
@@ -204,7 +205,7 @@ describe("mergeUsage", () => {
           summary(
             [bucket({ costUsd: 4, provider: "codex", model: "gpt-5.6-sol" })],
             [{ provider: "codex", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 1,
+            USAGE_MERGE_COMPATIBLE_SINCE,
           ),
         ),
       ],

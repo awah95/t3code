@@ -26,6 +26,10 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import {
+  cursorUsageReceiptPath,
+  readCursorUsageReceipts,
+} from "../../usage/cursorUsageReceipts.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
@@ -162,6 +166,34 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("saves reported ACP tokens for the shared Usage summary", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const threadId = ThreadId.make("cursor-usage-receipt");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_PROMPT_USAGE: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      yield* adapter.startSession({ threadId, cwd: process.cwd(), runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "count tokens", attachments: [] });
+      yield* adapter.stopSession(threadId);
+      const receipts = yield* Effect.promise(() =>
+        readCursorUsageReceipts(cursorUsageReceiptPath(config.stateDir), 0),
+      );
+      assert.equal(receipts?.records.length, 1);
+      assert.deepEqual(receipts?.records[0]?.totals, {
+        uncachedInputTokens: 60,
+        cachedInputTokens: 30,
+        cacheCreationTokens: 10,
+        outputTokens: 25,
+        reasoningTokens: 5,
+      });
+      assert.equal(receipts?.records[0]?.reportedCostUsd, null);
+    }),
+  );
+
   it.effect("rejects rollback without discarding the provider conversation", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

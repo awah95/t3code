@@ -3,6 +3,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -30,6 +31,7 @@ import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as UsageService from "./UsageService.ts";
+import { appendCursorUsageReceipt, cursorUsageReceiptPath } from "./cursorUsageReceipts.ts";
 
 const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -102,6 +104,7 @@ const serviceLayers = (input: {
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
         GROK_HOME: NodePath.join(input.home, "grok"),
+        XDG_DATA_HOME: NodePath.join(input.home, "data"),
         ...input.environment,
       }),
     ),
@@ -112,6 +115,118 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("marks enabled Cursor coverage missing when ACP supplies no usage", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-cursor-missing-test",
+            home,
+            settings: {
+              ...settings,
+              providers: { ...settings.providers, cursor: { enabled: true } },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
+      assert.equal(cursor?.status, "missing");
+      assert.isFalse(summary.buckets.some((bucket) => bucket.provider === "cursor"));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("includes saved Cursor tokens once and leaves unknown cost unpriced", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const layers = serviceLayers({ prefix: "usage-service-cursor-test", home, settings });
+      const summary = yield* Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const receiptPath = cursorUsageReceiptPath(config.stateDir);
+        const receipt = {
+          timestampMs: Date.parse("2026-08-01T10:00:00Z"),
+          model: "cursor-unknown-model",
+          sessionId: "cursor-session",
+          totals: {
+            uncachedInputTokens: 60,
+            cachedInputTokens: 30,
+            cacheCreationTokens: 10,
+            outputTokens: 25,
+            reasoningTokens: 5,
+          },
+          dedupeKey: "cursor-prompt:turn-1:1",
+        };
+        yield* Effect.promise(() => appendCursorUsageReceipt(receiptPath, receipt));
+        yield* Effect.promise(() => appendCursorUsageReceipt(receiptPath, receipt));
+        const service = yield* UsageService.make;
+        return yield* service.readSummary(WINDOW);
+      }).pipe(Effect.provide(layers));
+      const bucket = summary.buckets.find((entry) => entry.provider === "cursor");
+      assert.equal(bucket?.records, 1);
+      assert.deepEqual(bucket?.totals, {
+        uncachedInputTokens: 60,
+        cachedInputTokens: 30,
+        cacheCreationTokens: 10,
+        outputTokens: 25,
+        reasoningTokens: 5,
+      });
+      assert.equal(bucket?.costSource, "unpriced");
+      assert.equal(bucket?.unpricedRecords, 1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("includes OpenCode history, child sessions, reported cost, and tokens", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const databaseDirectory = NodePath.join(home, "data", "opencode");
+      yield* Effect.promise(() => NodeFSP.mkdir(databaseDirectory, { recursive: true }));
+      const database = new NodeSqlite.DatabaseSync(NodePath.join(databaseDirectory, "opencode.db"));
+      database.exec(
+        "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)",
+      );
+      database.prepare("INSERT INTO message VALUES (?, ?, ?, ?)").run(
+        "response-1",
+        "child-session",
+        Date.parse("2026-08-01T10:00:00Z"),
+        encodeUnknownJsonString({
+          role: "assistant",
+          providerID: "opencode",
+          modelID: "jev-1.13-free",
+          cost: 0,
+          tokens: {
+            input: 100,
+            output: 20,
+            reasoning: 7,
+            cache: { read: 40, write: 5 },
+          },
+        }),
+      );
+      database.close();
+
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(serviceLayers({ prefix: "usage-service-opencode-test", home, settings })),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const bucket = summary.buckets.find((entry) => entry.provider === "opencode");
+      assert.strictEqual(bucket?.model, "opencode/jev-1.13-free");
+      assert.deepStrictEqual(bucket?.totals, {
+        uncachedInputTokens: 100,
+        cachedInputTokens: 40,
+        cacheCreationTokens: 5,
+        outputTokens: 27,
+        reasoningTokens: 7,
+      });
+      assert.strictEqual(bucket?.costUsd, 0);
+      assert.strictEqual(bucket?.costSource, "providerReported");
+      assert.strictEqual(
+        summary.sources.find((source) => source.fingerprint.provider === "opencode")
+          ?.distinctSessions,
+        1,
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("quarantines conflicting Codex response IDs after an incremental append", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;

@@ -42,6 +42,11 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import {
+  appendCursorUsageReceipt,
+  cursorPromptUsageReceipt,
+  cursorUsageReceiptPath,
+} from "../../usage/cursorUsageReceipts.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import {
@@ -1123,6 +1128,23 @@ export function makeCursorAdapter(
             turnRecord.items.push({ prompt: promptParts, result });
           } else {
             ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
+          }
+          const receipt = cursorPromptUsageReceipt({
+            usage: result.usage,
+            timestampMs: DateTime.toEpochMillis(yield* DateTime.now),
+            model: resolvedModel ?? "cursor-unknown-model",
+            sessionId:
+              parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? String(input.threadId),
+            receiptId: `${turnId}:${turnRecord?.items.length ?? 1}`,
+          });
+          if (receipt) {
+            yield* Effect.tryPromise(() =>
+              appendCursorUsageReceipt(cursorUsageReceiptPath(serverConfig.stateDir), receipt),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Could not save Cursor usage receipt.", { cause }),
+              ),
+            );
           }
           ctx.session = {
             ...ctx.session,

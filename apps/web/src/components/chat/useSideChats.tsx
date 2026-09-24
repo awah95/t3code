@@ -257,13 +257,26 @@ export function useSideChats(input: SideChatInput) {
         isElectron &&
         jevStore.enabled &&
         jevStore.getSideRoutingMode(activeThreadRef.environmentId, sideThreadId) === "auto";
+      const selectedProvider = providerInstanceEntries.find(
+        (provider) => provider.instanceId === selection.instanceId,
+      );
       if (jevEnabled && !localEnvironment)
         useJevStore.setState({ notice: "Jev Auto currently supports local desktop environments." });
       if (jevEnabled && text.trimStart().startsWith("/"))
         useJevStore.setState({
           notice: "Jev Auto skipped: provider commands use the selected model.",
         });
-      if (jevEnabled && localEnvironment && !text.trimStart().startsWith("/")) {
+      if (jevEnabled && selectedProvider && selectedProvider.driverKind !== "codex")
+        useJevStore.setState({
+          notice:
+            "Jev Auto supports Codex routing; this side chat uses the selected provider and model.",
+        });
+      if (
+        jevEnabled &&
+        localEnvironment &&
+        !text.trimStart().startsWith("/") &&
+        selectedProvider?.driverKind === "codex"
+      ) {
         if (!sideThread) throw new Error("This side chat is still loading. Please try again.");
         jevRequestId = randomUUID();
         const { request, candidates } = prepareJevTurn({
