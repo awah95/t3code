@@ -215,7 +215,7 @@ function CostComparisonGlyph({ turn }: { turn: CodexLedgerTurn }) {
           </span>
         ))}
       </TooltipTrigger>
-      <TooltipPopup side="top" className="font-mono text-[11px]">
+      <TooltipPopup side="top" variant="code">
         {description}
       </TooltipPopup>
     </Tooltip>

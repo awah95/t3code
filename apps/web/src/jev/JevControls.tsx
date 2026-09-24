@@ -508,10 +508,9 @@ export function JevPanel() {
                 render={
                   <Button
                     type="button"
-                    variant="ghost"
+                    variant="ghost-muted"
                     size="icon-xs"
                     aria-label="Jev log actions"
-                    className="text-muted-foreground hover:text-foreground"
                   />
                 }
               >

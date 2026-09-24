@@ -8,12 +8,15 @@ import {
   type PreviewOpenInput,
   type PreviewSessionSnapshot,
 } from "@t3tools/contracts";
+import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
+import * as Cause from "effect/Cause";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { __resetClientSettingsPersistenceForTests } from "~/hooks/useSettings";
+import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import {
   applyPreviewDesktopState,
@@ -38,7 +41,7 @@ const mocks = vi.hoisted(() => ({
     vi.fn<
       (target: { environmentId: EnvironmentId; input: PreviewAutomationResponse }) => Promise<void>
     >(),
-  focus: vi.fn(async () => undefined),
+  focus: vi.fn<() => Promise<AtomCommandResult<void, Error>>>(),
   previewStatus: vi.fn(),
   prepareAction: vi.fn(),
   cancelPreparedAction: vi.fn(),
@@ -137,6 +140,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   mocks.getClientSettings.mockReset().mockResolvedValue(savedSettings);
   mocks.respond.mockReset();
+  mocks.focus.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   mocks.previewStatus.mockReset().mockResolvedValue({ available: true, loading: false });
   mocks.prepareAction.mockReset().mockResolvedValue(undefined);
   mocks.cancelPreparedAction.mockReset().mockResolvedValue(undefined);
@@ -149,10 +153,18 @@ beforeEach(async () => {
   __resetClientSettingsPersistenceForTests();
   resetPreviewStateForTests();
   resetJevBrowserStoreForTests();
+  useBrowserSurfaceStore.setState({ byTabId: {} });
   appAtomRegistry.set(requestsAtom, AsyncResult.initial(false));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", { addEventListener: vi.fn(), removeEventListener: vi.fn() });
-  vi.stubGlobal("document", { hasFocus: () => false, querySelectorAll: () => [] });
+  vi.stubGlobal(
+    "document",
+    Object.assign(new EventTarget(), {
+      hasFocus: () => false,
+      visibilityState: "visible",
+      querySelectorAll: () => [],
+    }),
+  );
   await act(() => {
     renderer = create(
       <AppAtomRegistryProvider>
@@ -167,6 +179,7 @@ afterEach(async () => {
   renderer = null;
   resetPreviewStateForTests();
   resetJevBrowserStoreForTests();
+  useBrowserSurfaceStore.setState({ byTabId: {} });
   __resetClientSettingsPersistenceForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -250,10 +263,7 @@ describe("PreviewAutomationHosts paused dialogs", () => {
         getAttribute: (name: string) => (name === "data-preview-rendering" ? "active" : null),
       }),
     };
-    vi.stubGlobal("document", {
-      hasFocus: () => false,
-      querySelectorAll: () => [webview],
-    });
+    Object.assign(document, { querySelectorAll: () => [webview] });
     return runtimeTabId;
   };
 
@@ -484,10 +494,7 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
         getAttribute: (name: string) => (name === "data-preview-rendering" ? "active" : null),
       }),
     };
-    vi.stubGlobal("document", {
-      hasFocus: () => false,
-      querySelectorAll: () => [webview],
-    });
+    Object.assign(document, { querySelectorAll: () => [webview] });
     return runtimeTabId;
   };
 
@@ -764,5 +771,156 @@ describe("PreviewAutomationHosts Jev browser authority", () => {
       await response.promise;
     });
     await expect(response.promise).resolves.toMatchObject({ ok: false });
+  });
+});
+
+describe("PreviewAutomationHosts ownership", () => {
+  it("reports only local live tabs and removes ownership when their web contents close", async () => {
+    await act(() => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({ type: "connected", connectionId: "automation-connection" }),
+      );
+      applyPreviewServerSnapshot(threadRef, snapshot);
+    });
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ liveTabs: [] }) }),
+    );
+    const overlay = {
+      hasWebContents: true,
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+      zoomFactor: 1,
+      pictureInPicture: false,
+      colorScheme: "system" as const,
+      audioMuted: false,
+      audible: false,
+      controller: "none" as const,
+      favicon: null,
+    };
+    await act(() => applyPreviewDesktopState(threadRef, snapshot.tabId, overlay));
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: false }],
+        }),
+      }),
+    );
+    const reportCount = mocks.focus.mock.calls.length;
+    await act(() =>
+      applyPreviewDesktopState(threadRef, snapshot.tabId, { ...overlay, loading: true }),
+    );
+    expect(mocks.focus).toHaveBeenCalledTimes(reportCount);
+    const runtimeTabId = previewRuntimeTabId(threadRef, null, snapshot.tabId);
+    const owner = Symbol();
+    await act(() => {
+      useBrowserSurfaceStore.getState().claim(runtimeTabId, owner, false);
+      useBrowserSurfaceStore
+        .getState()
+        .present(runtimeTabId, owner, { x: 0, y: 0, width: 800, height: 600 }, true, 0, 1);
+    });
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: true }],
+        }),
+      }),
+    );
+    for (const visibilityState of ["hidden", "visible"]) {
+      await act(() => {
+        Object.assign(document, { visibilityState });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mocks.focus).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            focused: false,
+            liveTabs: [{ threadId, tabId: snapshot.tabId, visible: visibilityState === "visible" }],
+          }),
+        }),
+      );
+    }
+    await act(() => {
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({ type: "connected", connectionId: "reconnected" }),
+      );
+    });
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          connectionId: "reconnected",
+          liveTabs: [{ threadId, tabId: snapshot.tabId, visible: true }],
+        }),
+      }),
+    );
+    await act(() =>
+      applyPreviewDesktopState(threadRef, snapshot.tabId, { ...overlay, hasWebContents: false }),
+    );
+    expect(mocks.focus).toHaveBeenLastCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ liveTabs: [] }) }),
+    );
+  });
+
+  it.each([false, true])(
+    "retries failed reports without clearing newer connection reports (reconnect: %s)",
+    async (reconnect) => {
+      const report = deferred<Awaited<ReturnType<typeof mocks.focus>>>();
+      mocks.focus.mockReturnValueOnce(report.promise);
+      await act(() => {
+        appAtomRegistry.set(
+          requestsAtom,
+          AsyncResult.success({ type: "connected", connectionId: "first" }),
+        );
+      });
+      if (reconnect) {
+        await act(() => {
+          appAtomRegistry.set(
+            requestsAtom,
+            AsyncResult.success({ type: "connected", connectionId: "second" }),
+          );
+        });
+      }
+      await act(async () => {
+        report.resolve(AsyncResult.failure(Cause.fail(new Error("Focus report failed"))));
+        await report.promise;
+      });
+      expect(mocks.focus).toHaveBeenCalledTimes(reconnect ? 2 : 1);
+      await act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(mocks.focus).toHaveBeenCalledTimes(2);
+      expect(mocks.focus).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({ connectionId: reconnect ? "second" : "first" }),
+        }),
+      );
+    },
+  );
+
+  it("does not claim an available runtime from a server snapshot alone", async () => {
+    const response = deferred<PreviewAutomationResponse>();
+    mocks.respond.mockImplementationOnce(async ({ input }) => response.resolve(input));
+    await act(async () => {
+      applyPreviewServerSnapshot(threadRef, snapshot);
+      appAtomRegistry.set(
+        requestsAtom,
+        AsyncResult.success({
+          ...requestEvent,
+          request: {
+            ...requestEvent.request,
+            operation: "status",
+            tabId: snapshot.tabId,
+            input: {},
+          },
+        }),
+      );
+      await response.promise;
+    });
+    await expect(response.promise).resolves.toMatchObject({
+      ok: true,
+      result: { available: false, tabId: snapshot.tabId },
+    });
   });
 });

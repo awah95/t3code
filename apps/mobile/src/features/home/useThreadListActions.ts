@@ -521,7 +521,7 @@ export function useThreadListActions(): {
     [updateThreadMetadata],
   );
 
-  // Plan against the complete section so filtering does not change a move.
+  // Plan against the complete top-level section so filtering does not change a move.
   const reorderPinnedMutation = useAtomCommand(threadEnvironment.reorderPin, {
     reportFailure: false,
   });
@@ -535,7 +535,8 @@ export function useThreadListActions(): {
       const current = shells.find(
         (row) => row.id === thread.id && row.environmentId === thread.environmentId,
       );
-      if (!current || current.archivedAt !== null) return false;
+      if (!current || current.archivedAt !== null || current.parentThreadId !== undefined)
+        return false;
       thread = current;
       const section =
         typeof direction === "object" && direction.section !== undefined
@@ -567,7 +568,7 @@ export function useThreadListActions(): {
         return false;
       }
       const ordered = getThreadListV2OrderedSection({
-        threads: shells,
+        threads: shells.filter((shell) => shell.parentThreadId === undefined),
         section,
         now: new Date().toISOString(),
         queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
