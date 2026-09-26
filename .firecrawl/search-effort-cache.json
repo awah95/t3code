@@ -1,0 +1,45 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://pub.towardsai.net/grok-4-7-looks-like-a-breakthrough-until-you-check-the-effort-level-c58f14afd7ec",
+        "title": "Grok 4.7 Looks Like a Breakthrough Until You Check the Effort Level",
+        "description": "2 days ago · The model docs list grok-4.7 , a 500k context window, and low, medium, high, and xhigh reasoning effort, with high as the default. The model ...",
+        "position": 1
+      },
+      {
+        "url": "https://www.tryfriday.ai/blog/grok-4-7-benchmarks-pricing-context-window",
+        "title": "Grok 4.7: Benchmarks, Same $2/$6 Pricing, Terminal-Bench & Agentic ...",
+        "description": "5 days ago · 1: At high reasoning effort, Grok 4.7 reaches 71.0%, outperforming Claude Fable 5.1 (70.0%) and Grok 4.6 (65.2%), matching the frontier ...",
+        "position": 2
+      },
+      {
+        "url": "https://www.reddit.com/r/cursor/comments/1wk16qb/so_what_happened_to_cursor_in_the_past_few_weeks/",
+        "title": "So what happened to Cursor in the past few weeks? - Reddit",
+        "description": "7 days ago · ... reasoning effort when the load gets high. What used to take grok medium + composer takes grok high + composer. Usage overall seems about the ...",
+        "position": 3
+      },
+      {
+        "url": "https://aicatchup.com/news/grok-4-6-launch",
+        "title": "Grok 4.6: Pricing, Benchmarks, Cursor Access, and 2x Promo | AI Catchup",
+        "description": "... cache discounts. (Grok 4.6 docs). How Grok 4.6 Compares on ... SpaceXAI, reasoning effort docs: https://docs.x.ai/developers/model ...",
+        "position": 4
+      },
+      {
+        "url": "https://www.linkedin.com/posts/digg_digg-tech-news-before-it-trends-activity-7507876009556201472-xYX0",
+        "title": "Grok 4.7 Released with Improved Performance and New Features",
+        "description": "4 days ago · ... reasoning effort levels [low, medium, high (default), and xhigh], allowing users to optimize trade-offs between speed, cost, and depth per ...",
+        "position": 5
+      },
+      {
+        "url": "https://forum.cursor.com/t/models-explanation/159520",
+        "title": "Models Explanation - Discussions - Cursor - Community Forum",
+        "description": "Spark is the Codex 5.3 variant with low reasoning effort. It shows as Medium, has a 128k context, and it's in the Auto+Composer pool ...",
+        "position": 6
+      }
+    ]
+  },
+  "id": "01a0dc4b-f430-76df-a344-cc77afc32320",
+  "creditsUsed": 2
+}

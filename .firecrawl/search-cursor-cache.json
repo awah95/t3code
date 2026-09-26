@@ -1,0 +1,46 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://haraldmaassen.com/devblog/post/the-effort-dial-the-cache-and-the-five-minute-subagent",
+        "title": "The effort dial, the cache, and the five-minute subagent — Blog",
+        "description": "6 days ago · Two settings you might not expect sit near the top: the model and the effort level. Turn the effort dial mid-session and you rebuild the cache.",
+        "position": 1
+      },
+      {
+        "url": "https://www.reddit.com/r/codex/comments/1v25hhq/for_codex_does_the_cache_work_only_for_the_model/",
+        "title": "For Codex, does the cache work only for the model or model AND effort ...",
+        "description": "I know that switching model (Sol-Terra-Luna) will surely break the cache, but I don't know if switching only the effort level within a model ...Changing effort level invalidates cache? : r/Anthropic - RedditDo you change model or effort mid-session? : r/claude - RedditMore results from www.reddit.com",
+        "position": 2
+      },
+      {
+        "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+        "title": "Prompt caching - Claude Platform Docs",
+        "description": "## Prompt caching examples\n### Large context caching example\n```\nclient = anthropic.Anthropic()\n\nresponse = client.messages.create(\n    model=\"claude-opus-5-5\",\n    max_tokens=1024,\n    system=[\\\n        {\\\n            \"type\": \"text\",\\\n            \"text\": \"You are an AI assistant tasked with analyzing legal documents.\",\\\n        },\\\n        {\\\n            \"type\": \"text\",\\\n            \"text\": \"Here is the full text of a complex legal agreement: [Insert full text of a 50-page legal agreement here]\",\\\n            \"cache_control\": {\"type\": \"ephemeral\"},\\\n        },\\\n    ],\n    messages=[\\\n        {\\\n            \"role\": \"user\",\\\n            \"content\": \"What are the key terms and conditions in this agreement?\",\\\n        }\\\n    ],\n)\nprint(response.usage.model_dump_json())\n```\n\n### Continuing a multi-turn conversation\n```\nclient = anthropic.Anthropic()\n\nresponse = client.messages.create(\n    model=\"claude-opus-5-5\",\n    max_tokens=1024,\n    system=[\\\n        {\\\n            \"type\": \"text\",\\\n            \"text\": \"...long system prompt\",\\\n            \"cache_control\": {\"type\": \"ephemeral\"},\\\n        }\\\n    ],\n    messages=[\\\n        # ...long conversation so far\\\n        {\\\n            \"role\": \"user\",\\\n            \"content\": [\\\n                {\\\n                    \"type\": \"text\",\\\n                    \"text\": \"Hello, can you tell me more about the solar system?\",\\\n                }\\\n            ],\\\n        },\\\n        {\\\n            \"role\": \"assistant\",\\\n            \"content\": \"Certainly! The solar system is the collection of celestial bodies that orbit our Sun. It consists of eight planets, numerous moons, asteroids, comets, and other objects. The planets, in order from closest to farthest from the Sun, are: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and Neptune. Each planet has its own unique characteristics and features. Is there a specific aspect of the solar system you'd like to know more about?\",\\\n        },\\\n        {\\\n            \"role\": \"user\",\\\n            \"content\": [\\\n                {\"type\": \"text\", \"text\": \"Good to know.\"},\\\n                {\\\n                    \"type\": \"text\",\\\n                    \"text\": \"Tell me more about Mars.\",\\\n                    \"cache_control\": {\"type\": \"ephemeral\"},\\\n                },\\\n            ],\\\n        },\\\n    ],\n)\nprint(response.usage.model_dump_json())\n```",
+        "position": 3
+      },
+      {
+        "url": "https://forum.cursor.com/t/auto-mode-prompt-caching-not-working/154654",
+        "title": "Auto mode: Prompt caching not working - Cursor - Community Forum",
+        "description": "When using Auto mode, the system consistently fails to use prompt caching (0 Cache Read / 0 Cache Write), forcing the entire context to be ...",
+        "position": 4
+      },
+      {
+        "url": "https://github.com/anthropics/claude-code/issues/63962",
+        "title": "[BUG] /effort change confirmation dialog warns about cache miss, but ...",
+        "description": "# [BUG] /effort change confirmation dialog warns about cache miss, but cache is preserved#63962\n## Description\n### Bug description\n_\"This conversation is cached for the current effort level._\n\nEmpirical testing shows the prompt cache is fully preserved across effort level changes.\n\n## Activity\n### uguremrah commented on Jul 3on Jul 3, 2026\n```\n\"Switch model?\" / \"Change effort level?\"   <- same component, ternary on the dialog type\n\"... means the full history gets re-read on your next message.\"   <- shared warning suffix\n```",
+        "position": 5,
+        "category": "github"
+      },
+      {
+        "url": "https://forum.cursor.com/t/max-mode-forced-in-cli-with-opus-5-5-1m/172793",
+        "title": "Max mode forced in CLI with Opus 5.5 1M - Cursor - Community Forum",
+        "description": "3 days ago · In Cursor CLI, when we attempt to set the model to Opus 5.5 with a 1M context window, we can set the effort level, but upon returning to the ...",
+        "position": 6
+      }
+    ]
+  },
+  "id": "01a0dc4b-2cb8-7184-bb07-a789667d3112",
+  "creditsUsed": 2
+}

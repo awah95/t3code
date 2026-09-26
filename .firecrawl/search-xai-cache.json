@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://docs.x.ai/developers/grok-4-7",
+        "title": "Grok 4.7 | SpaceXAI Docs",
+        "description": "# [Grok 4.7](https://docs.x.ai/developers/grok-4-7#grok-47)\n## [Using the API](https://docs.x.ai/developers/grok-4-7#using-the-api)\n```\nimport os\nfrom xai_sdk import Client\nfrom xai_sdk.chat import user\n\nclient = Client(api_key=os.getenv(\"XAI_API_KEY\"))\n\nchat = client.chat.create(model=\"grok-4.7\")\nchat.append(user(\"Find and fix the bug, then explain it: function median(a){a.sort();return a[a.length/2]}\"))\n\nresponse = chat.sample()\nprint(response.content)\n```\n\n```\nimport { xai } from '@ai-sdk/xai';\nimport { generateText } from 'ai';\n\nconst { text } = await generateText({\n  model: xai.responses('grok-4.7'),\n  prompt:\n    'Find and fix the bug, then explain it: function median(a){a.sort();return a[a.length/2]}',\n});\n\nconsole.log(text);\n```\n\n```\nimport OpenAI from 'openai';\n\nconst client = new OpenAI({\n  apiKey: process.env.XAI_API_KEY,\n  baseURL: 'https://api.x.ai/v1',\n});\n\nconst response = await client.responses.create({\n  model: 'grok-4.7',\n  input: [\\\n    {\\\n      role: 'user',\\\n      content:\\\n        'Find and fix the bug, then explain it: function median(a){a.sort();return a[a.length/2]}',\\\n    },\\\n  ],\n});\n\nconsole.log(response.output_text);\n```\n\n```\ncurl https://api.x.ai/v1/responses \\\n  -H \"Content-Type: application/json\" \\\n  -H \"Authorization: Bearer $XAI_API_KEY\" \\\n  -d '{\n    \"model\": \"grok-4.7\",\n    \"input\": \"Find and fix the bug, then explain it: function median(a){a.sort();return a[a.length/2]}\"\n  }'\n```\n\n## [At a glance](https://docs.x.ai/developers/grok-4-7#at-a-glance)\n| Property | Value |\n|-|-|\n| Reasoning | Low, medium, high (default), or xhigh |",
+        "position": 1
+      },
+      {
+        "url": "https://docs.x.ai/developers/models",
+        "title": "Grok Models & Pricing | SpaceXAI Docs",
+        "description": "5 days ago · Compare all current Grok models: capabilities, context windows, and per-token API pricing for text, image, video, and voice.",
+        "position": 2
+      },
+      {
+        "url": "https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech",
+        "title": "Speech to Speech | SpaceXAI Docs - Grok API Documentation",
+        "description": "# [Speech to Speech](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#speech-to-speech)\n## [Using Tools with Grok Speech to Speech API](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#using-tools-with-grok-speech-to-speech-api)\n### [Collections Search with `file_search`](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#collections-search-with-file_search)\n```\nconst COLLECTION_ID = \"your-collection-id\"; // Replace with your collection ID\n\nconst sessionConfig = {\n    type: \"session.update\",\n    session: {\n        ...\n        tools: [\\\n            {\\\n                type: \"file_search\",\\\n                vector_store_ids: [COLLECTION_ID],\\\n                max_num_results: 10,\\\n            },\\\n        ],\n    },\n};\n```\n\n### [Web Search and X Search](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#web-search-and-x-search)\n```\nsession_config = {\n    \"type\": \"session.update\",\n    \"session\": {\n        ...\n        \"tools\": [\\\n            {\\\n                \"type\": \"web_search\",\\\n                \"allowed_domains\": [\"x.ai\", \"docs.x.ai\"],\\\n                \"location\": {\"country\": \"US\", \"city\": \"San Francisco\"},\\\n            },\\\n            {\\\n                \"type\": \"x_search\",\\\n                \"allowed_x_handles\": [\"xai\"],\\\n                \"from_date\": \"2025-01-01\",\\\n                \"to_date\": \"2025-06-01\",\\\n            },\\\n        ],\n    },\n}\n```\n\n```\nconst sessionConfig = {\n    type: \"session.update\",\n    session: {\n        ...\n        tools: [\\\n            {\\\n                type: \"web_search\",\\\n                allowed_domains: [\"x.ai\", \"docs.x.ai\"],\\\n                location: { country: \"US\", city: \"San Francisco\" },\\\n            },\\\n            {\\\n                type: \"x_search\",\\\n                allowed_x_handles: [\"xai\"],\\\n                from_date: \"2025-01-01\",\\\n                to_date: \"2025-06-01\",\\\n            },\\\n        ],\n    },\n};\n```\n\n## [Force Message](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#force-message)\n```\nawait ws.send(json.dumps({\n    \"type\": \"conversation.item.create\",\n    \"item\": {\n        \"type\": \"force_message\",\n        \"role\": \"assistant\",\n        \"interruptible\": False,\n        \"content\": [{\"type\": \"output_text\", \"text\": \"This call is being recorded.\"}]\n    }\n}))\n# Do NOT send response.create — the force_message IS the turn.\n```\n\n## [Best Practices](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#best-practices)\n### [Avoid Audio Overlap During Tool Calls](https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech#avoid-audio-overlap-during-tool-calls)\n```\nws.on(\"message\", async (message) => {\n  const event = JSON.parse(message);\n\n  if (event.type === \"response.function_call_arguments.done\") {\n    // 1. Execute the tool\n    const result = await executeFunction(event.name, JSON.parse(event.arguments));\n\n    // 2. Send the function result immediately\n    ws.send(JSON.stringify({\n      type: \"conversation.item.create\",\n      item: {\n        type: \"function_call_output\",\n        call_id: event.call_id,\n        output: JSON.stringify(result),\n      },\n    }));\n\n    // 3. Show a \"thinking\" indicator in the UI\n    showThinkingIndicator();\n\n    // 4. Wait for current audio playback to finish\n    await waitForPlaybackComplete();\n\n    // 5. Now request the next response\n    ws.send(JSON.stringify({ type: \"response.create\" }));\n    hideThinkingIndicator();\n  }\n});\n```",
+        "position": 3
+      },
+      {
+        "url": "https://docs.x.ai/developers/pricing",
+        "title": "API Pricing | SpaceXAI Docs",
+        "description": "5 days ago · Models with long context pricing bill the long context rates for all tokens in a request once its prompt reaches the model's long context ...",
+        "position": 4
+      }
+    ]
+  },
+  "id": "01a0dc4b-3714-7299-bb4a-38387a3c91a3",
+  "creditsUsed": 2
+}

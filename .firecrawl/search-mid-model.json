@@ -1,0 +1,45 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://www.mindstudio.ai/blog/why-not-switch-models-mid-conversation-ai-coding-agents",
+        "title": "Why You Shouldn't Switch Models Mid-Conversation in AI Coding Agents",
+        "description": "## What Actually Happens When You Switch Models Mid-Session\n### What Happens at the Switch Point\nThe moment you switch models mid-conversation, you trigger a full cache miss.\n\n## One coffee.One working app.\nSo when you switch models, the new model starts from zero and has to recompute attention over the full conversation history from scratch.\n\n## Key Takeaways\n- Switching models mid-conversation triggers a full KV cache miss, forcing the new model to reprocess all prior context from scratch — increasing latency and cost.",
+        "position": 1
+      },
+      {
+        "url": "https://forum.cursor.com/t/model-changes-mid-conversation-in-the-auto-routers/166831",
+        "title": "Model changes mid-conversation in the Auto Routers - Discussions",
+        "description": "# [Model changes mid-conversation in the Auto Routers](https://forum.cursor.com/t/model-changes-mid-conversation-in-the-auto-routers/166831)\n## post by Igor_Kupczynski on Jul 28\nPreviously, a best practice was to keep the same model for the entirety of the conversation for many reasons: prompt caching, system prompt, thinking tokens.",
+        "position": 2
+      },
+      {
+        "url": "https://www.reddit.com/r/ClaudeAI/comments/1srtxwt/switching_model_mid_conversation/",
+        "title": "Switching model mid conversation : r/ClaudeAI - Reddit",
+        "description": "Switching models will reset the prompt cache, causing 10x usage for the next prompt when the chat history is long.",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/docs/cli/using",
+        "title": "Using Agent in CLI | Cursor Docs",
+        "description": "Use Agent from the command line with prompting strategies, MCP support, and rule integration. Navigate conversations, review changes, and manage command ...",
+        "position": 4
+      },
+      {
+        "url": "https://backgrind.com/blog/switching-models-mid-session/",
+        "title": "Can You Change the Model Mid-Session? What It Costs",
+        "description": "Every model switch in Claude Code invalidates the prompt cache, so the next turn re-reads your entire conversation history at full write rates.",
+        "position": 5
+      },
+      {
+        "url": "https://forum.cursor.com/t/bug-agent-acp-model-switching-updates-session-metadata-but-does-not-change-the-inference-backend/157312",
+        "title": "Bug: `agent acp` model switching updates session metadata but does ...",
+        "description": "# [Bug: `agent acp` model switching updates session metadata but does not change the inference backend](https://forum.cursor.com/t/bug-agent-acp-model-switching-updates-session-metadata-but-does-not-change-the-inference-backend/157312)\n## Closed on Jun 3\n### Related topics\n| Topic |  | Replies | Views | Activity |\n|-|-|-|-|-|\n| [Model switches mid-conversation](https://forum.cursor.com/t/model-switches-mid-conversation/169732)<br>[Bug Reports](https://forum.cursor.com/c/support/bug-report/6) <br>- [chat](https://forum.cursor.com/tag/chat/272),<br>- [anthropic](https://forum.cursor.com/tag/anthropic/340) | [![](https://sea3.discourse-cdn.com/cursor1/user_avatar/forum.cursor.com/mohitjain/24/100229_2.png)](https://forum.cursor.com/u/mohitjain)[![](https://avatars.discourse-cdn.com/v4/letter/m/ba9def/24.png)](https://forum.cursor.com/u/mike_johnson) | [2](https://forum.cursor.com/t/model-switches-mid-conversation/169732/1) | 78 | [23d](https://forum.cursor.com/t/model-switches-mid-conversation/169732/8) |",
+        "position": 6
+      }
+    ]
+  },
+  "id": "01a0dc4b-ee99-70b8-9f94-ad78f047cbb8",
+  "creditsUsed": 2
+}

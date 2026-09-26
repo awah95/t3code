@@ -1,0 +1,39 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://cursor.com/docs/cli/changelog",
+        "title": "CLI Changelog | Cursor Docs",
+        "description": "# CLI Changelog\n## [June 29, 2026 release](https://cursor.com/docs/cli/changelog#jun-29-2026)\n### [Workspaces and commands](https://cursor.com/docs/cli/changelog#jun-29-2026-workspaces-and-commands)\n- **Fixed model options resetting.** Changing Fast, reasoning effort, or context in `/model` preserves your other compatible choices and keeps Max Mode in sync.",
+        "position": 1
+      },
+      {
+        "url": "https://cursor.com/docs/models/grok-4-6",
+        "title": "Grok 4.6 | Cursor Docs",
+        "description": "Grok 4.6 supports four effort levels: xhigh, high (default), medium, and low. Higher effort gives the model more time to work through difficult tasks.",
+        "position": 2
+      },
+      {
+        "url": "https://cursor.com/docs/bugbot",
+        "title": "Bugbot | Cursor Docs",
+        "description": "# Bugbot\n## [Rules](https://cursor.com/docs/bugbot#rules)\n### Standards: Require tests for backend changes\n```\nIf the PR modifies files in {server/**, api/**, backend/**} and there are no changes in {**/*.test.*, **/__tests__/**, tests/**}, then:\n- Add a blocking Bug titled \"Missing tests for backend changes\"\n- Body: \"This PR modifies backend code but includes no accompanying tests. Please add or update tests.\"\n- Apply label \"quality\"\n```\n\n## [Admin Configuration API](https://cursor.com/docs/bugbot#admin-configuration-api)\n### [Enabling or disabling repositories](https://cursor.com/docs/bugbot#enabling-or-disabling-repositories)\n```\ncurl -X POST https://api.cursor.com/bugbot/repo/update \\\n  -H \"Authorization: Bearer $API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"repoUrl\": \"https://github.com/your-org/your-repo\",\n    \"enabled\": true,\n    \"manualTriggerOnly\": false\n  }'\n```\n\n### [Managing user access](https://cursor.com/docs/bugbot#managing-user-access)\n#### [Adding or removing a user](https://cursor.com/docs/bugbot#adding-or-removing-a-user)\n```\ncurl -X POST https://api.cursor.com/bugbot/user/update \\\n  -H \"Authorization: Bearer $API_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"username\": \"octocat\",\n    \"allow\": true\n  }'\n```",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/docs/models/cursor-composer-2-5",
+        "title": "Composer 2.5 | Cursor Docs",
+        "description": "Composer 2.5 is Cursor's own agentic model. It builds on Composer 2 with stronger intelligence on long agentic tasks, better effort calibration, tool selection, ...",
+        "position": 4
+      },
+      {
+        "url": "https://cursor.com/docs/cloud-agent/self-hosted/pool",
+        "title": "Team Pools | Cursor Docs",
+        "description": "# Team Pools\n## [Register multiple repo roots](https://cursor.com/docs/cloud-agent/self-hosted/pool#register-multiple-repo-roots)\n```\nexport WORKER_ROOT=\"$HOME/cursor-repos/my-org\"\nmkdir -p \"$WORKER_ROOT\"\n\ngit clone git@github.com:my-org/app.git \"$WORKER_ROOT/app\"\ngit clone git@github.com:my-org/infra.git \"$WORKER_ROOT/infra\"\n\nexport CURSOR_API_KEY=\"<key>\"\n```",
+        "position": 5
+      }
+    ]
+  },
+  "id": "01a0dc4b-31c4-72dd-a085-86291fd76d9c",
+  "creditsUsed": 2
+}

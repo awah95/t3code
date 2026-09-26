@@ -1,0 +1,45 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://forum.cursor.com/t/auto-mode-not-using-prompt-caching-0-cache-read-write-sudden-usage-spike/154278",
+        "title": "Auto mode not using prompt caching (0 cache read/write) → sudden ...",
+        "description": "After installing the Cursor update released today, prompt caching started working again when using Auto mode. New requests in Auto mode now ...",
+        "position": 1
+      },
+      {
+        "url": "https://cursor.com/docs/cli/changelog",
+        "title": "CLI Changelog | Cursor Docs",
+        "description": "Changing Fast, reasoning effort, or context in /model preserves your other compatible choices and keeps Max Mode in sync.",
+        "position": 2
+      },
+      {
+        "url": "https://forum.cursor.com/t/windows-remote-control-worker-crashes-better-sqlite3-node-module-version-127-vs-137-cursor-3-15-6/167841",
+        "title": "Windows Remote Control worker crashes — better-sqlite3 ...",
+        "description": "Renamed Cursor's cached agent-cli directory so Cursor was forced to download/recreate a clean Agent CLI installation. Cursor successfully ...",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/blog/prompt-design",
+        "title": "Prompt design - Cursor",
+        "description": "Caching is different: for agents in particular, you want to make sure that your re-renders are cheap by only changing the later parts of the ...",
+        "position": 4
+      },
+      {
+        "url": "https://forum.cursor.com/t/cursor-deleted-wiped-my-whole-hard-drive/161468",
+        "title": "Cursor Deleted/wiped my whole hard drive - Bug Reports",
+        "description": "Cursor executed destructive filesystem operations after a simple cache cleanup request, resulting in massive unintended data loss (~300GB) and ...",
+        "position": 5
+      },
+      {
+        "url": "https://forum.cursor.com/t/private-team-marketplace-plugin-install-fails-on-3-2-11-three-stage-clone-fallback-all-broken/159257",
+        "title": "Private team marketplace plugin install fails on 3.2.11 -- three-stage ...",
+        "description": "Cursor tries to install/refresh a plugin. Cursor attempts auto-install of the team plugin → fails silently. anyone who installed Cursor before ...",
+        "position": 6
+      }
+    ]
+  },
+  "id": "01a0dc4b-b1b3-779c-a9c4-1e50426e5d10",
+  "creditsUsed": 2
+}

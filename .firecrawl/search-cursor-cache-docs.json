@@ -1,0 +1,57 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://cursor.com/docs/models-and-pricing",
+        "title": "Models & Pricing | Cursor Docs",
+        "description": "On Teams and Enterprise plans, Cursor Router picks the model for each Auto request based on your optimization mode. Name, Input, Cache Write, Cache Read",
+        "position": 1
+      },
+      {
+        "url": "https://cursor.com/docs/models/claude-fable-5",
+        "title": "Claude Fable 5 | Cursor Docs",
+        "description": "# Claude Fable 5\nIt is Anthropic's latest Mythos-class model, with cheaper prompt-cache reads.",
+        "position": 2
+      },
+      {
+        "url": "https://cursor.com/docs/models/grok-4-6",
+        "title": "Grok 4.6 | Cursor Docs",
+        "description": "Grok 4.6 is a frontier model from ... cached input tokens, and $12/M output tokens. All prices are per million tokens. Name, Input, Cache Write, Cache Read",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/docs/models/kimi-k3",
+        "title": "Kimi K3 | Cursor Docs",
+        "description": "Kimi K3 draws from the third-party Other Models pool, which charges at the rates below. All prices are per million tokens. Name, Input, Cache Write, Cache Read",
+        "position": 4
+      },
+      {
+        "url": "https://cursor.com/docs/models/claude-fable-5-1",
+        "title": "Claude Fable 5.1 | Cursor Docs",
+        "description": "Prompt-cache reads are $0.25 per million tokens, 75% below Fable 5's $1.00 cache-read rate. Cache writes stay at $12.50 per million tokens. Fable 5.1 ...",
+        "position": 5
+      },
+      {
+        "url": "https://cursor.com/docs/models/claude-4-5-haiku",
+        "title": "Claude 4.5 Haiku | Cursor Docs",
+        "description": "Model ID. claude-4-5-haiku. Context window. 200k. Max context. -. Provider ... Cache Write, Cache Read, Output. Anthropic. Claude 4.5 Haiku. $1, $1.25 ...",
+        "position": 6
+      },
+      {
+        "url": "https://cursor.com/docs/models/gemini-3-6-flash",
+        "title": "Gemini 3.6 Flash | Cursor Docs",
+        "description": "90% discount on cached input tokens ($0.15/1M). Strong for repeated context ... Cache Write, Cache Read, Output. Google. Gemini 3.6 Flash. $1.5, -, $0.15, $7.5 ...",
+        "position": 7
+      },
+      {
+        "url": "https://cursor.com/docs/models/gpt-5-3-codex",
+        "title": "GPT-5.3 Codex | Cursor Docs",
+        "description": "GPT-5.3 Codex is OpenAI's flagship coding model. It leads Terminal ... Cache Write, Cache Read, Output. OpenAI. GPT-5.3 Codex. $1.75, -, $0.175, $14 ...",
+        "position": 8
+      }
+    ]
+  },
+  "id": "01a0dc4c-3ee1-7372-a2f2-4978f3a089f5",
+  "creditsUsed": 2
+}

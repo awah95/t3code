@@ -1,0 +1,51 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://cursor.com/docs/sdk/typescript",
+        "title": "Cursor TypeScript SDK | Cursor Documentation",
+        "description": "# Cursor TypeScript SDK\n## [Sending messages](https://cursor.com/docs/sdk/typescript#sending-messages)\n### [Per-run model override](https://cursor.com/docs/sdk/typescript#per-run-model-override)\n```\nconst run = await agent.send(\"Plan the refactor\", {\n  model: { id: \"composer-2.5\", params: [{ id: \"fast\", value: \"true\" }] },\n});\n\nconsole.log(agent.model);  // updated to the override after the send succeeds\n```\n\n## [The Cursor namespace](https://cursor.com/docs/sdk/typescript#the-cursor-namespace)\n### [Cursor.models.list()](https://cursor.com/docs/sdk/typescript#cursormodelslist)\n```\nconst models = await Cursor.models.list();\nconst composer = models.find((model) => model.id === \"composer-2.5\");\n\nconsole.log(composer?.parameters);\n// [\\\n//   {\\\n//     id: \"fast\",\\\n//     displayName: \"Fast\",\\\n//     values: [\\\n//       { value: \"false\" },\\\n//       { value: \"true\", displayName: \"Fast\" },\\\n//     ],\\\n//   },\\\n// ]\n```\n\n#### [Best practices](https://cursor.com/docs/sdk/typescript#best-practices)\n```\nconst models = await Cursor.models.list();\nconst composer = models.find((m) => m.id === \"composer-2.5\");\nconst fast = composer?.parameters?.find((p) => p.id === \"fast\");\nconst fastValue = fast?.values.find((v) => v.value === \"true\")?.value;\n\nconst model = composer\n    ? {\n        id: composer.id,\n        params: fastValue ? [{ id: \"fast\", value: fastValue }] : undefined,\n      }\n    : {\n        id: \"auto-smart\",\n        params: [{ id: \"optimize_for\", value: \"balanced\" }],\n      };\n```",
+        "position": 1
+      },
+      {
+        "url": "https://cursor.com/docs/account/organizations/organization-admin-api",
+        "title": "Organization API | Cursor Docs",
+        "description": "The Organization API lets you perform actions that apply across teams linked to an organization, such as moving users between those teams, reporting on pooled ...",
+        "position": 2
+      },
+      {
+        "url": "https://cursor.com/docs/sdk/python",
+        "title": "Cursor Python SDK | Cursor Documentation",
+        "description": "# Cursor Python SDK\n## [Sending messages](https://cursor.com/docs/sdk/python#sending-messages)\n### [Per-run model override](https://cursor.com/docs/sdk/python#per-run-model-override)\n```\nfrom cursor_sdk import ModelParameterValue, ModelSelection, SendOptions\n\nrun = agent.send(\n    \"Plan the refactor\",\n    SendOptions(\n        model=ModelSelection(\n            id=\"composer-2.5\",\n            params=[ModelParameterValue(id=\"fast\", value=\"true\")],\n        ),\n    ),\n)\n```\n\n## [The Cursor namespace](https://cursor.com/docs/sdk/python#the-cursor-namespace)\n```\nfrom cursor_sdk import Cursor\n\nme = Cursor.me()\nmodels = Cursor.models.list()\nrepositories = Cursor.repositories.list()\n```\n\n```\nme = client.me()\nmodels = client.models.list()\nrepositories = client.repositories.list()\n```\n\n```\nfrom cursor_sdk import AsyncCursor\n\nme = await AsyncCursor.me(client=client)\nmodels = await AsyncCursor.models.list(client=client)\nrepositories = await AsyncCursor.repositories.list(client=client)\n```\n\n```\nmodels = Cursor.models.list()\ncomposer = next((model for model in models if model.id == \"composer-2.5\"), None)\n\nprint(composer.parameters if composer else [])\n# [\\\n#   ModelParameterDefinition(\\\n#       id=\"fast\",\\\n#       display_name=\"Fast\",\\\n#       values=(\\\n#           ModelParameterDefinitionValue(value=\"false\"),\\\n#           ModelParameterDefinitionValue(value=\"true\", display_name=\"Fast\"),\\\n#       ),\\\n#   ),\\\n# ]\n```",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/docs/reference/ignore-file",
+        "title": "Ignore File | Cursor Docs",
+        "description": "# Ignore file\n## [Configuring `.cursorignore`](https://cursor.com/docs/reference/ignore-file#configuring-cursorignore)\n### [Pattern examples](https://cursor.com/docs/reference/ignore-file#pattern-examples)\n```\nconfig.json      # Specific file\ndist/           # Directory\n*.log           # File extension\n**/logs         # Nested directories\n!app/           # Exclude from ignore (negate)\n```\n\n## [Files ignored by default](https://cursor.com/docs/reference/ignore-file#files-ignored-by-default)\n### [Negation pattern limitations](https://cursor.com/docs/reference/ignore-file#negation-pattern-limitations)\n```\n# Ignore all files in public folder\npublic/*\n\n# This works, as the file exists at the top level\n!public/index.html\n\n# This doesn't work - cannot re-include files from nested directories\n!public/assets/style.css\n```\n\n```\npublic/assets/*\n!public/assets/style.css # This file is now accessible\n```",
+        "position": 4
+      },
+      {
+        "url": "https://cursor.com/docs/cloud-agent/api/endpoints",
+        "title": "Cloud Agents API | Cursor Docs",
+        "description": "# Cloud Agents API\n## [Metadata Endpoints](https://cursor.com/docs/cloud-agent/api/endpoints#metadata-endpoints)\n### [List Models](https://cursor.com/docs/cloud-agent/api/endpoints#list-models)\n#### [Response Fields](https://cursor.com/docs/cloud-agent/api/endpoints#response-fields-9)\n```\ncurl --request GET \\\n  --url https://api.cursor.com/v1/models \\\n  -u YOUR_API_KEY:\n```",
+        "position": 5
+      },
+      {
+        "url": "https://cursor.com/docs/account/teams/admin-api",
+        "title": "Admin API | Cursor Docs",
+        "description": "# Admin API\n## [Model access](https://cursor.com/docs/account/teams/admin-api#model-access)\n### [List Models for a Provider](https://cursor.com/docs/account/teams/admin-api#list-models-for-a-provider)\n#### [Parameters](https://cursor.com/docs/account/teams/admin-api#parameters-23)\n```\ncurl -X GET https://api.cursor.com/teams/model-access/providers/anthropic/models \\\n  -u YOUR_API_KEY:\n```\n\n### [Update Model Access Model](https://cursor.com/docs/account/teams/admin-api#update-model-access-model)\n#### [Request body](https://cursor.com/docs/account/teams/admin-api#request-body-6)\n```\ncurl -X PUT https://api.cursor.com/teams/model-access/providers/anthropic/models/claude-opus-4-6 \\\n  -u YOUR_API_KEY: \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\n    \"enabled\": true,\n    \"parameters\": {\n      \"fast\": { \"allowedValues\": [\"false\"] }\n    }\n  }'\n```",
+        "position": 6
+      },
+      {
+        "url": "https://cursor.com/docs/api/origin",
+        "title": "Origin API | Cursor Docs",
+        "description": "Early Beta reference for the Cursor Origin API, including repositories, commits, checks, pull requests, apps, and installations.",
+        "position": 7
+      }
+    ]
+  },
+  "id": "01a0dc4b-5f1a-738d-9d34-e057e08cb65c",
+  "creditsUsed": 2
+}

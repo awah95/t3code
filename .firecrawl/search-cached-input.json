@@ -1,0 +1,39 @@
+{
+  "success": true,
+  "data": {
+    "web": [
+      {
+        "url": "https://cursor.com/docs/models-and-pricing",
+        "title": "Models & Pricing | Cursor Docs",
+        "description": "Input, Cache Write, Cache Read, Output ... On Teams and Enterprise plans, third-party model requests include a Cursor Token Rate of $0.25 per million tokens.",
+        "position": 1
+      },
+      {
+        "url": "https://cursor.com/docs/models/gemini-3-7-flash",
+        "title": "Gemini 3.7 Flash | Cursor Docs",
+        "description": "# Gemini 3.7 Flash\n## [Strengths](https://cursor.com/docs/models/gemini-3-7-flash#strengths)\n- 90% discount on cached input tokens ($0.075/1M). Useful for repeated context such as large codebases.",
+        "position": 2
+      },
+      {
+        "url": "https://cursor.com/docs/account/teams/pricing",
+        "title": "Team Pricing | Cursor Docs",
+        "description": "The Cursor Token Rate applies to input tokens, output tokens, and cached tokens on eligible third-party model requests. This includes when Auto routes to a ...",
+        "position": 3
+      },
+      {
+        "url": "https://cursor.com/docs/models/grok-4-6",
+        "title": "Grok 4.6 | Cursor Docs",
+        "description": "# Grok 4.6\n## [Pricing](https://cursor.com/docs/models/grok-4-6#pricing)\nThe Fast variant is priced at $4/M input tokens, $1/M cached input tokens, and $12/M output tokens.",
+        "position": 4
+      },
+      {
+        "url": "https://cursor.com/docs/models/claude-fable-5-1",
+        "title": "Claude Fable 5.1 | Cursor Docs",
+        "description": "Fable 5.1 bills at $10 per million input tokens and $50 per million output tokens, the same as Fable 5. Prompt-cache reads are $0.25 per million tokens, 75% ...",
+        "position": 5
+      }
+    ]
+  },
+  "id": "01a0dc4c-d172-758b-8813-3be4e865dfae",
+  "creditsUsed": 2
+}
