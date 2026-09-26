@@ -27,18 +27,20 @@ const result: JevRouteResult = {
   costKind: "estimated",
 };
 
+const mainContext = { environmentId: "env", projectId: "project", threadId: "thread" };
+const decide = (input: JevRouteRequest, context = mainContext) => decideWithJev(input, context);
+
 describe("Jev desktop routing lifecycle", () => {
   beforeEach(() => {
     useJevStore.setState({
-      enabled: false,
-      mode: "auto",
+      modesByThread: {},
       calls: [],
       revision: 0,
       notice: null,
+      panelOpen: false,
       billedUsd: 0,
       estimatedUsd: 0,
       unknownCostCalls: 0,
-      sideRoutingModes: {},
     });
     vi.stubGlobal("window", {
       desktopBridge: {
@@ -48,36 +50,61 @@ describe("Jev desktop routing lifecycle", () => {
     });
   });
   it("makes no routing call while off", async () => {
-    expect(await decideWithJev(request)).toBeNull();
+    expect(await decide(request)).toBeNull();
     expect(window.desktopBridge?.decideJevRoute).not.toHaveBeenCalled();
     expect(useJevStore.getState().calls).toHaveLength(0);
   });
-  it("persists manual side-chat routing per environment and thread", async () => {
+  it("persists independent, off-by-default routing for main and side threads", async () => {
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => storage.get(key) ?? null,
       setItem: (key: string, value: string) => storage.set(key, value),
     });
     const store = useJevStore.getState();
-    expect(store.getSideRoutingMode("env", "side")).toBe("auto");
-    store.setSideRoutingMode("env", "side", "manual");
-    expect(store.getSideRoutingMode("env", "side")).toBe("manual");
-    expect(store.getSideRoutingMode("other-env", "side")).toBe("auto");
-    expect(store.getSideRoutingMode("env", "other-side")).toBe("auto");
+    expect(store.getThreadEnabled("env", "main")).toBe(false);
+    expect(store.getThreadEnabled("env", "side")).toBe(false);
+    store.setThreadMode("env", "main", "guided");
+    expect(store.getThreadMode("env", "main")).toBe("guided");
+    expect(store.getThreadEnabled("env", "main")).toBe(true);
+    expect(store.getThreadEnabled("env", "side")).toBe(false);
+    store.setThreadMode("env", "side", "auto");
+    expect(store.getThreadMode("env", "side")).toBe("auto");
+    expect(store.getThreadMode("env", "main")).toBe("guided");
+    store.setThreadMode("env", "main", "off");
+    expect(store.getThreadEnabled("env", "side")).toBe(true);
+    expect(store.getThreadEnabled("other-env", "side")).toBe(false);
     vi.resetModules();
     const reloaded = await import("./jevStore");
-    expect(reloaded.useJevStore.getState().getSideRoutingMode("env", "side")).toBe("manual");
-    reloaded.useJevStore.getState().setSideRoutingMode("env", "side", "auto");
-    expect(reloaded.useJevStore.getState().getSideRoutingMode("env", "side")).toBe("auto");
-    expect([...storage.values()].join("")).not.toContain("manual");
+    expect(reloaded.useJevStore.getState().getThreadEnabled("env", "main")).toBe(false);
+    expect(reloaded.useJevStore.getState().getThreadEnabled("env", "side")).toBe(true);
+    expect(reloaded.useJevStore.getState().getThreadMode("env", "side")).toBe("auto");
+    reloaded.useJevStore.getState().setThreadMode("env", "side", "off");
+    expect(reloaded.useJevStore.getState().getThreadEnabled("env", "side")).toBe(false);
+    expect([...storage.values()].join("")).not.toContain("side");
+  });
+  it("migrates previously enabled chats to Guided only once", async () => {
+    const storage = new Map<string, string>([
+      ["t3:jev-thread-routing:v1", JSON.stringify({ [JSON.stringify(["env", "legacy"])]: true })],
+    ]);
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    });
+    vi.resetModules();
+    const migrated = await import("./jevStore");
+    expect(migrated.useJevStore.getState().getThreadMode("env", "legacy")).toBe("guided");
+    migrated.useJevStore.getState().setThreadMode("env", "legacy", "off");
+    vi.resetModules();
+    const reloaded = await import("./jevStore");
+    expect(reloaded.useJevStore.getState().getThreadMode("env", "legacy")).toBe("off");
   });
   it("pins manual selection until Auto is explicitly enabled", async () => {
-    useJevStore.getState().setEnabled(true);
-    useJevStore.getState().pinManual();
-    await decideWithJev(request);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    useJevStore.getState().pinManual("env", "thread");
+    await decide(request);
     expect(window.desktopBridge?.decideJevRoute).not.toHaveBeenCalled();
-    useJevStore.getState().setEnabled(true);
-    expect((await decideWithJev(request))?.choice).toBe("one");
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    expect((await decide(request))?.choice).toBe("one");
   });
   it("discards an in-flight decision after Auto is disabled and still accounts its cost", async () => {
     let resolve!: (value: JevRouteResult) => void;
@@ -86,10 +113,10 @@ describe("Jev desktop routing lifecycle", () => {
         resolve = done;
       }),
     );
-    useJevStore.getState().setEnabled(true);
-    const pending = decideWithJev(request);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    const pending = decide(request);
     useJevStore.getState().clearCalls();
-    useJevStore.getState().setEnabled(false);
+    useJevStore.getState().setThreadMode("env", "thread", "off");
     expect(window.desktopBridge?.cancelJevRoute).toHaveBeenCalledWith("test");
     resolve(result);
     expect(await pending).toBeNull();
@@ -104,16 +131,17 @@ describe("Jev desktop routing lifecycle", () => {
           pendingResults.set(input.requestId, resolve);
         }),
     );
-    useJevStore.getState().setEnabled(true);
-    const main = decideWithJev(
+    useJevStore.getState().setThreadMode("env", "main-thread", "auto");
+    useJevStore.getState().setThreadMode("env", "side-thread", "auto");
+    const main = decide(
       { ...request, requestId: "main" },
       { environmentId: "env", projectId: "project", threadId: "main-thread" },
     );
-    const side = decideWithJev(
+    const side = decide(
       { ...request, requestId: "side" },
       { environmentId: "env", projectId: "project", threadId: "side-thread" },
     );
-    useJevStore.getState().cancelPending({ environmentId: "env", threadId: "main-thread" });
+    useJevStore.getState().setThreadMode("env", "main-thread", "off");
     expect(window.desktopBridge?.cancelJevRoute).toHaveBeenCalledWith("main");
     expect(window.desktopBridge?.cancelJevRoute).not.toHaveBeenCalledWith("side");
     pendingResults.get("side")!(result);
@@ -138,13 +166,13 @@ describe("Jev desktop routing lifecycle", () => {
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
     });
-    useJevStore.getState().setEnabled(true);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
     vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
       ...result,
       costKind: "billed",
       evaluationPayload: "private evaluation",
     });
-    await decideWithJev(
+    await decide(
       { ...request, prompt: "secret task" },
       { environmentId: "env", projectId: "project", threadId: "thread" },
     );
@@ -170,8 +198,8 @@ describe("Jev desktop routing lifecycle", () => {
       setItem: (key: string, value: string) => storage.set(key, value),
       removeItem: (key: string) => storage.delete(key),
     });
-    useJevStore.getState().setEnabled(true);
-    await decideWithJev(
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    await decide(
       { ...request, prompt: "private message" },
       { environmentId: "env", projectId: "project", threadId: "thread" },
     );
@@ -202,7 +230,9 @@ describe("Jev desktop routing lifecycle", () => {
         succeeded: null,
       }),
     ).toBe(true);
-    const prepared = JSON.parse([...storage.values()][0]!) as {
+    const prepared = JSON.parse(
+      storage.get([...storage.keys()].find((key) => key.startsWith("t3:jev-ledger-receipt:"))!)!,
+    ) as {
       input: { messageId: string; status: string; dispatchJson: string };
     };
     expect(prepared.input).toMatchObject({ messageId: "message-before-send", status: "completed" });
@@ -217,7 +247,9 @@ describe("Jev desktop routing lifecycle", () => {
       projectId: "project",
       succeeded: true,
     });
-    const dispatched = JSON.parse([...storage.values()][0]!) as {
+    const dispatched = JSON.parse(
+      storage.get([...storage.keys()].find((key) => key.startsWith("t3:jev-ledger-receipt:"))!)!,
+    ) as {
       input: { messageId: string; status: string; dispatchJson: string };
     };
     expect(dispatched.input).toMatchObject({
@@ -227,8 +259,8 @@ describe("Jev desktop routing lifecycle", () => {
     expect(JSON.parse(dispatched.input.dispatchJson)).toMatchObject({ accepted: true });
   });
   it("bounds logs while retaining session totals", async () => {
-    useJevStore.getState().setEnabled(true);
-    for (let i = 0; i < 55; i++) await decideWithJev({ ...request, requestId: String(i) });
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    for (let i = 0; i < 55; i++) await decide({ ...request, requestId: String(i) });
     expect(useJevStore.getState().calls).toHaveLength(50);
     expect(useJevStore.getState().estimatedUsd).toBeCloseTo(55 * result.costUsd!);
     useJevStore.getState().clearCalls();
@@ -242,8 +274,8 @@ describe("Jev desktop routing lifecycle", () => {
         resolve = done;
       }),
     );
-    useJevStore.getState().setEnabled(true);
-    const pending = decideWithJev(request);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    const pending = decide(request);
     for (let i = 0; i < 55; i++)
       useJevStore.getState().addCall({
         id: `other-${i}`,
@@ -254,13 +286,13 @@ describe("Jev desktop routing lifecycle", () => {
         notice: null,
       });
     expect(useJevStore.getState().calls.some((call) => call.id === request.requestId)).toBe(true);
-    useJevStore.getState().setEnabled(false);
+    useJevStore.getState().setThreadMode("env", "thread", "off");
     expect(window.desktopBridge?.cancelJevRoute).toHaveBeenCalledWith(request.requestId);
     resolve(result);
     expect(await pending).toBeNull();
   });
   it("pauses automatic sending for every nonroute policy outcome even if a choice exists", async () => {
-    useJevStore.getState().setEnabled(true);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
     for (const policyOutcome of ["review", "needs_context", "unavailable"] as const) {
       vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
         ...result,
@@ -278,9 +310,9 @@ describe("Jev desktop routing lifecycle", () => {
           }
         });
       });
-      const pending = decideWithJev({ ...request, requestId: policyOutcome });
+      const pending = decide({ ...request, requestId: policyOutcome });
       await awaitingReview;
-      expect(useJevStore.getState().panelOpen).toBe(true);
+      expect(useJevStore.getState().panelOpen).toBe(false);
       expect(useJevStore.getState().calls[0]?.dispatch).toBeUndefined();
       useJevStore.getState().resolveReview(policyOutcome, "current");
       expect((await pending)?.choice).toBeNull();
@@ -288,8 +320,8 @@ describe("Jev desktop routing lifecycle", () => {
     }
   });
   it("records routing as a proposal until executor dispatch is acknowledged", async () => {
-    useJevStore.getState().setEnabled(true);
-    await decideWithJev(request);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    await decide(request);
     expect(useJevStore.getState().calls[0]?.status).toBe("approved");
     useJevStore.getState().recordDispatch(request.requestId, {
       model: "gpt-5.6-sol",
@@ -307,8 +339,8 @@ describe("Jev desktop routing lifecycle", () => {
     expect(useJevStore.getState().calls[0]?.status).toBe("routed");
   });
   it("recovers an actual pair only from the same thread and acknowledged message turn", async () => {
-    useJevStore.getState().setEnabled(true);
-    await decideWithJev(request);
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+    await decide(request);
     const dispatch = {
       model: "gpt-5.6-terra",
       effort: "medium",
@@ -334,34 +366,36 @@ describe("Jev desktop routing lifecycle", () => {
       expect(sanitized).not.toContain(secret);
     expect(sanitizeJevPrompt("a".repeat(20_000))).toHaveLength(20_000);
   });
-  it("disables every registered thread policy when Auto is turned off", async () => {
+  it("disables only the selected thread's subagent policy", async () => {
     let resolveDisabled!: () => void;
     const disabled = new Promise<void>((resolve) => {
       resolveDisabled = resolve;
     });
     const setPolicy = vi.fn().mockImplementation(async (policy) => {
-      if (policy.threadId === "thread-two" && !policy.enabled) resolveDisabled();
+      if (policy.threadId === "thread-one" && !policy.enabled) resolveDisabled();
     });
     window.desktopBridge!.setJevSubagentPolicy = setPolicy;
-    useJevStore.getState().setEnabled(true);
+    useJevStore.getState().setThreadMode("env", "thread-one", "auto");
+    useJevStore.getState().setThreadMode("env", "thread-two", "auto");
     useJevStore.getState().setSubagentsEnabled(true);
     for (const threadId of ["thread-one", "thread-two"])
-      await registerJevSubagentPolicy({
-        threadId,
-        providerInstanceId: "codex",
-        enabled: true,
-        candidates: [{ key: "gpt-5.4", description: "Codex GPT-5.4" }],
-      });
-    useJevStore.getState().setEnabled(false);
+      await registerJevSubagentPolicy(
+        {
+          threadId,
+          providerInstanceId: "codex",
+          enabled: true,
+          candidates: [{ key: "gpt-5.4", description: "Codex GPT-5.4" }],
+        },
+        { environmentId: "env", projectId: "project", threadId },
+      );
+    useJevStore.getState().setThreadMode("env", "thread-one", "off");
     await disabled;
     expect(
       setPolicy.mock.calls
-        .slice(-2)
+        .slice(-1)
         .map(([policy]) => ({ threadId: policy.threadId, enabled: policy.enabled })),
-    ).toEqual([
-      { threadId: "thread-one", enabled: false },
-      { threadId: "thread-two", enabled: false },
-    ]);
+    ).toEqual([{ threadId: "thread-one", enabled: false }]);
+    expect(useJevStore.getState().getThreadEnabled("env", "thread-two")).toBe(true);
   });
   it("finishes startup clearing before registering newly enabled policies", async () => {
     vi.resetModules();
@@ -379,14 +413,17 @@ describe("Jev desktop routing lifecycle", () => {
       calls.push("set");
     });
     isolated.listenForJevSubagents();
-    isolated.useJevStore.getState().setEnabled(true);
+    isolated.useJevStore.getState().setThreadMode("env", "startup-thread", "auto");
     isolated.useJevStore.getState().setSubagentsEnabled(true);
-    const registration = isolated.registerJevSubagentPolicy({
-      threadId: "startup-thread",
-      providerInstanceId: "codex",
-      enabled: true,
-      candidates: [{ key: "gpt-5.4", description: "Codex GPT-5.4" }],
-    });
+    const registration = isolated.registerJevSubagentPolicy(
+      {
+        threadId: "startup-thread",
+        providerInstanceId: "codex",
+        enabled: true,
+        candidates: [{ key: "gpt-5.4", description: "Codex GPT-5.4" }],
+      },
+      { environmentId: "env", projectId: "project", threadId: "startup-thread" },
+    );
     await Promise.resolve();
     expect(calls).toEqual(["clear"]);
     resolveStartup();
@@ -434,7 +471,7 @@ describe("Jev desktop routing lifecycle", () => {
       toolUseId: "tool-42",
       reportedCostUsd: "0.000001",
     });
-    expect(isolated.useJevStore.getState().enabled).toBe(false);
+    expect(isolated.useJevStore.getState().getThreadEnabled("env", "closed-thread")).toBe(false);
   });
   it("queues a closed thread storage gap with unknown cost and no invented route", async () => {
     const storage = new Map<string, string>();
@@ -518,8 +555,12 @@ describe("guided review", () => {
   beforeEach(() => {
     useJevStore.getState().cancelPending();
     useJevStore.setState({
-      enabled: true,
-      mode: "guided",
+      modesByThread: {
+        [JSON.stringify(["env", "thread"])]: "guided",
+        [JSON.stringify(["env", "main-thread"])]: "guided",
+        [JSON.stringify(["env", "side-thread"])]: "guided",
+      },
+      panelOpen: false,
       calls: [],
       revision: 0,
       billedUsd: 0,
@@ -550,7 +591,7 @@ describe("guided review", () => {
   it("waits for explicit approval, retains recommendation and bills once", async () => {
     const waiting = reviewed();
     let completed = false;
-    const pending = decideWithJev(request).then((value) => {
+    const pending = decide(request).then((value) => {
       completed = true;
       return value;
     });
@@ -567,11 +608,11 @@ describe("guided review", () => {
     expect(useJevStore.getState().estimatedUsd).toBe(result.costUsd);
   });
   it("keeps a second thread's review open when one review is cancelled", async () => {
-    const main = decideWithJev(
+    const main = decide(
       { ...request, requestId: "main-review" },
       { environmentId: "env", projectId: "project", threadId: "main-thread" },
     );
-    const side = decideWithJev(
+    const side = decide(
       { ...request, requestId: "side-review" },
       { environmentId: "env", projectId: "project", threadId: "side-thread" },
     );
@@ -598,7 +639,7 @@ describe("guided review", () => {
       }),
     );
     const waiting = reviewed();
-    const pending = decideWithJev(request);
+    const pending = decide(request);
     for (let index = 0; index < 55; index++)
       useJevStore.getState().addCall({
         id: `newer-${index}`,
@@ -615,7 +656,7 @@ describe("guided review", () => {
   });
   it("lets the user retain the original selection", async () => {
     const waiting = reviewed();
-    const pending = decideWithJev(request);
+    const pending = decide(request);
     await waiting;
     useJevStore.getState().resolveReview("test", "current");
     expect((await pending)?.choice).toBeNull();
@@ -629,7 +670,7 @@ describe("guided review", () => {
       policyOutcome: "review",
     });
     const waiting = reviewed();
-    const pending = decideWithJev(request);
+    const pending = decide(request);
     await waiting;
     useJevStore.getState().resolveReview("test", "suggestion");
     expect(useJevStore.getState().calls[0]?.status).toBe("awaiting-review");
@@ -639,15 +680,15 @@ describe("guided review", () => {
   });
   it("cancels a waiting review on mode change without dispatching", async () => {
     const waiting = reviewed();
-    const pending = decideWithJev(request);
+    const pending = decide(request);
     await waiting;
-    useJevStore.getState().setMode("auto");
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
     expect(await pending).toBeNull();
     expect(useJevStore.getState().calls[0]?.status).toBe("cancelled");
   });
   it("ignores out-of-pool approvals and accepts an explicit compatible alternative", async () => {
     const waiting = reviewed();
-    const pending = decideWithJev({
+    const pending = decide({
       ...request,
       candidates: [...request.candidates, { key: "two", description: "Alternative" }],
     });

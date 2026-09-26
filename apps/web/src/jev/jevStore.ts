@@ -14,29 +14,34 @@ type ReceiptContext = { environmentId: string; projectId: string | null; threadI
 type CancellationTarget =
   | Pick<ReceiptContext, "environmentId" | "threadId">
   | { requestId: string };
-type SideRoutingMode = "auto" | "manual";
-const sideRoutingStorageKey = "t3:jev-side-routing-modes:v1";
-const sideRoutingKey = (environmentId: string, threadId: string) =>
+const threadRoutingStorageKey = "t3:jev-thread-routing:v1";
+const threadModeStorageKey = "t3:jev-thread-mode:v2";
+export type JevThreadMode = "off" | "guided" | "auto";
+const threadRoutingKey = (environmentId: string, threadId: string) =>
   JSON.stringify([environmentId, threadId]);
 
-function loadSideRoutingModes(): Record<string, "manual"> {
+function loadThreadModes(): Record<string, "guided" | "auto"> {
   try {
-    const stored = globalThis.localStorage?.getItem(sideRoutingStorageKey);
+    const savedModes = globalThis.localStorage?.getItem(threadModeStorageKey);
+    const stored = savedModes ?? globalThis.localStorage?.getItem(threadRoutingStorageKey);
     const parsed: unknown = stored ? JSON.parse(stored) : null;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const modes: Record<string, "manual"> = {};
-    for (const [key, value] of Object.entries(parsed)) if (value === "manual") modes[key] = value;
+    const modes: Record<string, "guided" | "auto"> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (value === "guided" || value === "auto") modes[key] = value;
+      else if (savedModes === null && value === true) modes[key] = "guided";
+    }
     return modes;
   } catch {
     return {};
   }
 }
 
-function saveSideRoutingModes(modes: Record<string, "manual">): void {
+function saveThreadModes(modes: Record<string, "guided" | "auto">): void {
   try {
-    globalThis.localStorage?.setItem(sideRoutingStorageKey, JSON.stringify(modes));
+    globalThis.localStorage?.setItem(threadModeStorageKey, JSON.stringify(modes));
   } catch {
-    useJevStore.setState({ notice: "Could not save this side chat's routing preference." });
+    useJevStore.setState({ notice: "Could not save this chat's routing preference." });
   }
 }
 const subagentReceiptContexts = new Map<string, ReceiptContext>();
@@ -133,7 +138,12 @@ export async function registerJevSubagentPolicy(
       await initialized;
       if (
         policy.enabled &&
-        !(useJevStore.getState().enabled && useJevStore.getState().subagentsEnabled)
+        !(
+          useJevStore
+            .getState()
+            .getThreadEnabled(receiptContext?.environmentId ?? "", policy.threadId) &&
+          useJevStore.getState().subagentsEnabled
+        )
       )
         return;
       await window.desktopBridge?.setJevSubagentPolicy?.(persistedPolicy);
@@ -326,9 +336,11 @@ function recordJevReceipt(call: JevCall, dispatchModel?: string, dispatchEffort?
 }
 
 export const useJevStore = create<{
-  enabled: boolean;
-  mode: "guided" | "auto";
-  setMode: (mode: "guided" | "auto") => void;
+  modesByThread: Record<string, "guided" | "auto">;
+  getThreadMode: (environmentId: string, threadId: string) => JevThreadMode;
+  getThreadEnabled: (environmentId: string, threadId: string) => boolean;
+  setThreadMode: (environmentId: string, threadId: string, mode: JevThreadMode) => void;
+  disableAllThreads: () => void;
   resolveReview: (
     id: string,
     action: "suggestion" | "current" | "alternative",
@@ -343,12 +355,8 @@ export const useJevStore = create<{
   billedUsd: number;
   estimatedUsd: number;
   unknownCostCalls: number;
-  sideRoutingModes: Record<string, "manual">;
-  getSideRoutingMode: (environmentId: string, threadId: string) => SideRoutingMode;
-  setSideRoutingMode: (environmentId: string, threadId: string, mode: SideRoutingMode) => void;
-  setEnabled: (enabled: boolean) => void;
   setPanelOpen: (open: boolean) => void;
-  pinManual: () => void;
+  pinManual: (environmentId: string, threadId: string) => void;
   addCall: (call: JevCall) => void;
   finishCall: (id: string, result: JevRouteResult, cancelled?: boolean) => void;
   recordPreparedDispatch: (id: string, dispatch: NonNullable<JevCall["dispatch"]>) => boolean;
@@ -356,17 +364,41 @@ export const useJevStore = create<{
   clearCalls: () => void;
   cancelPending: (target?: CancellationTarget) => void;
 }>((set, get) => ({
-  enabled: false,
-  mode: "guided",
-  setMode: (mode) => {
-    get().cancelPending();
+  modesByThread: loadThreadModes(),
+  getThreadMode: (environmentId, threadId) =>
+    get().modesByThread[threadRoutingKey(environmentId, threadId)] ?? "off",
+  getThreadEnabled: (environmentId, threadId) =>
+    get().getThreadMode(environmentId, threadId) !== "off",
+  setThreadMode: (environmentId, threadId, mode) => {
+    const key = threadRoutingKey(environmentId, threadId);
+    if (get().getThreadMode(environmentId, threadId) === mode) return;
+    get().cancelPending({ environmentId, threadId });
+    const modesByThread = { ...get().modesByThread };
+    if (mode === "off") delete modesByThread[key];
+    else modesByThread[key] = mode;
+    if (mode === "off") {
+      const policy = subagentPolicies.get(threadId);
+      if (policy)
+        void registerJevSubagentPolicy({ ...policy, enabled: false }).catch(() =>
+          useJevStore.setState({ notice: "Could not disable subagent routing for this thread." }),
+        );
+    }
     set({
-      mode,
+      modesByThread,
       notice:
         mode === "guided"
-          ? "Guided mode: review each recommendation before sending."
-          : "Automatic routing enabled; uncertain or unavailable decisions pause sending.",
+          ? "Guided routing is on for this chat. Review each recommendation before sending."
+          : mode === "auto"
+            ? "Automatic routing is on for this chat. Task text and context are sent to OpenRouter."
+            : "Jev routing is off for this chat.",
     });
+    saveThreadModes(modesByThread);
+  },
+  disableAllThreads: () => {
+    get().cancelPending();
+    disableSubagentPolicies();
+    set({ modesByThread: {}, notice: "Jev routing is off." });
+    saveThreadModes({});
   },
   resolveReview: (id, action, choice) => {
     const call = get().calls.find((entry) => entry.id === id && entry.status === "awaiting-review");
@@ -401,42 +433,15 @@ export const useJevStore = create<{
   billedUsd: 0,
   estimatedUsd: 0,
   unknownCostCalls: 0,
-  sideRoutingModes: loadSideRoutingModes(),
-  getSideRoutingMode: (environmentId, threadId) =>
-    get().sideRoutingModes[sideRoutingKey(environmentId, threadId)] ?? "auto",
-  setSideRoutingMode: (environmentId, threadId, mode) => {
-    const key = sideRoutingKey(environmentId, threadId);
-    const sideRoutingModes = { ...get().sideRoutingModes };
-    if (mode === "manual") sideRoutingModes[key] = "manual";
-    else delete sideRoutingModes[key];
-    set({ sideRoutingModes });
-    saveSideRoutingModes(sideRoutingModes);
-  },
-  setEnabled: (enabled) => {
-    get().cancelPending();
-    if (!enabled) disableSubagentPolicies();
-    set({
-      enabled,
-      revision: get().revision + 1,
-      notice: enabled
-        ? "Jev Auto enabled. Task text, recent chat history and plan context are sent to OpenRouter for routing."
-        : "Jev Auto is off.",
-    });
-  },
   setSubagentsEnabled: (subagentsEnabled) => {
     if (!subagentsEnabled) disableSubagentPolicies();
     set({ subagentsEnabled });
   },
   setPanelOpen: (panelOpen) => set({ panelOpen }),
-  pinManual: () => {
-    if (!get().enabled) return;
-    get().cancelPending();
-    disableSubagentPolicies();
-    set({
-      enabled: false,
-      revision: get().revision + 1,
-      notice: "Manual model pinned. Enable Jev Auto to resume routing.",
-    });
+  pinManual: (environmentId, threadId) => {
+    if (!get().getThreadEnabled(environmentId, threadId)) return;
+    get().setThreadMode(environmentId, threadId, "off");
+    set({ notice: "Manual model pinned. Enable Jev Auto in this chat to resume routing." });
   },
   addCall: (call) =>
     set({
@@ -586,7 +591,13 @@ export async function decideWithJev(
   threadLabel?: string,
 ): Promise<JevRouteResult | null> {
   const store = useJevStore.getState();
-  if (!isElectron || !store.enabled) return null;
+  if (
+    !isElectron ||
+    !receiptContext ||
+    !store.getThreadEnabled(receiptContext.environmentId, receiptContext.threadId)
+  )
+    return null;
+  const mode = store.getThreadMode(receiptContext.environmentId, receiptContext.threadId);
   const revision = store.revision;
   pendingTurnRequests.set(request.requestId, receiptContext);
   store.addCall({
@@ -639,11 +650,10 @@ export async function decideWithJev(
     (!result.policyOutcome || result.policyOutcome === "route") &&
     request.candidates.some((candidate) => candidate.key === result.choice) &&
     (!result.admissibleCandidateKeys || result.admissibleCandidateKeys.includes(result.choice));
-  if (store.mode !== "guided" && automaticChoiceAllowed) return result;
+  if (mode === "auto" && automaticChoiceAllowed) return result;
   const resolution = await new Promise<ReviewResolution | null>((resolve) => {
     pendingReviews.set(request.requestId, resolve);
     useJevStore.setState((state) => ({
-      panelOpen: true,
       notice: "Review Jev's recommendation before the message is sent.",
       calls: state.calls.map((call) =>
         call.id === request.requestId ? { ...call, status: "awaiting-review" } : call,

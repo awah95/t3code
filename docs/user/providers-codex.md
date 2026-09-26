@@ -6,14 +6,16 @@ and custom binaries or environment variables.
 
 ## Jev routing in this desktop fork
 
-Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then turn
-on **Jev Auto** in the chat header. Jev chooses a supported Codex model and reasoning effort in your
+Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then open
+**Jev** in a main chat header and choose **Guided** or **Automatic**. Each chat starts with Jev off and keeps its own mode when you switch chats or reload. Side chats have the same three choices beside their model and effort controls. Turning Jev on or off in one chat does not change
+another chat. Jev chooses a supported Codex model and reasoning effort in your
 selected provider instance; existing conversations stay in that instance. Selecting
-a model manually turns Auto off. Uncertain decisions, missing context and routing failures pause for review rather than silently sending with the current model.
+a model manually in the main chat turns Jev off there; in a side chat, the model and
+effort controls set its fallback preference. Uncertain decisions, missing context and routing failures pause for review rather than silently sending with the current model.
 
-Open **Jev calls** to inspect routing requests, decisions, latency and session cost.
-Guided mode reviews each user-message recommendation before dispatch. In **Jev calls**,
-choose **Guided** or **Automatic**. Guided offers the recommendation, your current selection,
+Open **Jev** to inspect routing requests, decisions, latency and session cost.
+Choose **Off**, **Guided**, or **Automatic** for the current main chat in the Jev panel. Guided shows each user-message
+recommendation above that chat's composer before dispatch. The review offers the recommendation, your current selection,
 or another compatible model/effort pair; **Cancel send** keeps the message unsent. No
 review is accepted automatically. Task demands constrain which recommendations are allowed.
 The panel separates task-assessment, model-proposal and effort confidence; none is a measured
@@ -52,8 +54,8 @@ with its task-demand guard, including when user-message routing is Guided. Turni
 Jev decisions; a previously written hook trust entry may remain in Codex settings.
 
 This MVP supports local desktop environments. Provider commands, plan follow-ups and
-explicit multi-model sends retain their normal model selection. Auto and subagent
-routing start off when the desktop client reloads. The API key is encrypted with the
+explicit multi-model sends retain their normal model selection. Jev starts off in new
+chats; each chat's setting is saved on this desktop client. The API key is encrypted with the
 operating system's secure storage and can be removed from Settings.
 
 ## Use multiple accounts

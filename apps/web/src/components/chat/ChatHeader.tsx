@@ -366,6 +366,7 @@ export const ChatHeader = memo(function ChatHeader({
             activities={activeThreadDetail?.activities ?? []}
           />
           <JevControls
+            scope={{ environmentId: activeThreadEnvironmentId, threadId: activeThreadId }}
             presentation={actionsCollapsed ? "menu" : "toolbar"}
             onRequestMenuClose={() => setActionsOpen(false)}
           />

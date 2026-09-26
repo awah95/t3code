@@ -22,9 +22,8 @@ new or existing side chat. New side chats begin with **Supervised** access. Side
 chats can inherit completed main-chat history, but the current in-progress turn is not
 included. If the main chat has not completed a turn yet, the side chat begins
 without that history. Browser and device tools are not available in side chats.
-When Jev Auto is enabled in the desktop app, its shared panel also shows decisions
-for side-chat turns. Switch an individual side chat to **Manual** to use its selected
-model and effort for that chat; its routing choice is saved in the desktop client.
+
+On desktop, each side chat starts with Jev off. Choose **Off**, **Guided**, or **Automatic** beside its model and effort controls. Guided reviews appear above that side chat's composer; the Jev panel keeps the routing log. Choose **Off** to use its selected model and effort. Each chat keeps its choice when you switch chats or reload.
 
 On a side-chat answer, **Add to main draft** puts its text in the main composer for
 editing. **Send to main** sends the answer to the main Codex conversation. On mobile,

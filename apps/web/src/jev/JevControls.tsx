@@ -1,6 +1,6 @@
 import { JevEvaluation } from "./JevEvaluation";
 import { JEV_POLICY_VERSION, JEV_MODEL_PROFILES } from "@t3tools/shared/jevRouting";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDownIcon, CircleAlertIcon, EllipsisIcon, RouteIcon, XIcon } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
@@ -12,49 +12,54 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { isElectron } from "../env";
-import { listenForJevSubagents, useJevStore, type JevCall } from "./jevStore";
+import { requireJevCredential } from "./credential";
+import { listenForJevSubagents, useJevStore, type JevCall, type JevThreadMode } from "./jevStore";
 
 type JevControlsProps = {
+  readonly scope: { environmentId: string; threadId: string };
   readonly presentation?: "toolbar" | "menu";
   readonly onRequestMenuClose?: () => void;
 };
 
+type JevScope = { environmentId: string; threadId: string };
+
+function callsForScope(calls: readonly JevCall[], scope: JevScope): JevCall[] {
+  return calls.filter(
+    (call) =>
+      call.receiptContext?.environmentId === scope.environmentId &&
+      call.receiptContext.threadId === scope.threadId,
+  );
+}
+
 export function JevControls({
+  scope,
   presentation = "toolbar",
   onRequestMenuClose,
-}: JevControlsProps = {}) {
-  const { enabled, setEnabled, panelOpen, setPanelOpen, calls, mode } = useJevStore();
+}: JevControlsProps) {
+  const { setThreadMode, panelOpen, setPanelOpen, calls } = useJevStore();
+  const mode = useJevStore((state) => state.getThreadMode(scope.environmentId, scope.threadId));
+  const enabled = mode !== "off";
   useEffect(listenForJevSubagents, []);
   useEffect(() => {
     if (!isElectron || !enabled) return;
     let active = true;
-    void window.desktopBridge
-      ?.getJevStatus?.()
-      .then((status) => {
-        if (!active || status.hasKey) return;
-        setEnabled(false);
-        useJevStore.setState({
-          panelOpen: true,
-          notice: status.secureStorageAvailable
-            ? "Add an OpenRouter key in Settings > General > Jev Auto routing before enabling Jev."
-            : "Jev was turned off because secure OS credential storage is unavailable.",
-        });
-      })
-      .catch(() => {
-        if (!active) return;
-        setEnabled(false);
-        useJevStore.setState({
-          panelOpen: true,
-          notice: "Jev was turned off because its OpenRouter credential could not be verified.",
-        });
+    void requireJevCredential().catch((cause: unknown) => {
+      if (!active) return;
+      setThreadMode(scope.environmentId, scope.threadId, "off");
+      useJevStore.setState({
+        panelOpen: true,
+        notice:
+          cause instanceof Error ? cause.message : "Could not verify Jev's OpenRouter credential.",
       });
+    });
     return () => {
       active = false;
     };
-  }, [enabled, setEnabled]);
+  }, [enabled, scope.environmentId, scope.threadId, setThreadMode]);
   if (!isElectron) return null;
-  const pending = calls.some((call) => call.status === "pending");
-  const reviewCount = calls.filter((call) => call.status === "awaiting-review").length;
+  const threadCalls = callsForScope(calls, scope);
+  const pending = threadCalls.some((call) => call.status === "pending");
+  const reviewCount = threadCalls.filter((call) => call.status === "awaiting-review").length;
   const status =
     reviewCount > 0
       ? "Review"
@@ -251,7 +256,7 @@ function JevReviewCard({ call }: { call: JevCall }) {
   return (
     <section
       aria-label="Review Jev recommendation"
-      className="flex max-h-[calc(100dvh-var(--workspace-topbar-height,3rem)-8rem)] min-h-0 flex-col overflow-hidden rounded-xl border border-primary/35 bg-muted/15 shadow-xs"
+      className="flex max-h-[min(55dvh,30rem)] min-h-0 flex-col overflow-hidden rounded-xl border border-primary/35 bg-background shadow-lg"
     >
       <div
         data-testid="jev-review-scroll-body"
@@ -428,14 +433,30 @@ function JevReviewCard({ call }: { call: JevCall }) {
   );
 }
 
-export function JevPanel() {
+export function JevComposerReview({ scope }: { scope: JevScope }) {
+  const calls = useJevStore((state) => state.calls);
+  const reviewCalls = callsForScope(calls, scope).filter(
+    (call) => call.status === "awaiting-review",
+  );
+  if (reviewCalls.length === 0) return null;
+  return (
+    <div
+      data-testid="jev-composer-review"
+      aria-label="Jev approvals for this chat"
+      className="pointer-events-auto absolute inset-x-0 bottom-full z-30 flex flex-col gap-2 pb-2"
+    >
+      {reviewCalls.map((call) => (
+        <JevReviewCard key={call.id} call={call} />
+      ))}
+    </div>
+  );
+}
+
+export function JevPanel({ scope }: { scope: { environmentId: string; threadId: string } }) {
   const {
-    enabled,
-    setEnabled,
+    setThreadMode,
     panelOpen,
     setPanelOpen,
-    mode,
-    setMode,
     calls,
     clearCalls,
     notice,
@@ -446,38 +467,44 @@ export function JevPanel() {
     subagentsEnabled,
     setSubagentsEnabled,
   } = useJevStore();
+  const mode = useJevStore((state) => state.getThreadMode(scope.environmentId, scope.threadId));
+  const enabled = mode !== "off";
   const [checkingStatus, setCheckingStatus] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
+  const modeRequestRef = useRef(0);
+  useEffect(
+    () => () => {
+      modeRequestRef.current += 1;
+    },
+    [scope.environmentId, scope.threadId],
+  );
   if (!isElectron || !panelOpen) return null;
-  const pending = calls.some((call) => call.status === "pending");
-  const reviewCalls = calls.filter((call) => call.status === "awaiting-review");
+  const threadCalls = callsForScope(calls, scope);
+  const pending = threadCalls.some((call) => call.status === "pending" && call.kind !== "subagent");
+  const reviewCalls = threadCalls.filter((call) => call.status === "awaiting-review");
   const logCalls = calls.filter((call) => call.status !== "awaiting-review");
   const failedLogCount = logCalls.filter(
     (call) => call.status === "blocked" || call.status === "dispatch-failed",
   ).length;
-  const toggleEnabled = async () => {
-    if (enabled) {
-      setEnabled(false);
+  const changeMode = async (nextMode: JevThreadMode) => {
+    const request = ++modeRequestRef.current;
+    if (nextMode === "off") {
+      setThreadMode(scope.environmentId, scope.threadId, "off");
       return;
     }
     setCheckingStatus(true);
     try {
-      const status = await window.desktopBridge?.getJevStatus?.();
-      if (!status?.hasKey) {
-        useJevStore.setState({
-          notice: status?.secureStorageAvailable
-            ? "Add an OpenRouter key in Settings > General > Jev Auto routing before enabling Jev."
-            : "Jev cannot be enabled because secure OS credential storage is unavailable.",
-        });
-        return;
-      }
-      setEnabled(true);
-    } catch {
+      await requireJevCredential();
+      if (request !== modeRequestRef.current) return;
+      setThreadMode(scope.environmentId, scope.threadId, nextMode);
+    } catch (cause) {
+      if (request !== modeRequestRef.current) return;
       useJevStore.setState({
-        notice: "Could not verify Jev's OpenRouter credential. Jev remains off.",
+        notice:
+          cause instanceof Error ? cause.message : "Could not verify Jev's OpenRouter credential.",
       });
     } finally {
-      setCheckingStatus(false);
+      if (request === modeRequestRef.current) setCheckingStatus(false);
     }
   };
   return (
@@ -491,15 +518,15 @@ export function JevPanel() {
           <div>
             <div className="flex items-center gap-2">
               <RouteIcon className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold tracking-tight">Jev</h2>
+              <h2 className="text-sm font-semibold tracking-tight">Jev · main chat</h2>
               <span
                 className={`size-1.5 rounded-full ${enabled ? "bg-success" : "bg-muted-foreground/50"}`}
               />
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">
               {enabled
-                ? `${mode === "guided" ? "Guided" : "Automatic"} routing is on`
-                : "Routing is off"}
+                ? `${mode === "guided" ? "Guided" : "Automatic"} routing is on for this chat`
+                : "Routing is off for this chat"}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -542,23 +569,26 @@ export function JevPanel() {
           </div>
         </div>
         <div className="flex items-center gap-2 rounded-lg bg-muted/35 p-2">
-          <Button
-            className="min-w-20"
-            size="sm"
-            variant={enabled ? "secondary" : "outline"}
+          <Select
+            value={mode}
             disabled={checkingStatus}
-            aria-pressed={enabled}
-            onClick={() => void toggleEnabled()}
+            onValueChange={(value) => {
+              if (value) void changeMode(value as JevThreadMode);
+            }}
           >
-            {checkingStatus ? "Checking…" : enabled ? "Jev on" : "Turn on"}
-          </Button>
-          <Select value={mode} onValueChange={(value) => setMode(value as "guided" | "auto")}>
             <SelectTrigger size="sm" aria-label="Jev routing mode">
               <SelectValue>
-                {mode === "guided" ? "Guided · review every pick" : "Automatic"}
+                {checkingStatus
+                  ? "Checking…"
+                  : mode === "off"
+                    ? "Off"
+                    : mode === "guided"
+                      ? "Guided · review every pick"
+                      : "Automatic"}
               </SelectValue>
             </SelectTrigger>
             <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value="off">Off</SelectItem>
               <SelectItem value="guided">Guided · review every pick</SelectItem>
               <SelectItem value="auto">Automatic</SelectItem>
             </SelectPopup>
@@ -570,25 +600,16 @@ export function JevPanel() {
           </p>
         )}
         {pending && (
-          <button
-            type="button"
-            className="text-xs"
-            onClick={() => {
-              cancelPending();
-              if (calls.some((call) => call.status === "pending" && call.kind === "subagent"))
-                setSubagentsEnabled(false);
-            }}
-          >
-            Cancel all routing
+          <button type="button" className="text-xs" onClick={() => cancelPending(scope)}>
+            Cancel this chat's routing
           </button>
         )}
       </div>
       {reviewCalls.length > 0 && (
-        <div className="flex min-h-0 max-h-[35%] shrink-0 flex-col gap-3 overflow-y-auto overscroll-contain">
-          {reviewCalls.map((call) => (
-            <JevReviewCard key={call.id} call={call} />
-          ))}
-        </div>
+        <p role="status" className="text-xs text-muted-foreground">
+          {reviewCalls.length} Jev approval{reviewCalls.length === 1 ? "" : "s"} waiting above this
+          chat's composer.
+        </p>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain">
         <details className="text-xs text-muted-foreground">
@@ -659,7 +680,7 @@ export function JevPanel() {
             aria-controls="jev-routing-logs"
             onClick={() => setLogsOpen((open) => !open)}
           >
-            <span>Routing logs ({logCalls.length})</span>
+            <span>All chat routing logs ({logCalls.length})</span>
             <span className="flex items-center gap-2">
               {failedLogCount > 0 && (
                 <span className="font-normal text-warning-foreground">{failedLogCount} failed</span>
@@ -820,7 +841,7 @@ export function JevSettings() {
           ? "OpenRouter key removed."
           : "OpenRouter key saved in encrypted OS storage.",
       );
-      if (value === null) useJevStore.getState().setEnabled(false);
+      if (value === null) useJevStore.getState().disableAllThreads();
     } catch {
       setMessage("Could not update the key. Check secure OS storage availability.");
     } finally {

@@ -40,12 +40,13 @@ import { useComposerDraftStore } from "~/composerDraftStore";
 import ChatMarkdown from "../ChatMarkdown";
 import { Select, SelectItem, SelectPopup, SelectValue } from "../ui/select";
 import { AssistantCitationChip } from "./AssistantCitationChip";
-import { Switch } from "../ui/switch";
+import type { JevThreadMode } from "~/jev/jevStore";
 import { CodexTurnUsage } from "./CodexTurnUsage";
 import { ComposerSurface } from "./ComposerSurface";
 import { ComposerSelectControl } from "./ComposerControl";
 import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
 import { SideChatPendingRequests } from "./SideChatPendingRequests";
+import { JevComposerReview } from "~/jev/JevControls";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "../ComposerPromptEditor";
 import { EMPTY_COMPOSER_CONTEXT_RECORDS } from "../composerContextPresentation";
 import { useArchivedThreadSnapshots } from "~/lib/archivedThreadsState";
@@ -305,9 +306,10 @@ export interface SideChatPanelProps {
   onArchiveSideChat?: (threadId: string) => Promise<void>;
   onRestoreSideChat?: (threadId: string) => Promise<void>;
   onDeleteSideChat?: (threadId: string) => Promise<void>;
-  jevEnabled?: boolean;
-  jevAuto?: boolean;
-  onJevAutoChange?: (enabled: boolean) => void;
+  jevAvailable?: boolean;
+  jevMode?: JevThreadMode;
+  onJevModeChange?: (mode: JevThreadMode) => Promise<void> | void;
+  jevStatusError?: string | null;
   composerRichTextEnabled?: boolean;
   onInterrupt?: () => Promise<void>;
 }
@@ -416,9 +418,10 @@ export function SideChatPanel({
   onArchiveSideChat,
   onRestoreSideChat,
   onDeleteSideChat,
-  jevEnabled = false,
-  jevAuto = false,
-  onJevAutoChange,
+  jevAvailable = false,
+  jevMode = "off",
+  onJevModeChange,
+  jevStatusError,
   composerRichTextEnabled = false,
   onInterrupt,
 }: SideChatPanelProps) {
@@ -510,7 +513,7 @@ export function SideChatPanel({
         : undefined,
     [thread?.activities, currentTurnId],
   );
-  const useJevAuto = jevEnabled && jevAuto;
+  const useJevRouting = jevAvailable && jevMode !== "off";
   const runtimeMode = activeShell?.runtimeMode ?? "approval-required";
   const RuntimeModeIcon = runtimeModeConfig[runtimeMode].icon;
 
@@ -670,22 +673,40 @@ export function SideChatPanel({
     setDraft(threadRef, composeDraftWithCitations(draftProse, markers));
   };
 
+  const jevControl =
+    jevAvailable && onJevModeChange ? (
+      <Select
+        value={jevMode}
+        disabled={isCurrentTurnRunning}
+        onValueChange={(value) => {
+          if (!value) return;
+          setError(null);
+          try {
+            void Promise.resolve(onJevModeChange(value as JevThreadMode)).catch((cause) => {
+              setError(cause instanceof Error ? cause.message : "Unable to change Jev routing.");
+            });
+          } catch (cause) {
+            setError(cause instanceof Error ? cause.message : "Unable to change Jev routing.");
+          }
+        }}
+      >
+        <ComposerSelectControl size="xs" aria-label="Side chat Jev routing mode">
+          <Sparkles className="size-3" />
+          <SelectValue>
+            {jevMode === "off" ? "Jev: Off" : jevMode === "guided" ? "Jev: Guided" : "Jev: Auto"}
+          </SelectValue>
+        </ComposerSelectControl>
+        <SelectPopup>
+          <SelectItem value="off">Off · use selected model</SelectItem>
+          <SelectItem value="guided">Guided · review each pick</SelectItem>
+          <SelectItem value="auto">Automatic · route each turn</SelectItem>
+        </SelectPopup>
+      </Select>
+    ) : null;
+
   const modelControls =
     availableModelChoices.length > 0 && currentSelection && onModelChange ? (
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-        {jevEnabled && onJevAutoChange ? (
-          <label className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border px-2 text-[10px] text-muted-foreground">
-            <Switch
-              size="sm"
-              checked={useJevAuto}
-              disabled={isCurrentTurnRunning}
-              aria-label="Use Jev Auto for this side chat"
-              onCheckedChange={(checked) => onJevAutoChange(checked === true)}
-            />
-            <Sparkles className="size-3" />
-            {useJevAuto ? "Jev Auto" : "Manual"}
-          </label>
-        ) : null}
         <Select
           value={modelSelectValue}
           disabled={isCurrentTurnRunning}
@@ -699,7 +720,7 @@ export function SideChatPanel({
           <ComposerSelectControl
             size="xs"
             className="min-w-0 max-w-48 flex-1"
-            aria-label={useJevAuto ? "Fallback model preference" : "Side chat model"}
+            aria-label={useJevRouting ? "Fallback model preference" : "Side chat model"}
           >
             <SelectValue>{currentChoice?.label ?? currentSelection.model}</SelectValue>
           </ComposerSelectControl>
@@ -727,7 +748,7 @@ export function SideChatPanel({
             <ComposerSelectControl
               size="xs"
               className="max-w-28"
-              aria-label={useJevAuto ? "Fallback effort preference" : "Side chat effort"}
+              aria-label={useJevRouting ? "Fallback effort preference" : "Side chat effort"}
             >
               <SelectValue>
                 {currentEfforts.find((effort) => effort.id === selectedEffort)?.label ??
@@ -744,7 +765,7 @@ export function SideChatPanel({
             </SelectPopup>
           </Select>
         ) : null}
-        {useJevAuto ? (
+        {useJevRouting ? (
           <span className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2 text-[10px] font-medium text-muted-foreground">
             Fallback
           </span>
@@ -994,7 +1015,8 @@ export function SideChatPanel({
         threadId={threadId}
         activities={thread?.activities ?? []}
       />
-      <div className="border-t px-3 py-3">
+      <div className="relative border-t px-3 py-3">
+        <JevComposerReview scope={{ environmentId, threadId }} />
         <ComposerSurface.Shell>
           <ComposerSurface.Host>
             <ComposerSurface.Main>
@@ -1063,6 +1085,7 @@ export function SideChatPanel({
                   role="group"
                   aria-label="Side chat controls"
                 >
+                  {jevControl}
                   {modelControls}
                   {onRuntimeModeChange ? (
                     <Select
@@ -1135,9 +1158,9 @@ export function SideChatPanel({
             </ComposerSurface.Main>
           </ComposerSurface.Host>
         </ComposerSurface.Shell>
-        {error ? (
+        {error || jevStatusError ? (
           <p role="alert" className="mt-2 text-xs text-destructive">
-            {error}
+            {error ?? jevStatusError}
           </p>
         ) : null}
         <p className="mt-2 text-[10px] text-muted-foreground">Ctrl/⌘ Enter to send</p>

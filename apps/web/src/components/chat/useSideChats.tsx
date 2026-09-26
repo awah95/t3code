@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AssistantCitation, ProviderDriverKind, ScopedThreadRef } from "@t3tools/contracts";
 import { ThreadId as ThreadIdSchema } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
@@ -21,6 +21,7 @@ import {
 import type { DraftId } from "~/composerDraftStore";
 import { useComposerDraftStore } from "~/composerDraftStore";
 import { isElectron } from "~/env";
+import { requireJevCredential } from "~/jev/credential";
 import { decideWithJev, jevPriorAttempts, useJevStore } from "~/jev/jevStore";
 import { prepareJevTurn } from "~/jev/routing";
 import { newMessageId, newThreadId, randomUUID } from "~/lib/utils";
@@ -254,9 +255,7 @@ export function useSideChats(input: SideChatInput) {
       const localEnvironment = sideEnvironmentIsLocal;
       const jevStore = useJevStore.getState();
       const jevEnabled =
-        isElectron &&
-        jevStore.enabled &&
-        jevStore.getSideRoutingMode(activeThreadRef.environmentId, sideThreadId) === "auto";
+        isElectron && jevStore.getThreadEnabled(activeThreadRef.environmentId, sideThreadId);
       const selectedProvider = providerInstanceEntries.find(
         (provider) => provider.instanceId === selection.instanceId,
       );
@@ -531,16 +530,41 @@ export function SideChatPanelHost({
     updateThreadMetadata,
     composerRichTextEnabled,
   } = controller;
-  const jevEnabled = useJevStore((state) => state.enabled);
-  const sideJevAuto = useJevStore(
-    (state) =>
-      activeThreadRef !== null &&
-      state.getSideRoutingMode(activeThreadRef.environmentId, threadId) === "auto",
+  const jevEnableRequestRef = useRef(0);
+  useEffect(
+    () => () => {
+      jevEnableRequestRef.current += 1;
+    },
+    [activeThreadRef?.environmentId, threadId],
   );
+  const sideJevMode = useJevStore((state) =>
+    activeThreadRef !== null ? state.getThreadMode(activeThreadRef.environmentId, threadId) : "off",
+  );
+  const jevEnvironmentId = activeThreadRef?.environmentId;
+  const jevScopeKey = jevEnvironmentId ? JSON.stringify([jevEnvironmentId, threadId]) : null;
+  const [jevStatusError, setJevStatusError] = useState<{ scope: string; message: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!isElectron || !jevEnvironmentId || sideJevMode === "off" || !jevScopeKey) return;
+    let active = true;
+    void requireJevCredential().catch((cause: unknown) => {
+      if (!active) return;
+      useJevStore.getState().setThreadMode(jevEnvironmentId, threadId, "off");
+      setJevStatusError({
+        scope: jevScopeKey,
+        message:
+          cause instanceof Error ? cause.message : "Could not verify Jev's OpenRouter credential.",
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [jevEnvironmentId, jevScopeKey, sideJevMode, threadId]);
   if (!activeThreadRef) return null;
   return (
     <SideChatPanel
-      key={threadId}
+      key={jevScopeKey}
       environmentId={activeThreadRef.environmentId}
       threadId={threadId}
       parentThreadId={activeThreadRef.threadId}
@@ -599,10 +623,6 @@ export function SideChatPanelHost({
                 description: String(squashAtomCommandFailure(result)),
               }),
             );
-          } else {
-            useJevStore
-              .getState()
-              .setSideRoutingMode(activeThreadRef.environmentId, threadId, "manual");
           }
         });
       }}
@@ -643,13 +663,25 @@ export function SideChatPanelHost({
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       }}
       {...(sideDraftInsertion?.threadId === threadId ? { draftInsertion: sideDraftInsertion } : {})}
-      jevEnabled={isElectron && jevEnabled}
-      jevAuto={isElectron && jevEnabled && sideJevAuto}
-      onJevAutoChange={(enabled) =>
-        useJevStore
-          .getState()
-          .setSideRoutingMode(activeThreadRef.environmentId, threadId, enabled ? "auto" : "manual")
-      }
+      jevAvailable={isElectron}
+      jevMode={isElectron ? sideJevMode : "off"}
+      jevStatusError={jevStatusError?.scope === jevScopeKey ? jevStatusError.message : null}
+      onJevModeChange={async (mode) => {
+        const request = ++jevEnableRequestRef.current;
+        setJevStatusError(null);
+        if (mode === "off") {
+          useJevStore.getState().setThreadMode(activeThreadRef.environmentId, threadId, "off");
+          return;
+        }
+        try {
+          await requireJevCredential();
+        } catch (cause) {
+          if (request !== jevEnableRequestRef.current) return;
+          throw cause;
+        }
+        if (request !== jevEnableRequestRef.current) return;
+        useJevStore.getState().setThreadMode(activeThreadRef.environmentId, threadId, mode);
+      }}
       onSendAnswerToMain={(text) => sendSideChatAnswerToMain(threadId, text)}
     />
   );

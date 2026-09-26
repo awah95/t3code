@@ -1,4 +1,4 @@
-import { JevPanel } from "../jev/JevControls";
+import { JevComposerReview, JevPanel } from "../jev/JevControls";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -1509,6 +1509,12 @@ export default function ChatView(props: ChatViewProps) {
       currentRouteThreadKeyRef.current = null;
     };
   }, [routeThreadKey]);
+  useEffect(
+    () => () => {
+      useJevStore.getState().cancelPending({ environmentId, threadId });
+    },
+    [environmentId, threadId],
+  );
   const updateProjectScriptSettings = useAtomCommand(serverEnvironment.updateSettings, {
     reportFailure: false,
   });
@@ -2932,8 +2938,10 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
-  const jevEnabled = useJevStore((state) => state.enabled);
-  const jevSubagentsEnabled = useJevStore((state) => state.enabled && state.subagentsEnabled);
+  const jevEnabled = useJevStore((state) => state.getThreadEnabled(environmentId, threadId));
+  const jevSubagentsEnabled = useJevStore(
+    (state) => state.getThreadEnabled(environmentId, threadId) && state.subagentsEnabled,
+  );
   useEffect(() => {
     if (!isElectron || !activeThread || !jevSubagentsEnabled) return;
     const target = environmentById.get(environmentId)?.entry.target;
@@ -7636,7 +7644,7 @@ export default function ChatView(props: ChatViewProps) {
         ? parseCodexFeedbackCommand(trimmed)
         : null;
     if (feedbackCommand && !queuedMessage && multipleModelSelections === null) {
-      if (isElectron && useJevStore.getState().enabled)
+      if (isElectron && useJevStore.getState().getThreadEnabled(environmentId, activeThread.id))
         useJevStore.setState({ notice: "Jev Auto skipped: feedback is a native Codex operation." });
       if (!isServerThread || activeThread.session === null) {
         toastManager.add(
@@ -7699,7 +7707,7 @@ export default function ChatView(props: ChatViewProps) {
         draftText: promptForSend,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
-      if (isElectron && useJevStore.getState().enabled)
+      if (isElectron && useJevStore.getState().getThreadEnabled(environmentId, activeThread.id))
         useJevStore.setState({
           notice: "Jev Auto skipped: plan follow-ups keep the current model.",
         });
@@ -7765,7 +7773,7 @@ export default function ChatView(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand && !queuedMessage && multipleModelSelections === null) {
-      if (isElectron && useJevStore.getState().enabled)
+      if (isElectron && useJevStore.getState().getThreadEnabled(environmentId, activeThread.id))
         useJevStore.setState({
           notice: "Jev Auto skipped: this command changes the interaction mode.",
         });
@@ -7896,7 +7904,7 @@ export default function ChatView(props: ChatViewProps) {
     });
     let jevRequestId: string | undefined;
     const jev = useJevStore.getState();
-    if (isElectron && jev.enabled) {
+    if (isElectron && jev.getThreadEnabled(environmentId, activeThread.id)) {
       const selectedProvider = providerInstanceEntries.find(
         (provider) => provider.instanceId === ctxSelectedModelSelection.instanceId,
       );
@@ -8110,7 +8118,7 @@ export default function ChatView(props: ChatViewProps) {
 
     if (
       isElectron &&
-      useJevStore.getState().enabled &&
+      useJevStore.getState().getThreadEnabled(environmentId, activeThread.id) &&
       useJevStore.getState().subagentsEnabled &&
       ctxSelectedProvider === "codex"
     ) {
@@ -9838,7 +9846,7 @@ export default function ChatView(props: ChatViewProps) {
         nextModelSelection,
         { explicit: true },
       );
-      useJevStore.getState().pinManual();
+      useJevStore.getState().pinManual(activeThread.environmentId, activeThread.id);
       setStickyComposerModelSelection(nextModelSelection);
       if (options?.focusComposer !== false) scheduleComposerFocus();
     },
@@ -10528,6 +10536,7 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-3xl"
                 >
+                  <JevComposerReview scope={{ environmentId, threadId: activeThread.id }} />
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full z-0">
                       <div
@@ -10835,7 +10844,12 @@ export default function ChatView(props: ChatViewProps) {
         ))}
       </div>
 
-      {!rightPanelMaximized && <JevPanel />}
+      {!rightPanelMaximized && (
+        <JevPanel
+          key={JSON.stringify([environmentId, threadId])}
+          scope={{ environmentId, threadId }}
+        />
+      )}
 
       {rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelTabs
