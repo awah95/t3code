@@ -123,7 +123,7 @@ export class MigrateDevDbSlotCollisionError extends Schema.TaggedError<MigrateDe
   },
 ) {
   override get message(): string {
-    return `Migration slot collision at ${this.slot}: this checkout registers '${this.codeName}' but the database already applied '${this.appliedName}' in that slot. Renumber the new migration to a free slot.`;
+    return `Migration slot collision at ${this.slot}: this checkout registers '${this.codeName}' but the database already applied '${this.appliedName}' in that slot. Review the migration history and schema before continuing.`;
   }
 }
 
@@ -343,6 +343,19 @@ const verifyMigrationSlots = Effect.fn("verifyMigrationSlots")(function* () {
   for (const [slot, codeName] of migrationManifest) {
     const appliedName = appliedById.get(slot);
     if (appliedName !== undefined && appliedName !== codeName) {
+      if (slot === 54 && appliedName === "ProjectionThreadsAutoSettleDisabledAt") {
+        const threadColumns = yield* sql<{ readonly name: string }>`
+          PRAGMA table_info(projection_threads)`;
+        const ledgerTables = yield* sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE type = 'table'
+            AND name IN ('codex_ledger_settings', 'codex_ledger_responses', 'codex_ledger_turns', 'codex_ledger_jev_receipts')`;
+        if (
+          threadColumns.some((column) => column.name === "auto_settle_disabled_at") &&
+          ledgerTables.length === 4
+        ) {
+          continue;
+        }
+      }
       return yield* new MigrateDevDbSlotCollisionError({ slot, codeName, appliedName });
     }
   }

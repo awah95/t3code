@@ -589,6 +589,7 @@ export async function decideWithJev(
   request: JevRouteRequest,
   receiptContext?: ReceiptContext,
   threadLabel?: string,
+  onAwaitingReview?: () => void,
 ): Promise<JevRouteResult | null> {
   const store = useJevStore.getState();
   if (
@@ -659,6 +660,7 @@ export async function decideWithJev(
         call.id === request.requestId ? { ...call, status: "awaiting-review" } : call,
       ),
     }));
+    onAwaitingReview?.();
   });
   if (
     !resolution ||

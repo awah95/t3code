@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../src/persistence/Migrations.ts";
+import upstreamMigration54 from "../src/persistence/Migrations/054_ProjectionThreadsAutoSettleDisabledAt.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrateDevDb } from "./migrate-dev-db.ts";
 
@@ -18,6 +19,7 @@ const withDatabase = <A, E>(
  * `stopped-thread` qualifies for the clone. */
 const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(function* (
   baseDir: string,
+  history: "merged" | "upstream-54" = "merged",
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -28,7 +30,14 @@ const createFixtureSource = Effect.fn("createMigrateDevDbFixtureSource")(functio
     databasePath,
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
-      yield* runMigrations();
+      if (history === "upstream-54") {
+        yield* runMigrations({ toMigrationInclusive: 53 });
+        yield* upstreamMigration54;
+        yield* sql`INSERT INTO effect_sql_migrations (migration_id, name)
+          VALUES (54, 'ProjectionThreadsAutoSettleDisabledAt')`;
+      } else {
+        yield* runMigrations();
+      }
       // The real shared db carries this column from a branch build without a
       // matching migration; reproduce that drift so the filter is exercised.
       yield* sql`ALTER TABLE projection_threads ADD COLUMN monitor_json TEXT`;
@@ -129,6 +138,42 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         assert.equal(error.slot, 1);
         assert.equal(error.appliedName, "SomebodyElsesMigration");
       }
+    }),
+  );
+
+  it.effect("clones an official upstream slot-54 database into the merged schema", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-upstream-" });
+      const destDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "migrate-dev-db-upstream-dest-",
+      });
+      const source = yield* createFixtureSource(sourceDir, "upstream-54");
+      const result = yield* runMigrateDevDb(
+        { baseDir: destDir, source, projects: 5, threadsPerProject: 10 },
+        { sharedHome: sourceDir },
+      );
+      const schema = yield* withDatabase(
+        result.databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const [slot54] = yield* sql<{ readonly name: string }>`
+            SELECT name FROM effect_sql_migrations WHERE migration_id = 54`;
+          const [slot60] = yield* sql<{ readonly name: string }>`
+            SELECT name FROM effect_sql_migrations WHERE migration_id = 60`;
+          const ledger = yield* sql<{ readonly name: string }>`
+            SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'codex_ledger_responses'`;
+          const columns = yield* sql<{
+            readonly name: string;
+          }>`PRAGMA table_info(projection_threads)`;
+          return { slot54, slot60, ledger, columns };
+        }),
+      );
+      assert.equal(schema.slot54?.name, "ProjectionThreadsAutoSettleDisabledAt");
+      assert.equal(schema.slot60?.name, "EnsureProjectionThreadsAutoSettleDisabledAt");
+      assert.equal(schema.ledger.length, 1);
+      assert.ok(schema.columns.some((column) => column.name === "parent_thread_id"));
+      assert.ok(schema.columns.some((column) => column.name === "auto_settle_disabled_at"));
     }),
   );
 

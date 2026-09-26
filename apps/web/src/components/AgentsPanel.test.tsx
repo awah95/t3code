@@ -168,6 +168,37 @@ describe("AgentsPanel", () => {
     expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
   });
 
+  it("opens an already mounted collapsed workflow for a later activity link", async () => {
+    const scrollIntoView = vi.fn();
+    await act(() => {
+      renderer = create(<AgentsPanel model={settledWorkflowModel} />, {
+        createNodeMock: (element) =>
+          (element.props as Record<string, unknown>)["data-agent-id"] === workflowMember.id
+            ? { scrollIntoView }
+            : null,
+      });
+    });
+    expect(renderer!.root.findAllByProps({ "aria-label": "Collapse workflow" })).toHaveLength(0);
+
+    await act(() => {
+      renderer!.update(
+        <AgentsPanel
+          model={settledWorkflowModel}
+          focusedAgentId={workflowMember.id}
+          focusedAgentRequestId={1}
+        />,
+      );
+    });
+
+    expect(
+      renderer!.root.findAllByProps({ "aria-label": "Collapse workflow" }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      renderer!.root.findByProps({ "aria-label": "Inspect Reviewer" }).props["aria-expanded"],
+    ).toBe(true);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+  });
+
   it("reopens the same focused agent for a later timeline request", async () => {
     const scrollIntoView = vi.fn();
     await act(() => {

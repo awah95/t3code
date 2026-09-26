@@ -1,25 +1,32 @@
 # Usage and limits
 
+Open **Usage** from the sidebar or the command palette, or press `mod+u` on web and
+desktop when the terminal is not focused. Customize `usage.open` in
+**Settings → Keybindings**.
+
 ## Understand your usage
 
-**Usage** combines Codex, Claude Code, Grok Build, OpenCode, and Cursor usage from your connected
+**Usage** combines Codex, Claude Code, Grok Build, OpenCode, Cursor, and Antigravity usage from your connected
 environments. It shows token use, cache savings, model breakdowns, and estimated API-equivalent
 cost. These estimates are not your subscription bill.
 
 Totals depend on the history available on each server. Grok turns without a saved completed-turn
 record are missing from the totals.
 
-OpenCode usage reads its local history database, including sessions run outside T3. It includes
-child sessions. OpenCode's reported cost is a model-rate calculation, not a bill; a reported zero
-can also mean OpenCode lacked pricing data. Check the model's current terms before treating a zero
-as a free request. External OpenCode servers do not expose their history to this local scan.
+OpenCode usage reads its local database and older JSON history, including sessions run outside T3
+and child sessions. Antigravity usage reads local conversation history. These sources can be
+incomplete if their history is unavailable on the connected environment. OpenCode's reported
+cost is a model-rate calculation, not a bill; a reported zero can mean pricing is unknown.
+External OpenCode servers do not expose their history to this local scan.
 
-Cursor tokens are recorded for turns run through T3 Code when Cursor supplies token counts in its
-ACP response. Cursor sessions run elsewhere and turns without reported counts are not included.
-Cursor cost uses a model-rate estimate when a rate is known; it is not the amount charged against
-your Cursor plan. If no rate is available, the tokens remain visible with unpriced cost.
-Some Cursor CLI versions omit usage from ACP responses, so those turns have no token or cost
-record in Usage. Cursor's monthly allowance indicator is a separate account-level observation.
+Cursor usage reads account history when the environment has a Cursor CLI login. On macOS, enable
+Cursor usage to allow its Keychain login for this scan. Account history includes Cursor work outside
+T3 Code. When account history is unavailable, Usage falls back to token receipts from T3 Code turns
+whose ACP response supplied counts. This fallback is partial, and it is excluded when another
+selected environment has account history to avoid counting the same turns twice. Cursor cost is an
+API-equivalent estimate when rates are known, not the amount charged against your Cursor plan.
+Unknown rates leave tokens visible with unpriced cost. The monthly allowance indicator is a
+separate account-level observation.
 
 Usage includes each configured account's history, including disabled accounts. Custom homes follow
 the account's home setting or its `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, or `XDG_DATA_HOME` environment
@@ -99,8 +106,10 @@ first, or by the first available window when no account reports a 5-hour limit. 
 account does not report that window. When the provider reports reset times, the card also says
 when the next reset lands and how much it hands back. The hatched
 part of a segment is what that reset restores. Tap a segment or account row for the account's plan,
-where it is signed in, and its reset time. On web, you can hover too. Codex accounts with banked
-reset credits show a ticket count and the **Use reset** action in the account details. On narrow screens, numbered rows below
+where it is signed in, and its reset time. On web, you can hover too. Codex and Claude accounts
+with banked reset credits show a ticket count and the **Use reset** action in the account details.
+Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
+Keychain. On narrow screens, numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.
@@ -118,10 +127,10 @@ anything. The command is offered only for providers that appear under **Usage �
 OpenCode Go reports its session, weekly, and monthly allowance when OpenCode runs locally in
 the environment. T3 cannot report limits for external OpenCode servers because their credentials
 belong to the remote server. Cursor reports
-its monthly allowance, including separate Auto and API usage, using a file-based CLI login or
-`CURSOR_AUTH_TOKEN`. Cursor's default macOS keychain login does not currently report limits.
-On macOS, use `AGENT_CLI_CREDENTIAL_STORE=file` when signing in and in the provider's environment
-to use a file-based login.
+its monthly allowance, including separate Auto and API usage, using the CLI login or
+`CURSOR_AUTH_TOKEN`. On macOS, this includes the default Keychain login after you enable Cursor
+usage. Keychain login is used for limits only with Cursor's default API endpoint. If you configure
+a custom Cursor endpoint, use an explicit token or file-based CLI login for limits.
 
 Grok reports the remaining subscription allowance and reset time for its current billing period
 after signing in with `grok login`. Explicit `XAI_API_KEY` connections and custom authentication
@@ -146,4 +155,14 @@ settings section when you no longer need it.
 
 Add **Subscription usage** from your iOS or Android widget gallery to see remaining Codex and
 Claude quotas. Tap it to open **Usage → Limits**. On iOS, use **Edit Widget** to choose Session,
-Weekly, or both for each provider. Reopen T3 to refresh expired readings.
+Weekly, or both for each provider. Reopen T3 to refresh expired readings. The Android widget
+requires Android 12L or later.
+
+## Keyboard shortcuts
+
+On web and desktop, open Usage from the command palette. While on Usage,
+press `C`, `T`, or `L` for Cost, Tokens, or Limits while not typing in a field.
+Use `Ctrl+Shift+1/2/3/4` (`Cmd+Shift+1/2/3/4` on macOS) for the past
+24 hours, 7 days, 30 days, or 90 days. Period shortcuts do nothing on Limits.
+Press `Escape` to return to the previous page. Customize these shortcuts in
+**Settings → Keybindings**.

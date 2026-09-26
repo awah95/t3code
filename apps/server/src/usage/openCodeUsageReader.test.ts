@@ -6,9 +6,9 @@ import * as NodeSqlite from "node:sqlite";
 
 import { expect, it } from "@effect/vitest";
 
-import { readOpenCodeUsage } from "./openCodeUsageReader.ts";
+import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 
-it("reads OpenCode assistant usage without double counting cache or reasoning", () => {
+it("reads OpenCode assistant usage without double counting cache or reasoning", async () => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "opencode-usage-"));
   try {
     const databasePath = NodePath.join(directory, "opencode.db");
@@ -38,12 +38,13 @@ it("reads OpenCode assistant usage without double counting cache or reasoning", 
     insert.run("msg-3", "child-session", 500, JSON.stringify({ role: "user" }));
     database.close();
 
-    const result = readOpenCodeUsage(databasePath, 900);
-    expect(result?.records).toEqual([
+    const result = await readOpenCodeUsage(directory, 900);
+    expect(result.files.flatMap((file) => file.records)).toEqual([
       {
         provider: "opencode",
         timestampMs: 1_000,
-        model: "opencode/jev-1.13-free",
+        model: "jev-1.13-free",
+        legacyOverrideModel: "opencode/jev-1.13-free",
         sessionId: "child-session",
         totals: {
           uncachedInputTokens: 100,
@@ -52,11 +53,13 @@ it("reads OpenCode assistant usage without double counting cache or reasoning", 
           outputTokens: 27,
           reasoningTokens: 7,
         },
-        reportedCostUsd: 0,
-        dedupeKey: "opencode-message:msg-1",
+        reportedCostUsd: null,
+        fast: false,
+        dedupeKey: "opencode:msg-1",
       },
     ]);
-    expect(result?.malformedRecords).toBe(1);
+    expect(result.error).toBe(false);
+    expect(result.missing).toBe(false);
   } finally {
     NodeFS.rmSync(directory, { recursive: true, force: true });
   }

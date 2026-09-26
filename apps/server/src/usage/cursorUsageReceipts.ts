@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
+import { cursorRateModel } from "./cursorUsageReader.ts";
 
 export const cursorUsageReceiptPath = (stateDir: string) =>
   NodePath.join(stateDir, "cursor-usage.jsonl");
@@ -119,9 +120,11 @@ export async function readCursorUsageReceipts(
       provider: "cursor",
       timestampMs: receipt.timestampMs,
       model: receipt.model,
+      rateModel: cursorRateModel(receipt.model),
       sessionId: receipt.sessionId,
       totals: totals as UsageRecord["totals"],
       reportedCostUsd: null,
+      fast: false,
       dedupeKey: receipt.dedupeKey,
     });
   }

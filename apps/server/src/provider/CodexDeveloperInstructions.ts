@@ -1,23 +1,27 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
+import type { V2TurnStartParams__AdditionalContextEntry } from "effect-codex-app-server/schema";
 import { buildRuntimeInstructions } from "./RuntimeInstructions.ts";
 
-const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
-
-## T3 Code collaborative browser
+const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `## T3 Code collaborative browser
 
 You are running inside T3 Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
 
-For browser work, first call \`preview_status\`. If Jev browser automation is enabled and the user asks for a bounded natural-language browser task, prefer one \`preview_run_task\` call; it runs the whole observe/decide/execute loop server-side and may return a needs-agent verification handoff. Users do not need to author fixtures or assertions. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
+For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
 
-Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.
-`;
+Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.`;
 
-const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `
+const T3_CODE_DEVICE_TOOL_INSTRUCTIONS = `## T3 Code devices
 
-## T3 Code devices
+The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Do not call simctl, adb, xcrun, or serve-sim directly while these tools are present. If \`device_list\` reports a platform as unavailable, say so instead of trying another route.`;
 
-The \`t3-code\` MCP server also exposes \`device_*\` tools for iOS Simulators and Android Emulators on this environment. For mobile verification, call \`device_list\`, then \`device_open\` so the user can watch the device in their Device panel; its result explains how to drive the device. Driving happens through the \`agent-device\` CLI, which is on PATH. Keep the host config and session flags returned by \`device_open\` on every command so concurrent devices stay independent: prefer \`agent-device snapshot -i\` refs over coordinates, and use \`device_screenshot\` when you need to see the screen. Do not call simctl, adb, xcrun, or serve-sim directly while these tools are present. If \`device_list\` reports a platform as unavailable, say so instead of trying another route.
-`;
+const JEV_BROWSER_INSTRUCTIONS = `<jev_browser>
+When jevBrowser is available and its mode is idle, prefer preview_run_task for multi-step browser tasks. Supply the task, any exact text or URLs it needs, and observable success conditions when practical. Jev chooses actions; it cannot invent text or judge screenshots. A needs-agent result is a handoff, not success: inspect the fresh state, handle the unsupported step with the ordinary preview tools, and delegate the remaining task again when appropriate. If Jev is disabled or unavailable, use the ordinary preview tools. Never repeat a possibly completed submission merely because a response was lost. The user's authorization and approval requirements still apply to every action.
+When available, use preview_verify for independent assertions, preview_select for exact option selection, preview_check for a desired checked state, and preview_hover for menus. Scope semantic targets to their named container or frame when labels repeat. A compact snapshot can omit matching controls; do not infer absence or uniqueness from it. Treat indeterminate verification as a handoff. Use environment-port navigation targets for development servers on the agent's environment; localhost URLs refer to the connected browser host. Do not replace an unresolved environment target with a guessed localhost URL.
+Use preview_extract for bounded structured data and preview_wait_for_assertion for state changes. Use preview_upload to select a current-thread workspace file or attachment, then verify submission separately. Use preview_download with an exact expected URL or filename and retain its completed attachment receipt. Inspect preview_dialog_status and handle only the returned dialog identity with preview_dialog. Never repeat a consequential action solely because its response or wait timed out.
+</jev_browser>`;
+
+const JEV_SUBAGENT_INSTRUCTIONS =
+  'The user enabled Jev subagent model routing. For independent delegated tasks that do not need all prior context, explicitly use fork_turns: "none" or a bounded turn count so Jev can choose an appropriate model. Keep a full-history fork when it needs full context; full-history forks retain the parent model. This does not itself authorize spawning extra agents.';
 
 export interface T3CodeToolAvailability {
   readonly browser: boolean;
@@ -36,16 +40,17 @@ const normalizeAvailability = (
  * from Playwright, agent-browser, and raw simctl/adb, so leaving them in would
  * talk it out of the only automation it still has.
  */
-const browserToolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
+const toolInstructions = (availability: boolean | T3CodeToolAvailability): string => {
   const tools = normalizeAvailability(availability);
-  return `${tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : ""}${
-    tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : ""
-  }`;
+  return [
+    tools.browser ? T3_CODE_BROWSER_TOOL_INSTRUCTIONS : "",
+    tools.device ? T3_CODE_DEVICE_TOOL_INSTRUCTIONS : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 };
 
-const codexPlanModeDeveloperInstructions = (
-  browserToolsAvailable: boolean | T3CodeToolAvailability,
-): string => `<collaboration_mode># Plan Mode (Conversational)
+const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)
 
 You work in 3 phases, and you should *chat your way* to a great plan before finalizing it. A great plan is very detailed-intent- and implementation-wise-so that it can be handed to another engineer or agent to be implemented right away. It must be **decision complete**, where the implementer does not need to make any decisions.
 
@@ -173,12 +178,9 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 
 If the user stays in Plan mode and asks for revisions after a prior \`<proposed_plan>\`, any new \`<proposed_plan>\` must be a complete replacement. If the user indicates that the prior plan is not acceptable but does not provide enough information to produce a complete replacement, address the concern and continue planning without producing a \`<proposed_plan>\` block. If the follow-up neither requires changes nor calls the plan into question (e.g. clarifying question), answer it before the block, then reproduce the prior \`<proposed_plan>\` unchanged.
-${browserToolInstructions(browserToolsAvailable)}
 </collaboration_mode>`;
 
-const codexDefaultModeDeveloperInstructions = (
-  browserToolsAvailable: boolean | T3CodeToolAvailability,
-): string => `<collaboration_mode># Collaboration Mode: Default
+const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
 
 You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
 
@@ -189,34 +191,56 @@ Your active mode changes only when new developer instructions with a different \
 Use the \`request_user_input\` tool only when it is listed in the available tools for this turn.
 
 In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
-${browserToolInstructions(browserToolsAvailable)}
 </collaboration_mode>`;
 
 export interface CodexRuntimeInfo {
   readonly model: string;
+  readonly modelName?: string | undefined;
   readonly reasoningEffort: string;
 }
 
-export function buildCodexDeveloperInstructions(
-  interactionMode: ProviderInteractionMode,
+/** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
+export function buildCodexDeveloperInstructions(interactionMode: ProviderInteractionMode): string {
+  return interactionMode === "plan"
+    ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
+    : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
+}
+
+/**
+ * T3 Code context for `turn/start.additionalContext`. Codex renders each entry
+ * as a `<key>value</key>` developer message and resends it only when the value
+ * changes.
+ *
+ * This must stay out of the collaboration mode: when the model catalog ships
+ * its own text for a mode, as newer models do, Codex uses that text and drops
+ * the client's `developer_instructions` entirely.
+ */
+export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   /**
    * Whether the `t3-code` MCP server is attached to this turn. Callers derive
    * it from the session's actual MCP configuration rather than re-reading the
    * setting, so the prompt cannot claim tools the turn doesn't have.
    */
-  browserToolsAvailable: boolean | T3CodeToolAvailability = true,
-): string {
-  const base =
-    interactionMode === "plan"
-      ? codexPlanModeDeveloperInstructions(browserToolsAvailable)
-      : codexDefaultModeDeveloperInstructions(browserToolsAvailable);
-  const availability = normalizeAvailability(browserToolsAvailable);
-  return `${base}
-
-${buildRuntimeInstructions({
-  harness: "Codex",
-  ...runtime,
-  browserToolsAvailable: availability.browser,
-})}`;
+  toolsAvailable: boolean | T3CodeToolAvailability = true,
+  jevSubagentsEnabled = false,
+): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+  const availability = normalizeAvailability(toolsAvailable);
+  const tools = toolInstructions(availability);
+  // Separate keys keep each value under Codex's per-entry token cap.
+  return {
+    t3_code_runtime: {
+      kind: "application",
+      value:
+        buildRuntimeInstructions({
+          harness: "Codex",
+          ...runtime,
+          browserToolsAvailable: false,
+        }) + (jevSubagentsEnabled ? `\n\n${JEV_SUBAGENT_INSTRUCTIONS}` : ""),
+    },
+    ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
+    ...(availability.browser
+      ? { t3_code_jev_browser: { kind: "application", value: JEV_BROWSER_INSTRUCTIONS } }
+      : {}),
+  };
 }

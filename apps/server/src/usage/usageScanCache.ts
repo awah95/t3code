@@ -23,8 +23,9 @@ import type { CodexScanState, UsageRecord } from "./usageTranscripts.ts";
 // entries would keep serving double-counted records forever.
 // v3: entries carry the parse position and reducer state so a grown file
 // re-parses only its appended bytes instead of starting over.
-// v4: Codex exact-response precedence and cumulative fallback state.
-const USAGE_SCAN_CACHE_VERSION = 4 as const;
+// v4 diverged between Claude fast mode and Codex exact-response state.
+// v5 stores both, so either prior v4 cache is re-scanned once.
+const USAGE_SCAN_CACHE_VERSION = 5 as const;
 
 export interface CachedFile {
   readonly size: number;
@@ -62,6 +63,7 @@ type SerializedRecord = readonly [
   codexSource: "exact" | "compacted" | "legacy" | null,
   codexTurnId: string | null,
   codexTurnCheckpoint: readonly [number, number, number, number, number] | null,
+  fast: 0 | 1,
 ];
 
 interface SerializedFile {
@@ -124,6 +126,7 @@ export function encodeScanCache(cache: ScanCache): SerializedCache {
           record.codexTurnCheckpoint.reasoningTokens,
         ]
       : null,
+    record.fast ? 1 : 0,
   ];
 
   const files: Record<string, SerializedFile> = {};
@@ -180,7 +183,7 @@ export function decodeScanCache(document: unknown): ScanCache {
   ): UsageRecord[] | null => {
     const records: UsageRecord[] = [];
     for (const row of rows) {
-      if (!isRecordArray(row) || row.length !== 13) return null;
+      if (!isRecordArray(row) || row.length !== 14) return null;
       const [
         timestampMs,
         modelIndex,
@@ -195,6 +198,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         codexSource,
         codexTurnId,
         codexTurnCheckpoint,
+        fast,
       ] = row as SerializedRecord;
 
       const model = typeof modelIndex === "number" ? models[modelIndex] : undefined;
@@ -207,6 +211,7 @@ export function decodeScanCache(document: unknown): ScanCache {
         !Number.isFinite(cacheCreation) ||
         !Number.isFinite(output) ||
         !Number.isFinite(reasoning) ||
+        (fast !== 0 && fast !== 1) ||
         (codexSource !== null &&
           codexSource !== "exact" &&
           codexSource !== "compacted" &&
@@ -235,6 +240,7 @@ export function decodeScanCache(document: unknown): ScanCache {
           reasoningTokens: reasoning,
         },
         reportedCostUsd: typeof reportedCostUsd === "number" ? reportedCostUsd : null,
+        fast: fast === 1,
         dedupeKey: typeof dedupeKey === "string" ? dedupeKey : null,
         ...(codexSource === null ? {} : { codexSource }),
         ...(codexTurnId === null ? {} : { codexTurnId }),

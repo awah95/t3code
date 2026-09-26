@@ -7,7 +7,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import {
   EnvironmentId,
@@ -84,9 +84,11 @@ const serviceLayers = (input: {
   /** Defaults to an unparsable document so every scan retries the fetch. */
   readonly ratesDocument?: unknown;
   readonly environment?: NodeJS.ProcessEnv;
+  readonly platform?: NodeJS.Platform;
 }) =>
   ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(Layer.succeed(HostProcessPlatform, input.platform ?? "linux")),
     Layer.provideMerge(ServerSettings.layerTest(input.settings)),
     Layer.provideMerge(
       Layer.succeed(
@@ -103,8 +105,13 @@ const serviceLayers = (input: {
     ),
     Layer.provideMerge(
       Layer.succeed(HostProcessEnvironment, {
+        HOME: input.home,
         GROK_HOME: NodePath.join(input.home, "grok"),
         XDG_DATA_HOME: NodePath.join(input.home, "data"),
+        OPENCODE_DATA_DIR: NodePath.join(input.home, "data", "opencode"),
+        ANTIGRAVITY_DATA_DIR: NodePath.join(input.home, "antigravity"),
+        XDG_CONFIG_HOME: NodePath.join(input.home, "config"),
+        APPDATA: NodePath.join(input.home, "config"),
         ...input.environment,
       }),
     ),
@@ -115,6 +122,129 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("does not read the macOS Cursor Keychain before account usage is enabled", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-cursor-keychain-disabled",
+            home,
+            settings,
+            platform: "darwin",
+            environment: {},
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
+      assert.strictEqual(cursor?.status, "missing");
+      assert.strictEqual(cursor?.action, "enableCursorKeychain");
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("ignores stale Cursor file logins when the active credential store differs", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      for (const [index, testCase] of [
+        {
+          platform: "darwin" as const,
+          environment: { AGENT_CLI_CREDENTIAL_STORE: "memory" },
+          authPath: [".cursor", "auth.json"],
+        },
+        {
+          platform: "linux" as const,
+          environment: { AGENT_CLI_CREDENTIAL_STORE: "memory" },
+          authPath: ["config", "cursor", "auth.json"],
+        },
+        {
+          platform: "linux" as const,
+          environment: { CURSOR_API_KEY: "different-account" },
+          authPath: ["config", "cursor", "auth.json"],
+        },
+      ].entries()) {
+        const authPath = NodePath.join(home, ...testCase.authPath);
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(NodePath.dirname(authPath), { recursive: true });
+          await NodeFSP.writeFile(
+            authPath,
+            encodeUnknownJsonString({ accessToken: "stale-token" }),
+          );
+        });
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: `usage-service-cursor-store-${index}`,
+              home,
+              settings,
+              platform: testCase.platform,
+              environment: testCase.environment,
+            }),
+          ),
+        );
+        const summary = yield* service.readSummary(WINDOW);
+        const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
+        assert.strictEqual(cursor?.status, "missing");
+        assert.include(cursor?.message ?? "", "Cursor CLI login");
+        assert.isFalse(summary.buckets.some((bucket) => bucket.provider === "cursor"));
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("counts aliased OpenCode and Antigravity directories once", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const opencode = NodePath.join(home, "opencode-store");
+      const opencodeAlias = NodePath.join(home, "opencode-alias");
+      const conversations = NodePath.join(home, "antigravity-conversations");
+      const antigravityA = NodePath.join(home, "antigravity-a");
+      const antigravityB = NodePath.join(home, "antigravity-b");
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(opencode);
+        await NodeFSP.symlink(opencode, opencodeAlias, "junction");
+        await NodeFSP.mkdir(conversations);
+        await NodeFSP.mkdir(antigravityA);
+        await NodeFSP.mkdir(antigravityB);
+        await NodeFSP.symlink(
+          conversations,
+          NodePath.join(antigravityA, "conversations"),
+          "junction",
+        );
+        await NodeFSP.symlink(
+          conversations,
+          NodePath.join(antigravityB, "conversations"),
+          "junction",
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-aliased-roots-test",
+            home,
+            settings,
+            environment: {
+              OPENCODE_DATA_DIR: `${opencode},${opencodeAlias}`,
+              ANTIGRAVITY_DATA_DIR: `${antigravityA},${antigravityB}`,
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const sourcesFor = (provider: "opencode" | "antigravity") =>
+        summary.sources.filter((source) => source.fingerprint.provider === provider);
+      assert.strictEqual(sourcesFor("opencode").length, 1);
+      assert.strictEqual(sourcesFor("antigravity").length, 1);
+      assert.strictEqual(
+        sourcesFor("opencode")[0]?.fingerprint.resolvedHomePath,
+        yield* Effect.promise(() => NodeFSP.realpath(opencode)),
+      );
+      assert.strictEqual(
+        sourcesFor("antigravity")[0]?.fingerprint.resolvedHomePath,
+        yield* Effect.promise(() => NodeFSP.realpath(conversations)),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("marks enabled Cursor coverage missing when ACP supplies no usage", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
@@ -209,7 +339,7 @@ describe("UsageService", () => {
       );
       const summary = yield* service.readSummary(WINDOW);
       const bucket = summary.buckets.find((entry) => entry.provider === "opencode");
-      assert.strictEqual(bucket?.model, "opencode/jev-1.13-free");
+      assert.strictEqual(bucket?.model, "jev-1.13-free");
       assert.deepStrictEqual(bucket?.totals, {
         uncachedInputTokens: 100,
         cachedInputTokens: 40,
@@ -218,7 +348,8 @@ describe("UsageService", () => {
         reasoningTokens: 7,
       });
       assert.strictEqual(bucket?.costUsd, 0);
-      assert.strictEqual(bucket?.costSource, "providerReported");
+      // OpenCode's zero is an absent price, not proof that the request was free.
+      assert.strictEqual(bucket?.costSource, "unpriced");
       assert.strictEqual(
         summary.sources.find((source) => source.fingerprint.provider === "opencode")
           ?.distinctSessions,
@@ -382,7 +513,9 @@ describe("UsageService", () => {
       const removed = yield* service.readSummary(WINDOW);
       assert.deepStrictEqual(removed.buckets, summary.buckets);
 
-      const sources = summary.sources.filter((source) => source.status === "ok");
+      const sources = summary.sources.filter(
+        (source) => source.status === "ok" && source.scannedFiles > 0,
+      );
       assert.strictEqual(sources.length, 4);
       assert.strictEqual(
         sources.reduce((sum, source) => sum + source.scannedFiles, 0),
@@ -424,9 +557,12 @@ describe("UsageService", () => {
           const service = yield* UsageService.make;
           const first = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(first), 7);
+          const configuredProjects = yield* Effect.promise(() =>
+            NodeFSP.realpath(NodePath.join(configured, "projects")),
+          );
           assert.include(
             first.sources.map((source) => source.fingerprint.resolvedHomePath),
-            yield* Effect.promise(() => NodeFSP.realpath(NodePath.join(configured, "projects"))),
+            configuredProjects,
           );
           yield* settingsService.updateSettings({
             providerInstances: {
@@ -441,11 +577,12 @@ describe("UsageService", () => {
           });
           const second = yield* service.readSummary(WINDOW);
           assert.strictEqual(totalOutputTokens(second), 8);
+          const environmentProjects = yield* Effect.promise(() =>
+            NodeFSP.realpath(NodePath.join(environmentHome, "projects")),
+          );
           assert.include(
             second.sources.map((source) => source.fingerprint.resolvedHomePath),
-            yield* Effect.promise(() =>
-              NodeFSP.realpath(NodePath.join(environmentHome, "projects")),
-            ),
+            environmentProjects,
           );
         }).pipe(
           Effect.provide(

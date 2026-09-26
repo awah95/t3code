@@ -8,17 +8,24 @@ When available, use preview_verify for independent assertions, preview_select fo
 Use preview_extract for bounded structured data and preview_wait_for_assertion for state changes. Use preview_upload to select a current-thread workspace file or attachment, then verify submission separately. Use preview_download with an exact expected URL or filename and retain its completed attachment receipt. Inspect preview_dialog_status and handle only the returned dialog identity with preview_dialog. Never repeat a consequential action solely because its response or wait timed out.
 </jev_browser>`;
 
-/** Shared runtime context; omit model and effort when the harness manages them dynamically. */
+/**
+ * Shared runtime context; omit model and effort when the harness manages them dynamically.
+ * `modelName` is the display name users see in the model picker; `model` is the slug.
+ */
 export function buildRuntimeInstructions(runtime: {
   readonly harness: string;
   readonly model?: string | undefined;
+  readonly modelName?: string | undefined;
   readonly reasoningEffort?: string | undefined;
   readonly browserToolsAvailable?: boolean | undefined;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
+  const modelName = toSingleLine(runtime.modelName ?? "");
   const effort = toSingleLine(runtime.reasoningEffort ?? "");
-  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${model}` : "";
+  const modelLabel =
+    modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
+  const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const browserInstructions =
     runtime.browserToolsAvailable === false ? "" : `\n\n${JEV_BROWSER_INSTRUCTIONS}`;
