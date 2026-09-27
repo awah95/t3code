@@ -1,4 +1,9 @@
 import { sanitizeJevText } from "@t3tools/shared/jevRouting";
+import {
+  isAutomaticJevRoute,
+  resolveJevReviewSelection,
+  type JevReviewSelection,
+} from "@t3tools/jev/review";
 import type {
   JevRouteRequest,
   JevRouteResult,
@@ -99,8 +104,7 @@ type SubagentPolicy = JevSubagentPolicy;
 const subagentPolicies = new Map<string, SubagentPolicy>();
 const pendingTurnRequests = new Map<string, ReceiptContext | undefined>();
 const cancelledTurnRequests = new Set<string>();
-type ReviewResolution = { action: "suggestion" | "current" | "alternative"; choice: string | null };
-const pendingReviews = new Map<string, (resolution: ReviewResolution | null) => void>();
+const pendingReviews = new Map<string, (resolution: JevReviewSelection | null) => void>();
 let listeningForSubagents = false;
 let policyInitialization: Promise<void> | null = null;
 let policyQueue = Promise.resolve();
@@ -407,26 +411,10 @@ export const useJevStore = create<{
     const call = get().calls.find((entry) => entry.id === id && entry.status === "awaiting-review");
     const resolve = pendingReviews.get(id);
     if (!call || !resolve) return;
-    const selected =
-      action === "current"
-        ? null
-        : action === "suggestion"
-          ? (call.result?.recommendedChoice ?? call.result?.choice)
-          : choice;
-    if (
-      action !== "current" &&
-      (!selected || !call.request.candidates.some((candidate) => candidate.key === selected))
-    )
-      return;
-    if (
-      action === "suggestion" &&
-      selected &&
-      call.result?.admissibleCandidateKeys &&
-      !call.result.admissibleCandidateKeys.includes(selected)
-    )
-      return;
+    const selection = resolveJevReviewSelection(call.request, call.result, action, choice);
+    if (selection === undefined) return;
     pendingReviews.delete(id);
-    resolve({ action, choice: selected ?? null });
+    resolve(selection);
   },
   subagentsEnabled: false,
   panelOpen: false,
@@ -649,13 +637,8 @@ export async function decideWithJev(
     cancelledTurnRequests.delete(request.requestId);
     return null;
   }
-  const automaticChoiceAllowed =
-    result.choice !== null &&
-    (!result.policyOutcome || result.policyOutcome === "route") &&
-    request.candidates.some((candidate) => candidate.key === result.choice) &&
-    (!result.admissibleCandidateKeys || result.admissibleCandidateKeys.includes(result.choice));
-  if (mode === "auto" && automaticChoiceAllowed) return result;
-  const resolution = await new Promise<ReviewResolution | null>((resolve) => {
+  if (mode === "auto" && isAutomaticJevRoute(request, result)) return result;
+  const resolution = await new Promise<JevReviewSelection | null>((resolve) => {
     pendingReviews.set(request.requestId, resolve);
     useJevStore.setState((state) => ({
       notice: "Review Jev's recommendation before the message is sent.",

@@ -26,6 +26,11 @@ import { sshHelperCommand } from "./cli/sshHelper.ts";
 import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
+import { jevCommand } from "./cli/jev.ts";
+
+const invokedAsJev =
+  process.env.T3JEV_CLI_NAME === "t3jev" ||
+  /(?:^|[\\/])t3jev(?:\.cmd)?$/.test(process.argv[1] ?? "");
 
 const CliRuntimeLayer = Layer.mergeAll(NodeServices.layer, NetService.layer);
 
@@ -79,6 +84,10 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
   );
 
 export const cli = makeCli();
+const jevCli = Command.make("t3jev").pipe(
+  Command.withDescription("Run Jev routing and headless Codex tasks."),
+  Command.withSubcommands([jevCommand]),
+);
 
 if (
   isEntrypoint({
@@ -87,9 +96,8 @@ if (
     runtimeMain: import.meta.main,
   })
 ) {
-  Command.run(cli, { version: packageJson.version }).pipe(
-    Effect.scoped,
-    Effect.provide(CliRuntimeLayer),
-    NodeRuntime.runMain,
-  );
+  (invokedAsJev
+    ? Command.run(jevCli, { version: packageJson.version })
+    : Command.run(cli, { version: packageJson.version })
+  ).pipe(Effect.scoped, Effect.provide(CliRuntimeLayer), NodeRuntime.runMain);
 }

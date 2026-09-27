@@ -1,5 +1,5 @@
 import type { JevRouteRequest, JevRouteResult, JevStatus } from "@t3tools/contracts";
-import { JEV_MAX_REQUEST_CHARS } from "@t3tools/shared/jevRouting";
+import { isValidJevRouteRequest } from "@t3tools/jev/requestValidation";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -40,22 +40,7 @@ export const layer = Layer.effect(
         }),
       decide: (request) =>
         Effect.gen(function* () {
-          if (
-            !request.requestId ||
-            request.requestId.length > 128 ||
-            // Serialized size is the wire boundary limit, including optional context.
-            // @effect-diagnostics-next-line preferSchemaOverJson:off
-            JSON.stringify(request).length > JEV_MAX_REQUEST_CHARS ||
-            request.candidates.length < 1 ||
-            request.candidates.length > 128 ||
-            new Set(request.candidates.map((candidate) => candidate.key)).size !==
-              request.candidates.length ||
-            request.candidates.some(
-              (candidate) =>
-                !/^[a-zA-Z0-9_-]{1,128}$/.test(candidate.key) ||
-                candidate.description.length > 1000,
-            )
-          ) {
+          if (!isValidJevRouteRequest(request)) {
             return failedJevDecision("Invalid routing request; using the selected model.");
           }
           if (pending.size >= 8 || pending.has(request.requestId))

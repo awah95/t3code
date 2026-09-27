@@ -1,14 +1,9 @@
-import {
-  describeJevCandidate,
-  JEV_MODEL_PROFILES,
-  sanitizeJevText,
-} from "@t3tools/shared/jevRouting";
-import type { JevEffort, JevRouteRequest, ModelSelection } from "@t3tools/contracts";
+import { buildJevRouteRequest, eligibleJevModels as eligiblePairs } from "@t3tools/jev/routing";
+import type { ModelSelection } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { ProviderInstanceEntry } from "../providerInstances";
 import { getAppModelOptionsForInstance } from "../modelSelection";
-import { getStartedThreadModelChangeBlockReason } from "../components/ChatView.logic";
-import { buildJevContext, textOnlyJevPrompt } from "./context";
+import { buildJevContext } from "./context";
 
 type ContextInput = Parameters<typeof buildJevContext>[0];
 
@@ -29,7 +24,7 @@ export function prepareJevTurn(input: {
   plans?: ContextInput["plans"];
   outgoingContext?: ContextInput["outgoingContext"];
   historyCompleteness?: ContextInput["historyCompleteness"];
-}): { request: JevRouteRequest; candidates: ReturnType<typeof eligibleJevModels> } {
+}) {
   const provider = input.providers.find((entry) => entry.instanceId === input.current.instanceId);
   const context = buildJevContext({
     messages: input.messages,
@@ -51,21 +46,17 @@ export function prepareJevTurn(input: {
     hasStartedSession: input.hasStartedSession,
   });
   return {
-    request: {
+    request: buildJevRouteRequest({
       requestId: input.requestId,
-      prompt: textOnlyJevPrompt(input.prompt),
+      prompt: input.prompt,
       context,
-      candidates: candidates.map(({ key, description, model, effort }) => ({
-        key,
-        model,
-        effort,
-        description: sanitizeJevText(description),
-      })),
-    },
+      candidates,
+    }),
     candidates,
   };
 }
 
+/** Project the web provider catalog into the shared Jev candidate policy. */
 export function eligibleJevModels(input: {
   providers: readonly ProviderInstanceEntry[];
   settings: UnifiedSettings;
@@ -73,53 +64,29 @@ export function eligibleJevModels(input: {
   sessionInstanceId: ModelSelection["instanceId"] | null;
   hasStartedSession: boolean;
 }) {
-  const candidates = [];
-  for (const provider of input.providers) {
-    if (provider.driverKind !== "codex") continue;
-    if (!provider.enabled || !provider.isAvailable || provider.status !== "ready") continue;
-    // Keep Auto inside the user's chosen integration, including brand-new threads.
-    if (provider.instanceId !== (input.sessionInstanceId ?? input.current.instanceId)) continue;
-    for (const model of getAppModelOptionsForInstance(input.settings, provider)) {
-      if (
-        model.isUnavailable ||
-        !JEV_MODEL_PROFILES.some((profile) => profile.model === model.slug)
-      )
-        continue;
+  const providers = input.providers.map((provider) => ({
+    instanceId: provider.instanceId,
+    driverKind: provider.driverKind,
+    enabled: provider.enabled,
+    isAvailable: provider.isAvailable,
+    status: provider.status,
+    requiresNewThreadForModelChange: provider.snapshot.requiresNewThreadForModelChange === true,
+    candidateModels: getAppModelOptionsForInstance(input.settings, provider).map((model) => {
       const descriptor = provider.models
         .find((entry) => entry.slug === model.slug)
         ?.capabilities?.optionDescriptors?.find((option) => option.id === "reasoningEffort");
-      if (!descriptor || descriptor.type !== "select") continue;
-      const efforts = descriptor.options
-        .map((option) => option.id)
-        .filter((value): value is JevEffort => ["low", "medium", "high", "xhigh"].includes(value));
-      const selection: ModelSelection = { instanceId: provider.instanceId, model: model.slug };
-      if (
-        getStartedThreadModelChangeBlockReason({
-          providers: input.providers.map((entry) => entry.snapshot),
-          hasStartedSession: input.hasStartedSession,
-          currentModelSelection: input.current,
-          currentProviderInstanceId: input.sessionInstanceId,
-          nextModelSelection: selection,
-        })
-      )
-        continue;
-      for (const effort of efforts) {
-        candidates.push({
-          key: `candidate_${candidates.length}`,
-          model: model.slug,
-          effort,
-          description: describeJevCandidate(model.slug, effort),
-          selection: {
-            ...selection,
-            options: [
-              ...(input.current.options ?? []).filter((option) => option.id !== "reasoningEffort"),
-              { id: "reasoningEffort", value: effort },
-            ],
-          },
-          provider,
-        });
-      }
-    }
-  }
-  return candidates.slice(0, 128);
+      return {
+        slug: model.slug,
+        isUnavailable: model.isUnavailable === true,
+        efforts: descriptor?.type === "select" ? descriptor.options.map((option) => option.id) : [],
+      };
+    }),
+    source: provider,
+  }));
+  return eligiblePairs({
+    providers,
+    current: input.current,
+    sessionInstanceId: input.sessionInstanceId,
+    hasStartedSession: input.hasStartedSession,
+  }).map(({ provider, ...candidate }) => ({ ...candidate, provider: provider.source }));
 }

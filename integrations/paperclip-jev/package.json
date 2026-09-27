@@ -1,0 +1,29 @@
+{
+  "name": "@t3tools/paperclip-jev-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "files": [
+    "dist/",
+    "!dist/**/*.test.js",
+    "README.md",
+    "package.json"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test dist/server/execute.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "2026.916.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

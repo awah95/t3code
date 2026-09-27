@@ -58,6 +58,59 @@ explicit multi-model sends retain their normal model selection. Jev starts off i
 chats; each chat's setting is saved on this desktop client. The API key is encrypted with the
 operating system's secure storage and can be removed from Settings.
 
+### Run Jev from a terminal
+
+On macOS, build this fork's server and install its separate `t3jev` launcher:
+
+```bash
+cd apps/server && vp run build:bundle && cd ../..
+./scripts/install-jev-cli-macos.sh
+```
+
+Put `~/.local/bin` on your `PATH` if needed. The launcher runs without the desktop
+app and keeps its state under `~/.t3-jev` by default. Set `T3JEV_HOME` to use
+another directory. It leaves the official `t3` command and its state alone.
+Install and sign in to the Codex CLI on this machine, and set `OPENROUTER_API_KEY`
+in the environment that runs `t3jev`. The desktop's saved Jev key is separate.
+
+Save a task file such as `task.json` (use an absolute workspace path and models
+available to your Codex account). Keep the same `requestId` when retrying the
+same task:
+
+```json
+{
+  "requestId": "build-fix-001",
+  "prompt": "Inspect this project and fix the failing build",
+  "workspace": "/absolute/path/to/project",
+  "mode": "guided",
+  "current": { "model": "gpt-6-sol", "effort": "medium" },
+  "candidates": [
+    { "model": "gpt-6-sol", "efforts": ["medium", "high"] },
+    { "model": "gpt-6-astra", "efforts": ["high"] }
+  ]
+}
+```
+
+Run `t3jev jev exec --input-file task.json --json`. In Guided mode, the CLI
+returns a `review_required` JSON result with a review ID and option IDs, exits
+with code 2, and does not start Codex. Choose one of the returned options and
+resume with `t3jev jev exec --review-id ID --option recommended --json`, replacing
+`ID` and `recommended` with values from that result. Options can include the
+current pair, a compatible alternative, or cancellation. An agent calling the
+CLI can present those same options to you and pass your selection back.
+Without `--json`, an interactive terminal prompts you to choose. For unattended
+runs, set `"mode": "auto"`; Jev still pauses when review is required. Use
+`./scripts/install-jev-cli-macos.sh --uninstall` to remove the launcher.
+Cancellation exits with code 4. If a previous execution was claimed but no result
+was recorded, the CLI reports `execution_unknown` with code 3; inspect the
+workspace before starting a new request.
+
+The JSON result reports Jev's routing charge or estimate under `routing.costUsd`
+with its `costKind`. It does not report a Codex execution dollar amount. Codex
+subscription work has no per-turn billed dollar figure; the app's separate usage
+ledger can value tokens as an API pricing scenario when it has sufficient data.
+This command does not write a Jev execution receipt to that ledger.
+
 ## Use multiple accounts
 
 A shared Codex home with a shadow home lets work and personal accounts continue

@@ -1,0 +1,29 @@
+{
+  "name": "@t3tools/jev",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./decision": "./src/decision.ts",
+    "./assessment": "./src/assessment.ts",
+    "./assessmentBaselineV3": "./src/assessmentBaselineV3.ts",
+    "./assessmentBaselineV41": "./src/assessmentBaselineV41.ts",
+    "./routingBrief": "./src/routingBrief.ts",
+    "./requestValidation": "./src/requestValidation.ts",
+    "./context": "./src/context.ts",
+    "./routing": "./src/routing.ts",
+    "./review": "./src/review.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run"
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
