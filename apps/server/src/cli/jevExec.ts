@@ -97,6 +97,7 @@ export async function executeJevCodexTurn(
       ...(policy
         ? [
             "--ignore-user-config",
+            "--ignore-rules",
             "--sandbox",
             policy.sandbox,
             "--config",

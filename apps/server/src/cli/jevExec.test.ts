@@ -99,8 +99,24 @@ it("passes explicit read-only policy and preserves completed usage", async () =>
   }) as typeof NodeChildProcess.spawn;
   const policy = { sandbox: "read-only" as const, approval: "never" as const, allowedWrites: [] };
   const result = await executeJevCodexTurn({ ...turn, policy }, spawn);
-  assert.ok(args.includes("read-only"));
-  assert.ok(args.includes('approval_policy="never"'));
+  assert.deepEqual(args, [
+    "exec",
+    "--json",
+    "--model",
+    "gpt-6-sol",
+    "--config",
+    'model_reasoning_effort="high"',
+    "--ignore-user-config",
+    "--ignore-rules",
+    "--sandbox",
+    "read-only",
+    "--config",
+    'approval_policy="never"',
+    "--skip-git-repo-check",
+    "--cd",
+    turn.workspace,
+    "-",
+  ]);
   assert.deepEqual(result.usage, {
     inputTokens: 10,
     outputTokens: 4,
