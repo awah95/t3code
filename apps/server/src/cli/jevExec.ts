@@ -4,7 +4,12 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import type { JevEffort, JevRouteRequest, ModelSelection } from "@t3tools/contracts";
+import type {
+  JevEffort,
+  JevRouteRequest,
+  JevRouteResult,
+  ModelSelection,
+} from "@t3tools/contracts";
 import { buildJevContext } from "@t3tools/jev/context";
 import { buildJevRouteRequest, eligibleJevModels } from "@t3tools/jev/routing";
 import { JEV_MODEL_PROFILES } from "@t3tools/shared/jevRouting";
@@ -20,11 +25,26 @@ export interface JevCodexExecution {
   readonly exitCode: number;
   readonly signal: NodeJS.Signals | null;
   readonly threadId: string | null;
+  readonly runId: string | null;
   readonly finalMessage: string | null;
   readonly turnCompleted: boolean;
   readonly error: string | null;
   readonly stderr: string;
+  readonly elapsedMs: number;
+  readonly usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    reasoningOutputTokens?: number;
+  } | null;
+  readonly policy: JevExecutionPolicy | null;
 }
+
+export type JevExecutionPolicy = {
+  sandbox: "read-only";
+  approval: "never";
+  allowedWrites: string[];
+};
 
 export interface JevCodexTurn {
   readonly prompt: string;
@@ -32,6 +52,7 @@ export interface JevCodexTurn {
   readonly model: string;
   readonly effort: JevEffort;
   readonly signal?: AbortSignal;
+  readonly policy?: JevExecutionPolicy;
 }
 
 type Spawn = typeof NodeChildProcess.spawn;
@@ -39,7 +60,7 @@ type Spawn = typeof NodeChildProcess.spawn;
 const MAX_STDERR_CHARS = 32_000;
 const MAX_EVENT_LINE_CHARS = 2_000_000;
 
-/** Run one independent Codex turn with its normal user configuration and permission policy. */
+/** Run one Codex turn, preserving user configuration unless an explicit policy is supplied. */
 export async function executeJevCodexTurn(
   input: JevCodexTurn,
   spawn: Spawn = NodeChildProcess.spawn,
@@ -53,8 +74,17 @@ export async function executeJevCodexTurn(
   if (!input.prompt.trim()) throw new Error("The task prompt is empty.");
   if (!input.workspace.trim()) throw new Error("The workspace path is empty.");
 
-  // Keep permission and sandbox policy in the user's Codex configuration. In
-  // particular, do not add the noninteractive bypass flags used by some CLIs.
+  const policy = input.policy;
+  if (
+    policy &&
+    (Object.keys(policy).some((key) => !["sandbox", "approval", "allowedWrites"].includes(key)) ||
+      policy.approval !== "never" ||
+      policy.sandbox !== "read-only" ||
+      !Array.isArray(policy.allowedWrites) ||
+      policy.allowedWrites.length > 0)
+  )
+    throw new Error("Unsupported or conflicting Jev execution policy.");
+  const startedAt = process.hrtime.bigint();
   const child = spawn(
     "codex",
     [
@@ -64,6 +94,16 @@ export async function executeJevCodexTurn(
       input.model,
       "--config",
       `model_reasoning_effort="${input.effort}"`,
+      ...(policy
+        ? [
+            "--ignore-user-config",
+            "--sandbox",
+            policy.sandbox,
+            "--config",
+            'approval_policy="never"',
+            ...(policy.sandbox === "read-only" ? ["--skip-git-repo-check"] : []),
+          ]
+        : []),
       "--cd",
       input.workspace,
       "-",
@@ -72,11 +112,13 @@ export async function executeJevCodexTurn(
   );
 
   let threadId: string | null = null;
+  let runId: string | null = null;
   let finalMessage: string | null = null;
   let turnCompleted = false;
   let error: string | null = null;
   let stderr = "";
   let pending = "";
+  let usage: JevCodexExecution["usage"] = null;
 
   const readEvent = (line: string) => {
     if (!line.trim()) return;
@@ -93,10 +135,27 @@ export async function executeJevCodexTurn(
     if (event.type === "thread.started" && typeof event.thread_id === "string") {
       threadId = event.thread_id;
     }
+    if (typeof event.turn_id === "string") runId = event.turn_id;
     if (event.type === "error" && typeof event.message === "string") {
       error = event.message;
     }
-    if (event.type === "turn.completed") turnCompleted = true;
+    if (event.type === "turn.completed") {
+      turnCompleted = true;
+      const raw = event.usage as Record<string, unknown> | undefined;
+      if (raw && Number.isFinite(raw.input_tokens) && Number.isFinite(raw.output_tokens)) {
+        const details = raw.output_tokens_details as Record<string, unknown> | undefined;
+        usage = {
+          inputTokens: raw.input_tokens as number,
+          outputTokens: raw.output_tokens as number,
+          ...(Number.isFinite(raw.cached_input_tokens)
+            ? { cachedInputTokens: raw.cached_input_tokens as number }
+            : {}),
+          ...(Number.isFinite(details?.reasoning_tokens)
+            ? { reasoningOutputTokens: details?.reasoning_tokens as number }
+            : {}),
+        };
+      }
+    }
     if (event.type === "turn.failed") error = "Codex reported that the turn failed.";
     if (event.type === "item.completed" && event.item && typeof event.item === "object") {
       const item = event.item as Record<string, unknown>;
@@ -137,10 +196,14 @@ export async function executeJevCodexTurn(
         exitCode: code ?? 1,
         signal,
         threadId,
+        runId,
         finalMessage,
         turnCompleted,
         error,
         stderr,
+        elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+        usage,
+        policy: policy ?? null,
       });
     });
   });
@@ -150,7 +213,8 @@ type ExecInput = {
   prompt: string;
   workspace: string;
   requestId: string;
-  mode?: "guided" | "auto";
+  mode?: "guided" | "auto" | "pinned";
+  policy?: JevExecutionPolicy;
   current: { model: string; effort: JevEffort };
   candidates: { model: string; efforts: JevEffort[] }[];
   history?: { role: "user" | "assistant"; text: string; model?: string; effort?: string }[];
@@ -183,7 +247,16 @@ function parseExecInput(value: unknown): ExecInput {
     ) ||
     new Set(input.candidates.map((candidate) => candidate.model)).size !==
       input.candidates.length ||
-    (input.mode !== undefined && input.mode !== "guided" && input.mode !== "auto") ||
+    (input.mode !== undefined && !["guided", "auto", "pinned"].includes(input.mode)) ||
+    (input.policy !== undefined &&
+      (!input.policy ||
+        Object.keys(input.policy).some(
+          (key) => !["sandbox", "approval", "allowedWrites"].includes(key),
+        ) ||
+        input.policy.sandbox !== "read-only" ||
+        input.policy.approval !== "never" ||
+        !Array.isArray(input.policy.allowedWrites) ||
+        input.policy.allowedWrites.length !== 0)) ||
     typeof input.requestId !== "string" ||
     !input.requestId.trim() ||
     (input.history !== undefined &&
@@ -335,6 +408,28 @@ type ReviewDependencies = {
   ) => Promise<Extract<JevCliOutcome, { status: "selected" | "cancelled" }>>;
 };
 
+export async function loadJevExecutionSidecar(
+  directory: string,
+  reviewId: string,
+  expectedRequestId?: string,
+) {
+  if (!/^[0-9a-f-]{36}$/.test(reviewId)) throw new Error("Invalid review ID.");
+  const sidecar = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(directory, `${reviewId}.exec.json`), "utf8"),
+  ) as { requestId: string; workspace: string; prompt: string; policy?: JevExecutionPolicy };
+  if (
+    typeof sidecar.requestId !== "string" ||
+    !sidecar.requestId.trim() ||
+    !NodePath.isAbsolute(sidecar.workspace) ||
+    typeof sidecar.prompt !== "string" ||
+    !sidecar.prompt.trim()
+  )
+    throw new Error("Invalid pending Jev execution.");
+  if (expectedRequestId && sidecar.requestId !== expectedRequestId)
+    throw new Error("This Jev review belongs to a different request ID.");
+  return sidecar;
+}
+
 /** Compose with the routing command's review store without a module import cycle. */
 export function makeJevExecCommand(deps: ReviewDependencies) {
   return Command.make("exec", {
@@ -347,6 +442,10 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
       Flag.withDescription("Approved review to execute."),
       Flag.optional,
     ),
+    expectedRequestId: Flag.String("expected-request-id").pipe(
+      Flag.withDescription("Require this saved request ID before selecting or executing a review."),
+      Flag.optional,
+    ),
     option: Flag.String("option").pipe(
       Flag.withDescription("Review option ID to select and execute."),
       Flag.optional,
@@ -357,7 +456,7 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
     ),
   }).pipe(
     Command.withDescription("Route a task through Jev and run one headless Codex turn."),
-    Command.withHandler(({ baseDir, inputFile, reviewId, option, json }) =>
+    Command.withHandler(({ baseDir, inputFile, reviewId, expectedRequestId, option, json }) =>
       Effect.gen(function* () {
         const envHome = yield* Config.String("T3CODE_HOME").pipe(Config.option);
         const resolvedBaseDir = yield* resolveBaseDir(
@@ -366,29 +465,25 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
         yield* Effect.promise(async () => {
           const directory = deps.reviewDirectory(resolvedBaseDir);
           let storedReviewId = Option.getOrUndefined(reviewId);
+          const expectedId = Option.getOrUndefined(expectedRequestId);
+          if (expectedId && !storedReviewId)
+            throw new Error("--expected-request-id requires --review-id.");
           let request: JevRouteRequest;
           let workspace: string;
           let prompt: string;
+          let executionPolicy: JevExecutionPolicy | undefined;
           let outcome: JevCliOutcome;
           if (storedReviewId) {
+            const sidecar = await loadJevExecutionSidecar(directory, storedReviewId, expectedId);
             const selectedOption = Option.getOrUndefined(option);
             if (selectedOption) await deps.resume(directory, storedReviewId, selectedOption);
             const saved = await deps.loadResolved(directory, storedReviewId);
-            const sidecar = JSON.parse(
-              await NodeFSP.readFile(
-                NodePath.join(directory, `${storedReviewId}.exec.json`),
-                "utf8",
-              ),
-            ) as { requestId: string; workspace: string; prompt: string };
-            if (
-              sidecar.requestId !== saved.request.requestId ||
-              !NodePath.isAbsolute(sidecar.workspace) ||
-              !sidecar.prompt.trim()
-            )
+            if (sidecar.requestId !== saved.request.requestId)
               throw new Error("Invalid pending Jev execution.");
             request = saved.request;
             workspace = sidecar.workspace;
             prompt = sidecar.prompt;
+            executionPolicy = sidecar.policy;
             outcome = saved.outcome;
           } else {
             const file = Option.getOrUndefined(inputFile);
@@ -397,6 +492,14 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
             request = makeJevExecRequest(input);
             workspace = input.workspace;
             prompt = input.prompt;
+            executionPolicy = input.policy;
+            const pinnedChoice = request.candidates.find(
+              (candidate) =>
+                candidate.model === input.current.model &&
+                candidate.effort === input.current.effort,
+            )?.key;
+            if (input.mode === "pinned" && !pinnedChoice)
+              throw new Error("Pinned model and effort must be in the candidate list.");
             const fingerprint = NodeCrypto.createHash("sha256")
               .update(JSON.stringify(input))
               .digest("hex");
@@ -413,16 +516,37 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
                   (prior as { execution?: { exitCode?: number } }).execution?.exitCode || 1;
               return;
             }
-            outcome = await deps.route(
-              request,
-              process.env.OPENROUTER_API_KEY,
-              input.mode ?? "guided",
-            );
+            const pinnedResult: JevRouteResult = {
+              choice: pinnedChoice ?? null,
+              confidence: null,
+              probabilities: {},
+              latencyMs: 0,
+              error: null,
+              inputTokens: null,
+              outputTokens: null,
+              costUsd: null,
+              costKind: "unknown",
+              reasons: ["pinned_by_caller"],
+            };
+            outcome =
+              input.mode === "pinned"
+                ? {
+                    status: "routed",
+                    requestId: request.requestId,
+                    choice: pinnedChoice!,
+                    result: pinnedResult,
+                  }
+                : await deps.route(request, process.env.OPENROUTER_API_KEY, input.mode ?? "guided");
             if (outcome.status === "review_required") {
               const pending = await deps.persist(directory, request, outcome);
               await NodeFSP.writeFile(
                 NodePath.join(directory, `${pending.reviewId}.exec.json`),
-                JSON.stringify({ requestId: request.requestId, workspace, prompt: input.prompt }),
+                JSON.stringify({
+                  requestId: request.requestId,
+                  workspace,
+                  prompt: input.prompt,
+                  policy: input.policy,
+                }),
                 { flag: "wx", mode: 0o600 },
               );
               await writeJevExecutionOutcome(directory, request.requestId, pending);
@@ -462,6 +586,7 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
             workspace,
             model,
             effort: effort as JevEffort,
+            ...(executionPolicy ? { policy: executionPolicy } : {}),
           });
           const succeeded =
             execution.exitCode === 0 &&
@@ -474,7 +599,19 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
             choice: outcome.choice,
             model,
             effort,
+            mode: outcome.result.reasons?.includes("pinned_by_caller") ? "pinned" : "jev",
+            workspace,
+            policy: executionPolicy ?? null,
             execution,
+            accounting: {
+              actualBilledCostUsd: null,
+              apiEquivalentEstimateUsd: null,
+              subscriptionAllowanceObservation: null,
+              routingOverhead: {
+                costUsd: outcome.result.costUsd,
+                costKind: outcome.result.costKind,
+              },
+            },
             routing: {
               policyOutcome: outcome.result.policyOutcome,
               reasons: outcome.result.reasons,

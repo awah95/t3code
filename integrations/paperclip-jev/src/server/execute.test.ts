@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { execute } from "./execute.js";
+import { execute, isTaskArtifactFolder } from "./execute.js";
+import { createServerAdapter } from "./index.js";
 
 const dirs: string[] = [];
 async function fixture(status: string, exitCode = 0) {
@@ -14,7 +15,7 @@ async function fixture(status: string, exitCode = 0) {
   const executable = join(dir, "t3jev");
   await writeFile(
     executable,
-    `#!/bin/sh\nfor arg in "$@"; do if [ "$prev" = "--input-file" ]; then cp "$arg" '${dir}/captured.json'; fi; prev="$arg"; done\nprintf '%s\\n' '${JSON.stringify({ status, requestId: "run-stable", reviewId: "review-1", options: [{ id: "recommended", label: "Use model A" }], model: "model-a", execution: { finalMessage: "Done" } })}'\nexit ${exitCode}\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$@" > '${dir}/args.txt'\nfor arg in "$@"; do if [ "$prev" = "--input-file" ]; then cp "$arg" '${dir}/captured.json'; fi; prev="$arg"; done\nprintf '%s\\n' '${JSON.stringify({ status, requestId: "run-stable", reviewId: "review-1", options: [{ id: "recommended", label: "Use model A" }], model: "model-a", execution: { finalMessage: "Done" } })}'\nexit ${exitCode}\n`,
     { mode: 0o700 },
   );
   return { dir, executable };
@@ -33,8 +34,11 @@ function context(executable: string, overrides: Record<string, unknown> = {}) {
     config: {
       executable,
       workspace: "/tmp",
+      artifactFolder: "/tmp/paperclip-task-artifacts",
+      artifactTaskId: "issue-1",
       currentModel: "model-current",
       currentEffort: "medium",
+      sandbox: "read-only",
       candidatesJson: JSON.stringify([{ model: "model-a", efforts: ["high"] }]),
       ...overrides,
     },
@@ -46,6 +50,24 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+test("environment probe rejects artifact traversal before a run", async () => {
+  assert.equal(isTaskArtifactFolder("/tmp/work", "/tmp/work/../outside"), false);
+  const adapter = createServerAdapter();
+  const result = await adapter.testEnvironment({
+    companyId: "company",
+    adapterType: "t3jev",
+    config: {
+      executable: "/tmp/t3jev",
+      workspace: "/tmp/work",
+      artifactFolder: "/tmp/work/../outside",
+      artifactTaskId: "issue-1",
+      sandbox: "read-only",
+      mode: "pinned",
+    },
+  });
+  assert.equal(result.status, "fail");
+});
+
 test("completed only succeeds with zero process exit and uses the Paperclip run ID", async () => {
   const { dir, executable } = await fixture("completed");
   const result = await execute(context(executable, { requestId: "stale-agent-setting" }));
@@ -53,7 +75,20 @@ test("completed only succeeds with zero process exit and uses the Paperclip run 
   assert.equal(result.resultJson?.status, "completed");
   const captured = JSON.parse(await readFile(join(dir, "captured.json"), "utf8"));
   assert.equal(captured.requestId, "run-stable");
-  assert.equal(captured.prompt, "# PAP-1\n\nImplement feature");
+  assert.equal(
+    captured.prompt,
+    "# PAP-1\n\nImplement feature\n\nCanonical artifact folder: /tmp/paperclip-task-artifacts",
+  );
+});
+
+test("pinned mode passes read-only policy without candidates and never bills an estimate", async () => {
+  const { dir, executable } = await fixture("completed");
+  const result = await execute(context(executable, { mode: "pinned", candidatesJson: undefined }));
+  const captured = JSON.parse(await readFile(join(dir, "captured.json"), "utf8"));
+  assert.equal(captured.mode, "pinned");
+  assert.deepEqual(captured.policy, { sandbox: "read-only", approval: "never", allowedWrites: [] });
+  assert.deepEqual(captured.candidates, [{ model: "model-current", efforts: ["medium"] }]);
+  assert.equal(result.costUsd, undefined);
 });
 
 test("missing Paperclip task markdown does not dispatch a generic task identifier", async () => {
@@ -253,7 +288,10 @@ test("review_required returns a blocked result with options and resume instructi
   const result = await execute(context(executable));
   assert.equal(result.exitCode, 2);
   assert.match(result.errorMessage ?? "", /recommended: Use model A/);
-  assert.match(result.errorMessage ?? "", /--review-id review-1 --option <option-id>/);
+  assert.match(
+    result.errorMessage ?? "",
+    /--review-id review-1 --expected-request-id run-stable --option <option-id>/,
+  );
 });
 
 test("execution failure and malformed output never map to success", async () => {
@@ -267,22 +305,26 @@ test("execution failure and malformed output never map to success", async () => 
   assert.match(invalid.errorMessage ?? "", /invalid JSON/);
 });
 
-test("review resume requires its task ID and records the consumed review", async () => {
-  const { executable } = await fixture("completed");
+test("review resume requires its task and run IDs before dispatch", async () => {
+  const { dir, executable } = await fixture("completed");
   const result = await execute(
     context(executable, {
       reviewId: "review-1",
       option: "recommended",
       reviewTaskId: "issue-1",
+      reviewRunId: "run-stable",
       currentModel: "",
       currentEffort: "",
       candidatesJson: "",
     }),
   );
   assert.equal(result.exitCode, 0);
+  const args = await readFile(join(dir, "args.txt"), "utf8");
+  assert.match(args, /--expected-request-id\nrun-stable\n/);
   assert.deepEqual(result.sessionParams?.consumedJevReview, {
     reviewId: "review-1",
     taskId: "issue-1",
+    runId: "run-stable",
   });
 });
 
@@ -292,12 +334,11 @@ test("stale review config does not resume on a later task", async () => {
     reviewId: "review-1",
     option: "recommended",
     reviewTaskId: "issue-1",
+    reviewRunId: "run-stable",
   });
   ctx.context = { taskId: "issue-2", paperclipTaskMarkdown: "# PAP-2\n\nFix the next task" };
-  const result = await execute(ctx);
-  assert.equal(result.exitCode, 0);
-  const captured = JSON.parse(await readFile(join(dir, "captured.json"), "utf8"));
-  assert.equal(captured.prompt, "# PAP-2\n\nFix the next task");
+  await assert.rejects(execute(ctx), /Bind artifactTaskId/);
+  await assert.rejects(readFile(join(dir, "captured.json")), /ENOENT/);
 });
 
 test("issueId can scope a review when taskId is absent", async () => {
@@ -306,6 +347,7 @@ test("issueId can scope a review when taskId is absent", async () => {
     reviewId: "review-1",
     option: "recommended",
     reviewTaskId: "issue-1",
+    reviewRunId: "run-stable",
     currentModel: "",
     currentEffort: "",
     candidatesJson: "",
@@ -316,13 +358,19 @@ test("issueId can scope a review when taskId is absent", async () => {
   assert.deepEqual(result.sessionParams?.consumedJevReview, {
     reviewId: "review-1",
     taskId: "issue-1",
+    runId: "run-stable",
   });
   await assert.rejects(readFile(join(dir, "captured.json")), /ENOENT/);
 });
 
 test("a consumed review does not resume again on the same task", async () => {
   const { dir, executable } = await fixture("completed");
-  const config = { reviewId: "review-1", option: "recommended", reviewTaskId: "issue-1" };
+  const config = {
+    reviewId: "review-1",
+    option: "recommended",
+    reviewTaskId: "issue-1",
+    reviewRunId: "run-stable",
+  };
   const first = await execute(context(executable, config));
   assert.equal(first.exitCode, 0);
   const next = context(executable, config);
@@ -332,10 +380,14 @@ test("a consumed review does not resume again on the same task", async () => {
   assert.deepEqual(repeated.sessionParams?.consumedJevReview, {
     reviewId: "review-1",
     taskId: "issue-1",
+    runId: "run-stable",
   });
   const third = context(executable, config);
   third.runtime.sessionParams = repeated.sessionParams ?? null;
   assert.equal((await execute(third)).exitCode, 0);
   const captured = JSON.parse(await readFile(join(dir, "captured.json"), "utf8"));
-  assert.equal(captured.prompt, "# PAP-1\n\nImplement feature");
+  assert.equal(
+    captured.prompt,
+    "# PAP-1\n\nImplement feature\n\nCanonical artifact folder: /tmp/paperclip-task-artifacts",
+  );
 });

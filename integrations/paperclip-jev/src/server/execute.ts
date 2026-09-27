@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, isAbsolute, sep } from "node:path";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   renderPaperclipWakePrompt,
@@ -37,13 +37,26 @@ const parseCandidates = (value: unknown): Candidate[] => {
   return parsed;
 };
 
-function taskPrompt(ctx: AdapterExecutionContext): string {
+export function isTaskArtifactFolder(workspace: string, artifactFolder: string): boolean {
+  if (!isAbsolute(workspace) || !isAbsolute(artifactFolder)) return false;
+  const within = relative(workspace, artifactFolder);
+  return within !== "" && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
+}
+
+function taskPrompt(ctx: AdapterExecutionContext, workspace: string, taskId: string): string {
   const task = selectPaperclipTaskMarkdown(ctx.context);
   if (task) {
+    const artifactFolder = configString(ctx, "artifactFolder");
+    if (!taskId || configString(ctx, "artifactTaskId") !== taskId)
+      throw new Error("Bind artifactTaskId and artifactFolder to the assigned Paperclip task.");
+    if (!isTaskArtifactFolder(workspace, artifactFolder))
+      throw new Error("Configure the task's canonical artifactFolder inside workspace.");
     const wake = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
       suppressIssueDescription: true,
     });
-    return [task, wake].filter(Boolean).join("\n\n");
+    return [task, `Canonical artifact folder: ${artifactFolder}`, wake]
+      .filter(Boolean)
+      .join("\n\n");
   }
   throw new Error("Paperclip did not provide paperclipTaskMarkdown in the execution context.");
 }
@@ -150,11 +163,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const workspace = configString(ctx, "workspace");
   const model = configString(ctx, "currentModel");
   const effortValue = configString(ctx, "currentEffort");
+  const mode = configString(ctx, "mode") || "auto";
+  if (!["auto", "guided", "pinned"].includes(mode))
+    throw new Error("mode must be auto, guided, or pinned.");
+  const sandbox = configString(ctx, "sandbox");
+  if (sandbox !== "read-only")
+    throw new Error("This adapter currently supports only the read-only sandbox.");
   if (!command.startsWith("/") || !workspace.startsWith("/"))
     throw new Error("Configure absolute executable and workspace paths.");
   const reviewId = configString(ctx, "reviewId");
   const option = configString(ctx, "option");
   const reviewTaskId = configString(ctx, "reviewTaskId");
+  const reviewRunId = configString(ctx, "reviewRunId");
   const taskId = [ctx.context.taskId, ctx.context.issueId].find(
     (value) => typeof value === "string" && value.trim(),
   ) as string | undefined;
@@ -164,7 +184,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     consumedReview &&
     typeof consumedReview === "object" &&
     (consumedReview as Record<string, unknown>).reviewId === reviewId &&
-    (consumedReview as Record<string, unknown>).taskId === currentTaskId;
+    (consumedReview as Record<string, unknown>).taskId === currentTaskId &&
+    (consumedReview as Record<string, unknown>).runId === reviewRunId;
+  if (reviewId && reviewTaskId === currentTaskId && !reviewRunId)
+    throw new Error("Set reviewRunId from the blocked run to resume its Jev choice.");
   if (reviewId && reviewTaskId && reviewTaskId === currentTaskId && !alreadyConsumed && !option) {
     throw new Error("Set option together with reviewId to resume a reviewed Jev run.");
   }
@@ -174,19 +197,35 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const args = ["jev", "exec"];
   let input: Record<string, unknown> | undefined;
   if (resumeReview) {
-    args.push("--review-id", reviewId, "--option", option, "--json");
+    args.push(
+      "--review-id",
+      reviewId,
+      "--expected-request-id",
+      reviewRunId,
+      "--option",
+      option,
+      "--json",
+    );
   } else {
     if (!model || !validEffort(effortValue))
       throw new Error("Configure currentModel and currentEffort.");
-    const candidates = parseCandidates(ctx.config.candidatesJson);
-    const prompt = taskPrompt(ctx);
+    const candidates =
+      mode === "pinned"
+        ? [{ model, efforts: [effortValue as Effort] }]
+        : parseCandidates(ctx.config.candidatesJson);
+    const prompt = taskPrompt(ctx, workspace, currentTaskId);
     input = {
       prompt,
       workspace,
       requestId: ctx.runId,
       current: { model, effort: effortValue },
       candidates,
-      mode: "auto",
+      mode,
+      policy: {
+        sandbox,
+        approval: "never",
+        allowedWrites: [],
+      },
     };
     args.push("--json");
   }
@@ -212,7 +251,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } finally {
     if (tempDirectory) await rm(tempDirectory, { recursive: true, force: true });
   }
-  await ctx.onLog("stdout", proc.stdout);
+  // The structured result is attached to the run below; avoid duplicating the answer in raw logs.
   if (proc.stderr) await ctx.onLog("stderr", proc.stderr);
   if (proc.cancelled)
     return {
@@ -233,6 +272,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: "t3jev returned invalid JSON.",
     };
   }
+  if (resumeReview && result.requestId !== reviewRunId)
+    throw new Error("Resolved Jev review belongs to a different Paperclip run.");
   if (result.status === "review_required") {
     if (typeof result.reviewId !== "string" || !result.reviewId.trim()) {
       return {
@@ -250,7 +291,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         return `- ${String(item.id)}: ${String(item.label)}`;
       })
       .join("\n");
-    const resume = `t3jev jev exec --review-id ${String(result.reviewId)} --option <option-id> --json`;
+    const resume = `t3jev jev exec --review-id ${String(result.reviewId)} --expected-request-id ${ctx.runId} --option <option-id> --json`;
     const summary = `Jev review required; task was not dispatched.\n${optionText}\nResume after selection: ${resume}`;
     return {
       exitCode: 2,
@@ -259,6 +300,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorMessage: summary,
       summary,
       resultJson: result,
+      question: {
+        prompt: `Jev choice for task ${currentTaskId}, run ${ctx.runId}`,
+        choices: options.map((entry) => {
+          const item = entry as { id: string; label: string };
+          return { key: item.id, label: item.label };
+        }),
+      },
     };
   }
   if (result.status !== "completed" || proc.code !== 0) {
@@ -276,6 +324,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     timedOut: false,
     provider: "openai",
     model: String(result.model ?? model),
+    ...((
+      result.execution as
+        | { usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } }
+        | undefined
+    )?.usage
+      ? {
+          usage: (
+            result.execution as {
+              usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number };
+            }
+          ).usage,
+          usageBasis: "per_run" as const,
+        }
+      : {}),
     summary: String(
       (result.execution as Record<string, unknown> | undefined)?.finalMessage ??
         "Jev Codex turn completed.",
@@ -285,7 +347,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? {
           sessionParams: {
             ...ctx.runtime.sessionParams,
-            consumedJevReview: { reviewId, taskId: currentTaskId },
+            consumedJevReview: { reviewId, taskId: currentTaskId, runId: reviewRunId },
           },
         }
       : alreadyConsumed

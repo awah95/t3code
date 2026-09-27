@@ -52,6 +52,10 @@ the family total. A missing count or
 price reads **Unknown**; it does not mean zero.
 
 The ledger's dollar figure is a **Standard API-equivalent estimate**, not a subscription charge.
+The standalone `t3jev jev exec` command reports a completed Codex turn's tokens when Codex supplies
+them, alongside its selected model, thread ID, elapsed time, execution policy, and separate Jev
+routing receipt. A missing usage field means the provider did not report it. The command does not
+turn a subscription allowance observation or API-equivalent estimate into a billed charge.
 If some responses lack a defensible price, the figure is marked **priced subtotal** and coverage
 explains what is missing. Account allowance observations appear separately, with their reported
 window and reset time. They cannot reliably assign a subscription debit to one turn while other

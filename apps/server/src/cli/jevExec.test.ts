@@ -11,6 +11,8 @@ import { assert, expect, it } from "@effect/vitest";
 import {
   claimNewJevExecution,
   executeJevCodexTurn,
+  type JevExecutionPolicy,
+  loadJevExecutionSidecar,
   makeJevExecRequest,
   writeJevExecutionOutcome,
 } from "./jevExec.ts";
@@ -63,15 +65,65 @@ it("runs a routed Codex turn through stdin and reads its JSON completion", async
   ]);
   assert.equal(cwd, turn.workspace);
   assert.equal(receivedPrompt, turn.prompt);
-  assert.deepEqual(result, {
+  expect(result).toMatchObject({
     exitCode: 0,
     signal: null,
     threadId: "thread-1",
+    runId: null,
     finalMessage: "Done.",
     turnCompleted: true,
     error: null,
     stderr: "",
+    elapsedMs: expect.any(Number),
+    usage: null,
+    policy: null,
   });
+});
+
+it("passes explicit read-only policy and preserves completed usage", async () => {
+  const child = Object.assign(new NodeEvents.EventEmitter(), {
+    stdin: new NodeStream.PassThrough(),
+    stdout: new NodeStream.PassThrough(),
+    stderr: new NodeStream.PassThrough(),
+  });
+  let args: string[] = [];
+  const spawn = ((_binary: string, flags: string[]) => {
+    args = flags;
+    queueMicrotask(() => {
+      child.stdout.end(
+        '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":3,"output_tokens_details":{"reasoning_tokens":2}}}\n',
+      );
+      child.emit("close", 0, null);
+    });
+    return child as unknown as NodeChildProcess.ChildProcess;
+  }) as typeof NodeChildProcess.spawn;
+  const policy = { sandbox: "read-only" as const, approval: "never" as const, allowedWrites: [] };
+  const result = await executeJevCodexTurn({ ...turn, policy }, spawn);
+  assert.ok(args.includes("read-only"));
+  assert.ok(args.includes('approval_policy="never"'));
+  assert.deepEqual(result.usage, {
+    inputTokens: 10,
+    outputTokens: 4,
+    cachedInputTokens: 3,
+    reasoningOutputTokens: 2,
+  });
+  assert.deepEqual(result.policy, policy);
+  await expect(
+    executeJevCodexTurn({ ...turn, policy: { ...policy, allowedWrites: [turn.workspace] } }, spawn),
+  ).rejects.toThrow(/policy/);
+  await expect(
+    executeJevCodexTurn(
+      {
+        ...turn,
+        policy: {
+          sandbox: "workspace-write",
+          approval: "never",
+          allowedWrites: [turn.workspace],
+        } as unknown as JevExecutionPolicy,
+      },
+      spawn,
+    ),
+  ).rejects.toThrow(/policy/);
 });
 
 it("reports a failed Codex turn without treating its answer as success", async () => {
@@ -117,6 +169,27 @@ it("returns a durable result for repeated requests and never grants a second cla
     assert.deepEqual(await claimNewJevExecution(directory, "request-1", "fingerprint-a"), receipt);
     await expect(claimNewJevExecution(directory, "request-1", "fingerprint-b")).rejects.toThrow(
       "different task",
+    );
+  } finally {
+    await NodeFSP.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("rejects a mismatched review request ID before selection or execution", async () => {
+  const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jev-review-binding-"));
+  const reviewId = "11111111-1111-4111-8111-111111111111";
+  try {
+    await NodeFSP.writeFile(
+      NodePath.join(directory, `${reviewId}.exec.json`),
+      JSON.stringify({ requestId: "original-run", workspace: "/tmp/project", prompt: "Inspect" }),
+    );
+    await expect(loadJevExecutionSidecar(directory, reviewId, "another-run")).rejects.toThrow(
+      "different request ID",
+    );
+    assert.equal((await NodeFSP.readdir(directory)).length, 1);
+    assert.equal(
+      (await loadJevExecutionSidecar(directory, reviewId, "original-run")).requestId,
+      "original-run",
     );
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
