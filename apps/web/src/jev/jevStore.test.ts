@@ -54,6 +54,37 @@ describe("Jev desktop routing lifecycle", () => {
     expect(window.desktopBridge?.decideJevRoute).not.toHaveBeenCalled();
     expect(useJevStore.getState().calls).toHaveLength(0);
   });
+  it("records the routing reason and packet size with the decision receipt", async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      get length() {
+        return storage.size;
+      },
+      key: (index: number) => [...storage.keys()][index] ?? null,
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+      removeItem: (key: string) => storage.delete(key),
+    });
+    vi.mocked(window.desktopBridge!.decideJevRoute!).mockResolvedValue({
+      ...result,
+      policyOutcome: "route",
+      reasons: ["established_procedure_and_direct_check"],
+      routingRequestBytes: 42_000,
+      routingStateQuestionBytes: 24_000,
+    });
+    useJevStore.getState().setThreadMode("env", "thread", "auto");
+
+    expect((await decide(request))?.choice).toBe("one");
+    const saved = [...storage.entries()].find(([key]) =>
+      key.startsWith("t3:jev-ledger-receipt:v2:"),
+    );
+    const receipt = JSON.parse(saved![1]) as { input: { decisionJson: string } };
+    expect(JSON.parse(receipt.input.decisionJson)).toMatchObject({
+      reasons: ["established_procedure_and_direct_check"],
+      routingRequestBytes: 42_000,
+      routingStateQuestionBytes: 24_000,
+    });
+  });
   it("persists independent, off-by-default routing for main and side threads", async () => {
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {

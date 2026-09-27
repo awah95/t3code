@@ -24,6 +24,12 @@ const body = (history: JevDecisionBody["state"]["history"]): JevDecisionBody => 
 });
 
 describe("Jev routing brief compaction", () => {
+  it("does not invent an original-task reference when no original task exists", () => {
+    const input = { ...body(undefined), state: { omissions: [] } };
+
+    expect(compactJevDecisionBody(input)).toBe(input);
+  });
+
   it("removes the fewest oldest intermediate assistant updates needed for the soft target", () => {
     const input = body([
       { role: "user", text: "original user requirement" },
@@ -55,7 +61,7 @@ describe("Jev routing brief compaction", () => {
       "latest assistant proposal",
     ]);
     expect(compacted.state.omissions).toEqual([
-      expect.stringContaining("1 intermediate assistant update from 1 older exchange"),
+      expect.stringContaining("1 older assistant message from 1 exchange"),
     ]);
     expect(JSON.stringify(input)).toBe(before);
     expect(compactJevDecisionBody(compacted)).toEqual(compacted);
@@ -111,14 +117,51 @@ describe("Jev routing brief compaction", () => {
 
     expect(compacted.state).toMatchObject({
       task: input.state.task,
-      originalTask: input.state.originalTask,
+      originalTaskReference: "history[0]",
       activePlan: input.state.activePlan,
       evidence: input.state.evidence,
       failure: input.state.failure,
       missingContext: input.state.missingContext,
     });
     expect(compacted.state.omissions?.[0]).toBe("two older exchanges omitted upstream");
-    expect(compacted.state.omissions?.[1]).toContain("1 intermediate assistant update");
+    expect(compacted.state.omissions?.[1]).toContain("1 older assistant message");
+  });
+
+  it("keeps a long opening task once without changing its text", () => {
+    const task = `Implement the supplied requirements: ${"a".repeat(18_000)}`;
+    const input = { ...body([]), state: { task, originalTask: task, history: [] } };
+    const compacted = compactJevDecisionBody(input);
+
+    expect(compacted.state.task).toBe(task);
+    expect(compacted.state.originalTaskReference).toBe("task");
+    expect(compacted.state.originalTask).toBeUndefined();
+    expect(JSON.stringify(compacted).split(task)).toHaveLength(2);
+    expect(isWithinJevHardLimits(compacted)).toBe(true);
+    expect(isWithinJevHardLimits(input)).toBe(false);
+  });
+
+  it("retains a long original goal and user corrections while packing older outcomes", () => {
+    const originalTask = `Original requirements: ${"a".repeat(18_000)}`;
+    const history = Array.from({ length: 10 }, (_, index) => [
+      { role: "user" as const, text: index === 0 ? originalTask : `Correction ${index}` },
+      { role: "assistant" as const, text: `Outcome ${index}: ${"b".repeat(2_000)}` },
+    ]).flat();
+    const input = {
+      ...body(history),
+      state: { task: "Continue with the latest correction", originalTask, history, omissions: [] },
+    };
+    const compacted = compactJevDecisionBody(input);
+
+    expect(compacted.state.originalTaskReference).toBe("history[0]");
+    expect(compacted.state.originalTask).toBeUndefined();
+    expect(
+      compacted.state.history?.filter((message) => message.text === originalTask),
+    ).toHaveLength(1);
+    expect(compacted.state.history?.filter((message) => message.role === "user")).toHaveLength(10);
+    expect(compacted.state.history?.slice(-4)).toEqual(history.slice(-4));
+    expect(compacted.state.omissions?.[0]).toContain("older assistant messages");
+    expect(isWithinJevHardLimits(compacted)).toBe(true);
+    expect(isWithinJevHardLimits(input)).toBe(false);
   });
 
   it("accepts the exact hard state envelope boundary and rejects one additional byte", () => {

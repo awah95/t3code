@@ -91,6 +91,73 @@ describe("Jev decision validation and accounting", () => {
 });
 
 describe("Jev OpenRouter transport", () => {
+  it("routes a long opening task with the selected model's high effort", async () => {
+    const task = `Diagnose interacting state transitions: ${"a".repeat(18_000)}`;
+    const longRequest: JevRouteRequest = {
+      ...request,
+      prompt: task,
+      context: { ...request.context, originalTask: task },
+      candidates: ["low", "medium", "high"].map((effort) => ({
+        key: `sol_${effort}`,
+        model: "gpt-6-sol",
+        effort: effort as "low" | "medium" | "high",
+        description: `Sol ${effort}`,
+      })),
+    };
+    const choices: Record<string, string> = {
+      context_status: "sufficient",
+      procedure: "discovery",
+      evidence_work: "synthesis",
+      correctness: "interacting_invariant",
+      verification: "must_design",
+      consequence: "material",
+      model: "model_0",
+      effort_model_0: "high",
+    };
+    const transport = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      const sent = JSON.parse(String(init?.body)) as ReturnType<typeof buildJevDecisionBody>;
+      expect(sent.state.task).toBe(task);
+      expect(sent.state.originalTask).toBeUndefined();
+      expect("originalTaskReference" in sent.state && sent.state.originalTaskReference).toBe(
+        "task",
+      );
+      const answers = Object.fromEntries(
+        Object.entries(sent.questions).map(([key, question]) => [
+          key,
+          {
+            type: "choice",
+            choice: choices[key],
+            confidence: 1,
+            probabilities: Object.fromEntries(
+              Object.keys(question.criteria).map((candidate) => [
+                candidate,
+                candidate === choices[key] ? 1 : 0,
+              ]),
+            ),
+          },
+        ]),
+      );
+      return new Response(
+        JSON.stringify({ model: "jev-1.13.0", answers, usage: { input_tokens: 5000 } }),
+      );
+    });
+
+    const result = await requestJevDecision(
+      longRequest,
+      "key",
+      new AbortController().signal,
+      transport,
+    );
+    expect(transport).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      choice: "sol_high",
+      policyOutcome: "route",
+      responseModel: "jev-1.13.0",
+      inputTokens: 5000,
+    });
+    expect(result.routingStateQuestionBytes).toBeLessThanOrEqual(32_000);
+  });
+
   it("provides full current task and question-scoped model policy without duplicating it in state", () => {
     const body = buildJevDecisionBody(
       {
@@ -257,7 +324,7 @@ describe("Jev OpenRouter transport", () => {
       "latest result",
     ])
       expect(serialized).toContain(text);
-    expect(sent.state.omissions.join(" ")).toContain("intermediate assistant update");
+    expect(sent.state.omissions.join(" ")).toContain("older assistant message");
   });
   it("uses the decision endpoint and keeps the key out of the body and result", async () => {
     const transport = vi

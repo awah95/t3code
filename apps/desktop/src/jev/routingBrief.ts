@@ -19,6 +19,8 @@ type HistoryMessage = {
 export type JevDecisionBody = {
   model: string;
   state: Record<string, unknown> & {
+    task?: string;
+    originalTask?: string;
     history?: readonly HistoryMessage[];
     omissions?: readonly string[];
   };
@@ -75,37 +77,59 @@ function isWithinCompactionTargets(body: JevDecisionBody): boolean {
   );
 }
 
-/**
- * Removes only intermediate assistant updates from older completed exchanges. Every user message,
- * every exchange's last assistant message, and both most-recent exchanges remain byte-for-byte.
- */
+/** Keep the original goal once, then pack older assistant history around protected task context. */
 export function compactJevDecisionBody(body: JevDecisionBody): JevDecisionBody {
-  if (isWithinCompactionTargets(body)) return body;
+  const originalTask = body.state.originalTask;
+  const originalTaskHistoryIndex = body.state.history?.findIndex(
+    (message) => message.role === "user" && message.text === originalTask,
+  );
+  const originalTaskReference =
+    originalTask !== undefined && originalTask === body.state.task
+      ? "task"
+      : originalTaskHistoryIndex !== undefined && originalTaskHistoryIndex >= 0
+        ? `history[${originalTaskHistoryIndex}]`
+        : null;
+  const { originalTask: _originalTask, ...stateWithoutOriginalTask } = body.state;
+  const deduplicated: JevDecisionBody = originalTaskReference
+    ? {
+        ...body,
+        state: {
+          ...stateWithoutOriginalTask,
+          originalTaskReference,
+        },
+      }
+    : body;
+  if (isWithinCompactionTargets(deduplicated)) return deduplicated;
 
-  const history = body.state.history;
-  if (!history?.length) return body;
+  const history = deduplicated.state.history;
+  if (!history?.length) return deduplicated;
   const exchanges = historyExchanges(history);
   const protectedExchangeStart = Math.max(0, exchanges.length - 2);
   const omittedIndices = new Set<number>();
   const affectedExchanges = new Set<number>();
-  const omissions = body.state.omissions ?? [];
+  const omissions = deduplicated.state.omissions ?? [];
 
   const compactedBody = (): JevDecisionBody => {
     const retainedHistory = history.filter((_, index) => !omittedIndices.has(index));
-    const receipt = `${OMISSION_PREFIX}${omittedIndices.size} intermediate assistant update${omittedIndices.size === 1 ? "" : "s"} from ${affectedExchanges.size} older exchange${affectedExchanges.size === 1 ? "" : "s"}; all user messages, each exchange's last assistant message, and the two most-recent exchanges were preserved.`;
-    const nextOmissions = omissions.some((item) => item.startsWith(OMISSION_PREFIX))
-      ? omissions
-      : [...omissions, receipt];
+    const receipt = `${OMISSION_PREFIX}${omittedIndices.size} older assistant message${omittedIndices.size === 1 ? "" : "s"} from ${affectedExchanges.size} exchange${affectedExchanges.size === 1 ? "" : "s"}; all user messages and the two most-recent exchanges were preserved.`;
+    const retainedOriginalIndex = retainedHistory.findIndex(
+      (message) => message.role === "user" && message.text === originalTask,
+    );
     return {
-      ...body,
+      ...deduplicated,
       state: {
-        ...body.state,
+        ...deduplicated.state,
+        ...(originalTaskReference?.startsWith("history[") && retainedOriginalIndex >= 0
+          ? { originalTaskReference: `history[${retainedOriginalIndex}]` }
+          : {}),
         history: retainedHistory,
-        omissions: nextOmissions,
+        omissions: [...omissions, receipt],
       },
     };
   };
 
+  // Progress updates go first. Older terminal assistant messages are expendable only when
+  // they remain too large; the original goal, user corrections, and recent work stay intact.
   for (const [exchangeIndex, exchange] of exchanges.entries()) {
     if (exchangeIndex >= protectedExchangeStart) continue;
     const lastAssistant = exchange.findLast(({ message }) => message.role === "assistant");
@@ -117,6 +141,15 @@ export function compactJevDecisionBody(body: JevDecisionBody): JevDecisionBody {
       if (isWithinCompactionTargets(candidate)) return candidate;
     }
   }
-  if (omittedIndices.size === 0) return body;
+  for (const [exchangeIndex, exchange] of exchanges.entries()) {
+    if (exchangeIndex >= protectedExchangeStart) continue;
+    const lastAssistant = exchange.findLast(({ message }) => message.role === "assistant");
+    if (!lastAssistant) continue;
+    omittedIndices.add(lastAssistant.index);
+    affectedExchanges.add(exchangeIndex);
+    const candidate = compactedBody();
+    if (isWithinCompactionTargets(candidate)) return candidate;
+  }
+  if (omittedIndices.size === 0) return deduplicated;
   return compactedBody();
 }

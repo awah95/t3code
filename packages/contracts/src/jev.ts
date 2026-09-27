@@ -131,6 +131,8 @@ export const JevRouteResult = Schema.Struct({
   effortConfidence: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   responseModel: Schema.optionalKey(Schema.String),
   requestFingerprint: Schema.optionalKey(Schema.String),
+  routingRequestBytes: Schema.optionalKey(Schema.Number),
+  routingStateQuestionBytes: Schema.optionalKey(Schema.Number),
   evaluationPayload: Schema.optionalKey(Schema.String),
   policyVersion: Schema.optionalKey(Schema.String),
   conditionalEffort: Schema.optionalKey(

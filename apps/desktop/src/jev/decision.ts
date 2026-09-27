@@ -333,10 +333,13 @@ export async function requestJevDecision(
 ): Promise<JevRouteResult> {
   const body = buildJevDecisionBody(request);
   const payload = JSON.stringify(body);
+  const size = measureJevDecisionBody(body);
   const result = await performJevDecision(request, key, signal, transport, body);
   const metadata = {
     policyVersion: jevEvaluationPolicyVersion(request),
     requestFingerprint: NodeCrypto.createHash("sha256").update(payload).digest("hex"),
+    routingRequestBytes: size.requestEnvelopeBytes,
+    routingStateQuestionBytes: size.stateQuestionEnvelopeBytes,
     ...(request.requestId.startsWith("jev-eval-") ? { evaluationPayload: payload } : {}),
   };
   if (request.evaluationPolicy === "baseline-v3") {
