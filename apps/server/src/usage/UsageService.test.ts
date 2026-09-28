@@ -122,6 +122,46 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("omits Cursor account usage when no file login is saved", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      for (const platform of ["linux", "win32", "darwin"] as const) {
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(
+            serviceLayers({
+              prefix: `usage-service-cursor-no-login-${platform}`,
+              home,
+              settings,
+              platform,
+              environment: { AGENT_CLI_CREDENTIAL_STORE: "file" },
+            }),
+          ),
+        );
+        const summary = yield* service.readSummary(WINDOW);
+        assert.isFalse(summary.sources.some((source) => source.fingerprint.provider === "cursor"));
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("keeps Cursor credential errors visible when a saved login cannot be read", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const authPath = NodePath.join(home, "config", "cursor", "auth.json");
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(NodePath.dirname(authPath), { recursive: true });
+        await NodeFSP.writeFile(authPath, "invalid json");
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({ prefix: "usage-service-cursor-invalid-login", home, settings }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
+      assert.strictEqual(cursor?.message, "Cursor credentials could not be read.");
+    }).pipe(Effect.scoped),
+  );
+
   it.live("does not read the macOS Cursor Keychain before account usage is enabled", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
@@ -191,6 +231,70 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "includes OpenCode history but does not substitute desktop usage for an unavailable Cursor account",
+    () =>
+      Effect.gen(function* () {
+        const { settings, home } = yield* setup;
+        const root = NodePath.join(home, "data", "opencode");
+        const message = encodeUnknownJsonString({
+          role: "assistant",
+          providerID: "opencode",
+          modelID: "example-model",
+          tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 20, write: 3 } },
+        });
+        const bubble = encodeUnknownJsonString({
+          type: 2,
+          createdAt: "2026-08-01T10:00:00Z",
+          modelInfo: { modelName: "example-model" },
+          tokenCount: { inputTokens: 100, outputTokens: 20 },
+        });
+        yield* Effect.promise(async () => {
+          await NodeFSP.mkdir(root, { recursive: true });
+          const opencode = new NodeSqlite.DatabaseSync(NodePath.join(root, "opencode.db"));
+          try {
+            opencode.exec(
+              "CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT)",
+            );
+            opencode
+              .prepare("INSERT INTO message VALUES (?, ?, ?, ?)")
+              .run("msg_1", "session-1", Date.parse("2026-08-01T10:00:00Z"), message);
+          } finally {
+            opencode.close();
+          }
+          const desktop = NodePath.join(home, "config", "Cursor", "User", "globalStorage");
+          await NodeFSP.mkdir(desktop, { recursive: true });
+          const db = new NodeSqlite.DatabaseSync(NodePath.join(desktop, "state.vscdb"));
+          try {
+            db.exec("CREATE TABLE cursorDiskKV (key TEXT, value TEXT)");
+            db.prepare("INSERT INTO cursorDiskKV VALUES (?, ?)").run(
+              "bubbleId:session:assistant",
+              bubble,
+            );
+          } finally {
+            db.close();
+          }
+        });
+        const service = yield* UsageService.make.pipe(
+          Effect.provide(serviceLayers({ prefix: "usage-service-opencode", home, settings })),
+        );
+        const summary = yield* service.readSummary(WINDOW);
+        assert.strictEqual(summary.buckets[0]?.provider, "opencode");
+        assert.isFalse(summary.buckets.some((bucket) => bucket.provider === "cursor"));
+        assert.isFalse(summary.sources.some((source) => source.fingerprint.provider === "cursor"));
+        assert.strictEqual(
+          summary.buckets[0]?.sourcePath,
+          yield* Effect.promise(() => NodeFSP.realpath(root)),
+        );
+        assert.strictEqual(summary.buckets[0]?.totals.outputTokens, 7);
+        assert.strictEqual(
+          summary.sources.find((source) => source.fingerprint.provider === "opencode")
+            ?.distinctSessions,
+          1,
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.live("counts aliased OpenCode and Antigravity directories once", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
@@ -245,7 +349,7 @@ describe("UsageService", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.live("marks enabled Cursor coverage missing when ACP supplies no usage", () =>
+  it.live("does not invent Cursor usage when ACP supplies none and no account is saved", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;
       const service = yield* UsageService.make.pipe(
@@ -261,8 +365,7 @@ describe("UsageService", () => {
         ),
       );
       const summary = yield* service.readSummary(WINDOW);
-      const cursor = summary.sources.find((source) => source.fingerprint.provider === "cursor");
-      assert.equal(cursor?.status, "missing");
+      assert.isFalse(summary.sources.some((source) => source.fingerprint.provider === "cursor"));
       assert.isFalse(summary.buckets.some((bucket) => bucket.provider === "cursor"));
     }).pipe(Effect.scoped),
   );
