@@ -217,9 +217,11 @@ export interface CodexResponseValuation {
 
 /** Price one response. Model/tier uncertainty and missing counts never become a zero-dollar result. */
 export function priceCodexResponse(
-  response: CodexResponseObservation,
+  response:
+    | CodexResponseObservation
+    | Pick<CodexResponseObservation, "responseId" | "model" | "usage">,
   snapshot: CodexRateSnapshot = CODEX_STANDARD_RATE_SNAPSHOT,
-  options: { sessionLongContext?: boolean } = {},
+  options: { sessionLongContext?: boolean; requestLongContext?: boolean } = {},
 ): CodexResponseValuation {
   const counters = response.usage.counters;
   const input = counters.input_tokens;
@@ -239,7 +241,9 @@ export function priceCodexResponse(
   let longContext: boolean | null = null;
   if (rate) {
     if (rate.longContextScope === "request")
-      longContext = input === null ? null : input > rate.longContextThresholdInputTokens;
+      longContext =
+        options.requestLongContext ??
+        (input === null ? null : input > rate.longContextThresholdInputTokens);
     else longContext = options.sessionLongContext ?? null;
     if (longContext === null) reasons.push("long_context_basis_unknown");
     if (write !== null && write > 0 && rate.cacheWriteInput === null)

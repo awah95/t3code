@@ -20,6 +20,7 @@ import { Command, Flag } from "effect/unstable/cli";
 import { resolveBaseDir } from "../os-jank.ts";
 import { baseDirFlag } from "./config.ts";
 import type { JevCliOutcome } from "./jev.ts";
+import { CODEX_STANDARD_RATE_SNAPSHOT, priceCodexResponse } from "../usage/codexLedgerPricing.ts";
 
 export interface JevCodexExecution {
   readonly exitCode: number;
@@ -40,8 +41,76 @@ export interface JevCodexExecution {
   readonly policy: JevExecutionPolicy | null;
 }
 
+export function estimateJevCodexRun(
+  model: string,
+  usage: JevCodexExecution["usage"],
+  requestId: string,
+) {
+  const rate = CODEX_STANDARD_RATE_SNAPSHOT.models[model];
+  const thresholdMayBeCrossed = Boolean(
+    usage && rate && usage.inputTokens > rate.longContextThresholdInputTokens,
+  );
+  const counters = {
+    input_tokens: usage?.inputTokens ?? null,
+    cached_input_tokens: usage?.cachedInputTokens ?? null,
+    cache_write_input_tokens: usage ? 0 : null,
+    output_tokens: usage?.outputTokens ?? null,
+    reasoning_output_tokens: usage?.reasoningOutputTokens ?? null,
+    total_tokens: usage ? usage.inputTokens + usage.outputTokens : null,
+  };
+  const observation = {
+    responseId: requestId,
+    model,
+    usage: { counters, invalid: [], invalidRaw: {} },
+  };
+  // Codex reports turn totals, not individual priced requests or cache-write counts.
+  const valuation = priceCodexResponse(observation, CODEX_STANDARD_RATE_SNAPSHOT, {
+    requestLongContext: false,
+    sessionLongContext: false,
+  });
+  const upperCounters = { ...counters };
+  if (
+    usage?.cachedInputTokens !== undefined &&
+    rate?.cacheWriteInput !== null &&
+    rate?.cacheWriteInput !== undefined
+  ) {
+    upperCounters.cache_write_input_tokens = usage.inputTokens - usage.cachedInputTokens;
+  }
+  const upper =
+    rate?.cacheWriteInput === null
+      ? null
+      : priceCodexResponse(
+          { ...observation, usage: { ...observation.usage, counters: upperCounters } },
+          CODEX_STANDARD_RATE_SNAPSHOT,
+          {
+            requestLongContext: thresholdMayBeCrossed,
+            sessionLongContext: thresholdMayBeCrossed,
+          },
+        );
+  return {
+    ...valuation,
+    cacheWriteTokens: null,
+    cacheWriteUsd: null,
+    assumedCacheWriteTokensForPointEstimate: 0,
+    possibleRangeUsd: { lower: valuation.totalUsd, upper: upper?.totalUsd ?? null },
+    assumptions: [
+      "Unreported cache writes priced as ordinary input in the point estimate",
+      ...(thresholdMayBeCrossed
+        ? ["No per-request context sizes; point estimate uses standard context rates"]
+        : []),
+    ],
+    rateSource: rate?.source ?? null,
+    rateRetrievedOn: CODEX_STANDARD_RATE_SNAPSHOT.retrievedOn,
+    tokenCoverage: !usage
+      ? "usage_unknown"
+      : usage.cachedInputTokens === undefined
+        ? "cached_input_unknown"
+        : "turn_totals_only_cache_write_unknown",
+  };
+}
+
 export type JevExecutionPolicy = {
-  sandbox: "read-only";
+  sandbox: "read-only" | "workspace-write";
   approval: "never";
   allowedWrites: string[];
 };
@@ -79,9 +148,11 @@ export async function executeJevCodexTurn(
     policy &&
     (Object.keys(policy).some((key) => !["sandbox", "approval", "allowedWrites"].includes(key)) ||
       policy.approval !== "never" ||
-      policy.sandbox !== "read-only" ||
+      !["read-only", "workspace-write"].includes(policy.sandbox) ||
       !Array.isArray(policy.allowedWrites) ||
-      policy.allowedWrites.length > 0)
+      (policy.sandbox === "read-only"
+        ? policy.allowedWrites.length !== 0
+        : policy.allowedWrites.length !== 1 || policy.allowedWrites[0] !== input.workspace))
   )
     throw new Error("Unsupported or conflicting Jev execution policy.");
   const startedAt = process.hrtime.bigint();
@@ -102,7 +173,10 @@ export async function executeJevCodexTurn(
             policy.sandbox,
             "--config",
             'approval_policy="never"',
-            ...(policy.sandbox === "read-only" ? ["--skip-git-repo-check"] : []),
+            ...(policy.sandbox === "workspace-write"
+              ? ["--config", "sandbox_workspace_write.network_access=true"]
+              : []),
+            "--skip-git-repo-check",
           ]
         : []),
       "--cd",
@@ -254,10 +328,13 @@ function parseExecInput(value: unknown): ExecInput {
         Object.keys(input.policy).some(
           (key) => !["sandbox", "approval", "allowedWrites"].includes(key),
         ) ||
-        input.policy.sandbox !== "read-only" ||
+        !["read-only", "workspace-write"].includes(input.policy.sandbox) ||
         input.policy.approval !== "never" ||
         !Array.isArray(input.policy.allowedWrites) ||
-        input.policy.allowedWrites.length !== 0)) ||
+        (input.policy.sandbox === "read-only"
+          ? input.policy.allowedWrites.length !== 0
+          : input.policy.allowedWrites.length !== 1 ||
+            input.policy.allowedWrites[0] !== input.workspace))) ||
     typeof input.requestId !== "string" ||
     !input.requestId.trim() ||
     (input.history !== undefined &&
@@ -606,7 +683,12 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
             execution,
             accounting: {
               actualBilledCostUsd: null,
-              apiEquivalentEstimateUsd: null,
+              apiEquivalentEstimateUsd: succeeded
+                ? estimateJevCodexRun(model, execution.usage, request.requestId).totalUsd
+                : null,
+              standardApiEquivalent: succeeded
+                ? estimateJevCodexRun(model, execution.usage, request.requestId)
+                : null,
               subscriptionAllowanceObservation: null,
               routingOverhead: {
                 costUsd: outcome.result.costUsd,

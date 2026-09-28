@@ -10,12 +10,50 @@ import { assert, expect, it } from "@effect/vitest";
 
 import {
   claimNewJevExecution,
+  estimateJevCodexRun,
   executeJevCodexTurn,
   type JevExecutionPolicy,
   loadJevExecutionSidecar,
   makeJevExecRequest,
   writeJevExecutionOutcome,
 } from "./jevExec.ts";
+
+it("prices uncached, cached, and output tokens while keeping missing rates unknown", () => {
+  const priced = estimateJevCodexRun(
+    "gpt-6-sol",
+    { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 100 },
+    "run-1",
+  );
+  expect(priced).toMatchObject({
+    ordinaryInputTokens: 200,
+    cachedInputTokens: 800,
+    cacheWriteTokens: null,
+    assumedCacheWriteTokensForPointEstimate: 0,
+    outputTokens: 100,
+    totalUsd: "0.00156",
+    priced: true,
+    tokenCoverage: "turn_totals_only_cache_write_unknown",
+    possibleRangeUsd: { lower: "0.00156", upper: "0.00166" },
+  });
+  const aggregate = estimateJevCodexRun(
+    "gpt-6-sol",
+    { inputTokens: 666_400, cachedInputTokens: 601_600, outputTokens: 4_100 },
+    "run-aggregate",
+  );
+  expect(aggregate.longContextApplied).toBe(false);
+  expect(aggregate.totalUsd).toBe("0.29092");
+  expect(aggregate.possibleRangeUsd.upper).toBe("0.62614");
+  expect(aggregate.assumptions).toContain(
+    "No per-request context sizes; point estimate uses standard context rates",
+  );
+  const unknown = estimateJevCodexRun(
+    "unlisted",
+    { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 100 },
+    "run-2",
+  );
+  expect(unknown.totalUsd).toBeNull();
+  expect(unknown.missingReasons).toContain("model_unpriced");
+});
 
 const turn = {
   prompt: "Fix the failing test.",
@@ -81,14 +119,14 @@ it("runs a routed Codex turn through stdin and reads its JSON completion", async
 });
 
 it("passes explicit read-only policy and preserves completed usage", async () => {
-  const child = Object.assign(new NodeEvents.EventEmitter(), {
-    stdin: new NodeStream.PassThrough(),
-    stdout: new NodeStream.PassThrough(),
-    stderr: new NodeStream.PassThrough(),
-  });
   let args: string[] = [];
   const spawn = ((_binary: string, flags: string[]) => {
     args = flags;
+    const child = Object.assign(new NodeEvents.EventEmitter(), {
+      stdin: new NodeStream.PassThrough(),
+      stdout: new NodeStream.PassThrough(),
+      stderr: new NodeStream.PassThrough(),
+    });
     queueMicrotask(() => {
       child.stdout.end(
         '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":4,"cached_input_tokens":3,"output_tokens_details":{"reasoning_tokens":2}}}\n',
@@ -127,16 +165,18 @@ it("passes explicit read-only policy and preserves completed usage", async () =>
   await expect(
     executeJevCodexTurn({ ...turn, policy: { ...policy, allowedWrites: [turn.workspace] } }, spawn),
   ).rejects.toThrow(/policy/);
+  const writable = {
+    sandbox: "workspace-write" as const,
+    approval: "never" as const,
+    allowedWrites: [turn.workspace],
+  };
+  const writableResult = await executeJevCodexTurn({ ...turn, policy: writable }, spawn);
+  assert.deepEqual(writableResult.policy, writable);
+  assert.ok(args.includes("sandbox_workspace_write.network_access=true"));
+  assert.ok(args.includes("--skip-git-repo-check"));
   await expect(
     executeJevCodexTurn(
-      {
-        ...turn,
-        policy: {
-          sandbox: "workspace-write",
-          approval: "never",
-          allowedWrites: [turn.workspace],
-        } as unknown as JevExecutionPolicy,
-      },
+      { ...turn, policy: { ...writable, allowedWrites: ["/tmp/elsewhere"] } },
       spawn,
     ),
   ).rejects.toThrow(/policy/);

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute, sep } from "node:path";
 import { renderPaperclipWakePrompt, selectPaperclipTaskMarkdown, } from "@paperclipai/adapter-utils/server-utils";
@@ -24,11 +24,11 @@ const parseCandidates = (value) => {
     }
     return parsed;
 };
-export function isTaskArtifactFolder(workspace, artifactFolder) {
+export function isTaskArtifactFolder(workspace, artifactFolder, allowWorkspace = false) {
     if (!isAbsolute(workspace) || !isAbsolute(artifactFolder))
         return false;
     const within = relative(workspace, artifactFolder);
-    return within !== "" && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
+    return (allowWorkspace || within !== "") && within !== ".." && !within.startsWith(`..${sep}`) && !isAbsolute(within);
 }
 function taskPrompt(ctx, workspace, taskId) {
     const task = selectPaperclipTaskMarkdown(ctx.context);
@@ -36,7 +36,7 @@ function taskPrompt(ctx, workspace, taskId) {
         const artifactFolder = configString(ctx, "artifactFolder");
         if (!taskId || configString(ctx, "artifactTaskId") !== taskId)
             throw new Error("Bind artifactTaskId and artifactFolder to the assigned Paperclip task.");
-        if (!isTaskArtifactFolder(workspace, artifactFolder))
+        if (!isTaskArtifactFolder(workspace, artifactFolder, configString(ctx, "sandbox") === "workspace-write"))
             throw new Error("Configure the task's canonical artifactFolder inside workspace.");
         const wake = renderPaperclipWakePrompt(ctx.context.paperclipWake, {
             suppressIssueDescription: true,
@@ -45,7 +45,7 @@ function taskPrompt(ctx, workspace, taskId) {
             .filter(Boolean)
             .join("\n\n");
     }
-    throw new Error("Paperclip did not provide paperclipTaskMarkdown in the execution context.");
+    throw new Error("Generic Run now has no issue context or paperclipTaskMarkdown. Wake the assigned issue with an issue-scoped board request (payload.issueId). No Codex run started.");
 }
 function runJson(command, args, cwd, ctx) {
     return new Promise((resolve, reject) => {
@@ -148,6 +148,62 @@ function runJson(command, args, cwd, ctx) {
         child.stdin.end();
     });
 }
+async function prepareTranscription(ctx, workspace) {
+    const tool = configString(ctx, "transcribeTool");
+    if (!tool)
+        return;
+    const video = configString(ctx, "sourceVideo");
+    if (!isAbsolute(tool) || !isTaskArtifactFolder(workspace, video))
+        throw new Error("Configure an absolute transcription tool and a video inside the assigned task folder.");
+    if (!/\.(mov|mp4)$/i.test(video) || !(await stat(video)).isFile())
+        throw new Error("The assigned MOV/MP4 input is missing.");
+    const output = join(workspace, "analysis", "transcription");
+    const receipt = join(output, "manifest.json");
+    try {
+        const existing = JSON.parse(await readFile(receipt, "utf8"));
+        await Promise.all(["timeline.json", "transcript.json", "transcript.md"].map((name) => stat(join(output, name))));
+        if (existing.source?.path !== video)
+            throw new Error("Existing transcript belongs to a different video.");
+        return;
+    }
+    catch (error) {
+        if (error.code !== "ENOENT")
+            throw error;
+    }
+    try {
+        await stat(output);
+        throw new Error("Partial transcription folder exists; inspect it before retrying.");
+    }
+    catch (error) {
+        if (error.code !== "ENOENT")
+            throw error;
+    }
+    await ctx.onCancellationReady?.();
+    const proc = await runJson("python3", [tool, video, output, "--timestamps"], workspace, {
+        ...ctx,
+        onSpawn: undefined,
+    });
+    if (proc.cancelled)
+        throw new Error("Transcription was cancelled; inspect the task folder before retrying.");
+    if (proc.code !== 0)
+        throw new Error(`Local transcription failed (${proc.code}): ${proc.stderr.slice(-2000)}`);
+    await Promise.all(["manifest.json", "timeline.json", "transcript.json", "transcript.md"].map((name) => stat(join(output, name))));
+}
+export function completedRunSummary(result, taskId) {
+    const execution = result.execution;
+    const usage = execution?.usage;
+    const accounting = result.accounting;
+    const estimate = accounting?.standardApiEquivalent;
+    const range = estimate?.possibleRangeUsd;
+    const tokens = usage
+        ? `input ${String(usage.inputTokens ?? "unknown")} (cached ${String(usage.cachedInputTokens ?? "unknown")}), output ${String(usage.outputTokens ?? "unknown")}`
+        : "tokens unknown";
+    const estimated = typeof estimate?.totalUsd === "string"
+        ? `$${estimate.totalUsd} (range $${String(range?.lower ?? "unknown")}–${typeof range?.upper === "string" ? `$${range.upper}` : "unknown"})`
+        : "unknown";
+    const receipt = `Task ${taskId}; model ${String(result.model ?? "unknown")}; ${tokens}; Standard API-equivalent estimate ${estimated}; actual billed cost unknown; subscription allowance unknown. Rate snapshot ${String(estimate?.rateSnapshotId ?? "unknown")} (${String(estimate?.rateRetrievedOn ?? "unknown")}); cache-write counts unreported${estimate?.assumptions && Array.isArray(estimate.assumptions) && estimate.assumptions.length > 1 ? "; per-request context sizes unreported" : ""}.`;
+    return [execution?.finalMessage, receipt].filter((part) => typeof part === "string" && part.trim()).join("\n\n");
+}
 export async function execute(ctx) {
     const command = configString(ctx, "executable");
     const workspace = configString(ctx, "workspace");
@@ -157,16 +213,21 @@ export async function execute(ctx) {
     if (!["auto", "guided", "pinned"].includes(mode))
         throw new Error("mode must be auto, guided, or pinned.");
     const sandbox = configString(ctx, "sandbox");
-    if (sandbox !== "read-only")
-        throw new Error("This adapter currently supports only the read-only sandbox.");
+    if (sandbox !== "read-only" && sandbox !== "workspace-write")
+        throw new Error("This adapter supports read-only or task-folder workspace-write sandboxing.");
     if (!command.startsWith("/") || !workspace.startsWith("/"))
         throw new Error("Configure absolute executable and workspace paths.");
+    if (sandbox === "workspace-write" && configString(ctx, "artifactFolder") !== workspace)
+        throw new Error("Writable runs require workspace to equal the assigned canonical artifact folder.");
     const reviewId = configString(ctx, "reviewId");
     const option = configString(ctx, "option");
     const reviewTaskId = configString(ctx, "reviewTaskId");
     const reviewRunId = configString(ctx, "reviewRunId");
-    const taskId = [ctx.context.taskId, ctx.context.issueId].find((value) => typeof value === "string" && value.trim());
-    const currentTaskId = taskId?.trim() ?? "";
+    const currentTaskId = typeof ctx.context.issueId === "string" ? ctx.context.issueId.trim() : "";
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentTaskId))
+        throw new Error("An issue-scoped board wake must supply the issue UUID; generic Run now cannot dispatch t3jev.");
+    if (ctx.context.taskId && ctx.context.taskId !== currentTaskId)
+        throw new Error("Paperclip taskId and issueId disagree; refusing to dispatch.");
     const consumedReview = ctx.runtime.sessionParams?.consumedJevReview;
     const alreadyConsumed = consumedReview &&
         typeof consumedReview === "object" &&
@@ -201,13 +262,15 @@ export async function execute(ctx) {
             policy: {
                 sandbox,
                 approval: "never",
-                allowedWrites: [],
+                allowedWrites: sandbox === "workspace-write" ? [workspace] : [],
             },
         };
         args.push("--json");
     }
     let tempDirectory;
     if (!resumeReview) {
+        if (sandbox === "workspace-write")
+            await prepareTranscription(ctx, workspace);
         tempDirectory = await mkdtemp(join(tmpdir(), "t3jev-paperclip-"));
         const inputFile = join(tempDirectory, "request.json");
         await writeFile(inputFile, JSON.stringify(input), { mode: 0o600, flag: "wx" });
@@ -311,8 +374,7 @@ export async function execute(ctx) {
                 usageBasis: "per_run",
             }
             : {}),
-        summary: String(result.execution?.finalMessage ??
-            "Jev Codex turn completed."),
+        summary: completedRunSummary(result, currentTaskId),
         resultJson: result,
         ...(resumeReview
             ? {
