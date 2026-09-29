@@ -6,6 +6,7 @@ import { MAC_PERMISSION_HELPER_CHANNEL } from "../ipc/channels.ts";
 
 const mocks = vi.hoisted(() => ({
   granted: false,
+  executablePath: "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code",
   createFromPath: vi.fn(),
   startDrag: vi.fn(),
   showItemInFolder: vi.fn(),
@@ -61,7 +62,7 @@ vi.mock("electron", async () => {
   }
   return {
     app: {
-      getPath: () => "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code",
+      getPath: () => mocks.executablePath,
     },
     nativeImage: { createFromPath: mocks.createFromPath },
     BrowserWindow: class extends MockWindow {},
@@ -97,6 +98,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   mocks.granted = false;
+  mocks.executablePath = "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code";
   const icon = { toDataURL: () => "data:image/png;base64,abc" };
   mocks.createFromPath.mockReturnValue({ isEmpty: () => false, resize: () => icon });
   mocks.loadURL.mockResolvedValue(undefined);
@@ -143,6 +145,20 @@ it("drags the running app bundle only for the helper's own renderer", async () =
   });
   send("finder");
   expect(mocks.showItemInFolder).toHaveBeenCalledWith("/Applications/T3 Code (Nightly).app");
+});
+it("names the running app bundle in the permission helper", async () => {
+  mocks.executablePath = "/Users/alice/Applications/T3 Code Jev.app/Contents/MacOS/T3 Code (Alpha)";
+  await open();
+  const html = decodeURIComponent(mocks.loadURL.mock.calls[0]![0]);
+  expect(html).toContain("Drag T3 Code Jev into the list above");
+  expect(html).toContain("Drag T3 Code Jev to System Settings");
+  expect(html).toContain('draggable="true"');
+  expect(html).toContain(">T3 Code Jev</button>");
+  send("drag");
+  expect(mocks.startDrag).toHaveBeenCalledWith({
+    file: "/Users/alice/Applications/T3 Code Jev.app",
+    icon: mocks.createFromPath.mock.results[0]!.value.resize(),
+  });
 });
 it("rechecks permissions and releases resources when granted", async () => {
   await open();
