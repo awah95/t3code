@@ -90,6 +90,43 @@ describe("Jev decision validation and accounting", () => {
   });
 });
 
+describe("TypeSafe Jev transport", () => {
+  it("uses the native endpoint and latest alias", async () => {
+    let endpoint = "";
+    let model = "";
+    const transport: typeof fetch = async (url, init) => {
+      endpoint = String(url);
+      model = (JSON.parse(String(init?.body)) as { model: string }).model;
+      return new Response(
+        JSON.stringify({
+          model: "jev-1.13.0",
+          answers: {
+            route: {
+              type: "choice",
+              choice: "fast",
+              confidence: 0.9,
+              probabilities: { fast: 0.9, strong: 0.1 },
+            },
+          },
+          usage: { input_tokens: 100, output_tokens: 1 },
+        }),
+        { status: 200 },
+      );
+    };
+    const result = await requestJevDecision(
+      request,
+      "test-key",
+      new AbortController().signal,
+      transport,
+      "typesafe",
+    );
+    expect(endpoint).toBe("https://api.typesafe.ai/v1/systemone");
+    expect(model).toBe("jev-latest");
+    expect(result.choice).toBe("fast");
+    expect(result.costKind).toBe("estimated");
+  });
+});
+
 describe("Jev OpenRouter transport", () => {
   it("routes a long opening task with the selected model's high effort", async () => {
     const task = `Diagnose interacting state transitions: ${"a".repeat(18_000)}`;

@@ -1,5 +1,6 @@
 import type {
   PickedElementPayload,
+  PickedElementFrame,
   PickedElementStackFrame,
   PreviewAnnotationPayload,
 } from "@t3tools/contracts";
@@ -18,6 +19,8 @@ export interface ElementContextSelection {
   pageUrl: string;
   /** Best-effort `<title>`. */
   pageTitle: string | null;
+  /** Outermost-to-innermost iframe chain, absent for the top document. */
+  framePath?: ReadonlyArray<PickedElementFrame> | undefined;
   /** Lowercase tag, e.g. `"button"`. */
   tagName: string;
   /** CSS selector — may be null when react-grab can't compute one. */
@@ -58,6 +61,15 @@ export function normalizeElementContextSelection(
   return {
     pageUrl,
     pageTitle: raw.pageTitle?.trim() ?? null,
+    ...(raw.framePath?.length
+      ? {
+          framePath: raw.framePath.slice(0, 8).map((frame) => ({
+            selector: truncateString(frame.selector.trim(), 2_048),
+            ...(frame.pageUrl ? { pageUrl: truncateString(frame.pageUrl.trim(), 2_048) } : {}),
+            ...(frame.title ? { title: truncateString(frame.title.trim(), 2_048) } : {}),
+          })),
+        }
+      : {}),
     tagName,
     selector: raw.selector?.trim() || null,
     htmlPreview: truncateString(normalizeText(raw.htmlPreview), ELEMENT_CONTEXT_HTML_PREVIEW_LIMIT),

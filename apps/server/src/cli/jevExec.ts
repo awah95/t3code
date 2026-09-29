@@ -468,6 +468,8 @@ type ReviewDependencies = {
     request: JevRouteRequest,
     key: string | undefined,
     mode: "guided" | "auto",
+    transport?: typeof fetch,
+    provider?: "openrouter" | "typesafe",
   ) => Promise<JevCliOutcome>;
   persist: (
     directory: string,
@@ -614,7 +616,15 @@ export function makeJevExecCommand(deps: ReviewDependencies) {
                     choice: pinnedChoice!,
                     result: pinnedResult,
                   }
-                : await deps.route(request, process.env.OPENROUTER_API_KEY, input.mode ?? "guided");
+                : await deps.route(
+                    request,
+                    process.env.JEV_API_PROVIDER === "typesafe"
+                      ? process.env.TYPESAFE_API_KEY
+                      : process.env.OPENROUTER_API_KEY,
+                    input.mode ?? "guided",
+                    fetch,
+                    process.env.JEV_API_PROVIDER === "typesafe" ? "typesafe" : "openrouter",
+                  );
             if (outcome.status === "review_required") {
               const pending = await deps.persist(directory, request, outcome);
               await NodeFSP.writeFile(

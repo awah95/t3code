@@ -156,6 +156,20 @@ describe("Jev automation decision transport", () => {
     expect(JSON.stringify(result)).not.toContain("secret-key");
   });
 
+  it("sends TypeSafe decisions to the native endpoint with the latest alias", async () => {
+    const transport = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response(JSON.stringify(answer("done"))));
+    await createOpenRouterJevAutomationDecision({
+      apiKey: "secret-key",
+      provider: "typesafe",
+      transport,
+    }).decide({ ...input, signal: new AbortController().signal });
+    const [url, init] = transport.mock.calls[0]!;
+    expect(url).toBe("https://api.typesafe.ai/v1/systemone");
+    expect(JSON.parse(String(init?.body)).model).toBe("jev-latest");
+  });
+
   it("does not call transport after cancellation", async () => {
     const transport = vi.fn<typeof fetch>();
     const result = await createOpenRouterJevAutomationDecision({

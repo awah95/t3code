@@ -396,7 +396,7 @@ export const useJevStore = create<{
         mode === "guided"
           ? "Guided routing is on for this chat. Review each recommendation before sending."
           : mode === "auto"
-            ? "Automatic routing is on for this chat. Task text and context are sent to OpenRouter."
+            ? "Automatic routing is on for this chat. Task text and context are sent to the selected Jev API provider."
             : "Jev routing is off for this chat.",
     });
     saveThreadModes(modesByThread);

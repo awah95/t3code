@@ -49,7 +49,9 @@ export function JevControls({
       useJevStore.setState({
         panelOpen: true,
         notice:
-          cause instanceof Error ? cause.message : "Could not verify Jev's OpenRouter credential.",
+          cause instanceof Error
+            ? cause.message
+            : "Could not verify Jev's selected API credential.",
       });
     });
     return () => {
@@ -234,7 +236,7 @@ function JevReviewCard({ call }: { call: JevCall }) {
   const suggestedKey = call.result?.recommendedChoice ?? call.result?.choice;
   const suggested = call.request.candidates.find((candidate) => candidate.key === suggestedKey);
   const unavailable = call.result?.policyOutcome === "unavailable";
-  const missingKey = call.result?.error?.includes("OpenRouter key") ?? false;
+  const missingKey = call.result?.error?.includes("selected Jev provider") ?? false;
   const currentModel = call.request.context.currentModel;
   const currentEffort = call.request.context.currentEffort;
   const sameModel = suggested?.model === currentModel;
@@ -462,7 +464,6 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
     notice,
     cancelPending,
     billedUsd,
-    estimatedUsd,
     unknownCostCalls,
     subagentsEnabled,
     setSubagentsEnabled,
@@ -501,7 +502,9 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
       if (request !== modeRequestRef.current) return;
       useJevStore.setState({
         notice:
-          cause instanceof Error ? cause.message : "Could not verify Jev's OpenRouter credential.",
+          cause instanceof Error
+            ? cause.message
+            : "Could not verify Jev's selected API credential.",
       });
     } finally {
       if (request === modeRequestRef.current) setCheckingStatus(false);
@@ -616,8 +619,9 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
           <summary className="cursor-pointer">Context sharing &amp; log retention</summary>
           <p className="mt-2">
             Latest 50 calls, kept in memory. Full current prompts, up to ten recent chat exchanges,
-            task provenance, attached textual evidence and agreed plan context are shared with
-            OpenRouter. Common credentials are redacted; review sensitive content before sending.
+            task provenance, attached textual evidence and agreed plan context are shared with the
+            selected Jev API provider. Common credentials are redacted; review sensitive content
+            before sending.
           </p>
         </details>
         <details className="text-xs">
@@ -643,22 +647,18 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
         <p className="text-xs text-muted-foreground">
           Requires Jev Auto and a local Codex thread. Enabling trusts T3's exact session-scoped
           routing hook in Codex settings. The independent child task and declared context scope are
-          sent to OpenRouter. Explicit child model or effort choices are preserved. Turning either
-          toggle off stops routing calls. Full-history forks retain their parent model. Child
-          routing remains automatic with its policy guard, even in Guided mode; guided review
-          applies to your messages. Other providers are unsupported.
+          sent to the selected Jev API provider. Explicit child model or effort choices are
+          preserved. Turning either toggle off stops routing calls. Full-history forks retain their
+          parent model. Child routing remains automatic with its policy guard, even in Guided mode;
+          guided review applies to your messages. Other providers are unsupported.
         </p>
         <div className="space-y-2">
-          <dl aria-label="Jev session statistics" className="grid grid-cols-2 gap-2 text-xs">
-            <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
+          <dl aria-label="Jev session statistics" className="grid gap-2 text-xs">
+            <div className="min-w-0 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
               <dt className="text-muted-foreground">Billed</dt>
-              <dd className="mt-1 font-medium tabular-nums">${billedUsd.toFixed(8)}</dd>
+              <dd className="font-medium tabular-nums">${billedUsd.toFixed(8)}</dd>
             </div>
-            <div className="min-w-0 rounded-md border bg-muted/30 p-2.5">
-              <dt className="text-muted-foreground">Estimated</dt>
-              <dd className="mt-1 font-medium tabular-nums">${estimatedUsd.toFixed(8)}</dd>
-            </div>
-            <div className="col-span-2 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
+            <div className="min-w-0 flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2.5">
               <dt className="text-muted-foreground">Calls with unknown cost</dt>
               <dd className="font-medium tabular-nums">{unknownCostCalls}</dd>
             </div>
@@ -812,8 +812,9 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
 }
 
 export function JevSettings() {
+  const [provider, setProvider] = useState<"openrouter" | "typesafe">("openrouter");
+  const [keys, setKeys] = useState({ openrouter: false, typesafe: false });
   const [key, setKey] = useState("");
-  const [hasKey, setHasKey] = useState(false);
   const [available, setAvailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -822,25 +823,38 @@ export function JevSettings() {
     void window.desktopBridge
       ?.getJevStatus?.()
       .then((status) => {
-        setHasKey(status.hasKey);
+        setProvider(status.provider ?? "openrouter");
+        setKeys(status.keys ?? { openrouter: status.hasKey, typesafe: false });
         setAvailable(status.secureStorageAvailable);
       })
       .catch(() => setMessage("Could not read secure credential status."));
   }, []);
   if (!isElectron) return null;
+  const selectProvider = async (next: "openrouter" | "typesafe") => {
+    setBusy(true);
+    try {
+      if (!window.desktopBridge?.setJevProvider) throw new Error();
+      await window.desktopBridge.setJevProvider(next);
+      setProvider(next);
+      setKey("");
+      useJevStore.getState().disableAllThreads();
+      setMessage(
+        `${next === "typesafe" ? "TypeSafe" : "OpenRouter"} selected. Enable Jev again in a chat to use it.`,
+      );
+    } catch {
+      setMessage("Could not change Jev provider.");
+    } finally {
+      setBusy(false);
+    }
+  };
   const save = async (value: string | null) => {
     setBusy(true);
-    setMessage("");
     try {
-      if (!window.desktopBridge?.setJevApiKey) throw new Error();
-      await window.desktopBridge.setJevApiKey(value);
+      if (!window.desktopBridge?.setJevProviderKey) throw new Error();
+      await window.desktopBridge.setJevProviderKey(provider, value);
       setKey("");
-      setHasKey(value !== null);
-      setMessage(
-        value === null
-          ? "OpenRouter key removed."
-          : "OpenRouter key saved in encrypted OS storage.",
-      );
+      setKeys((current) => ({ ...current, [provider]: value !== null }));
+      setMessage(value === null ? "API key removed." : "API key saved in encrypted OS storage.");
       if (value === null) useJevStore.getState().disableAllThreads();
     } catch {
       setMessage("Could not update the key. Check secure OS storage availability.");
@@ -853,25 +867,40 @@ export function JevSettings() {
       <h2 className="text-sm font-medium">Jev Auto routing</h2>
       <p className="text-sm text-muted-foreground">
         Jev chooses a supported Codex model and reasoning effort within your selected provider
-        instance. Enable it in the chat header. OpenRouter receives the full current task, up to ten
-        recent user/assistant exchanges, original task, agreed plan, failure feedback, model
-        profiles and available quota snapshots. Attached terminal excerpts, review comments and
-        preview annotations are included. Internal reasoning and file/image bodies are excluded and
-        named as missing context. History may be shortened with explicit omissions; current prompts
-        are never silently shortened.
+        instance. The selected Jev API provider receives the current task and relevant text context,
+        including recent exchanges, plan, feedback, model profiles and available quota snapshots.
+        Internal reasoning and file or image bodies are excluded.
       </p>
+      <label className="block text-sm">
+        Jev API provider
+        <select
+          value={provider}
+          disabled={busy}
+          onChange={(event) => void selectProvider(event.target.value as "openrouter" | "typesafe")}
+          className="mt-1 block w-full rounded border bg-transparent p-2"
+        >
+          <option value="openrouter">OpenRouter</option>
+          <option value="typesafe">TypeSafe</option>
+        </select>
+      </label>
       <p className="text-xs">
-        {hasKey ? "API key saved" : "No API key saved"} ·{" "}
+        {keys[provider] ? "API key saved" : "No API key saved"} ·{" "}
         {available ? "Secure storage available" : "Secure storage unavailable"}
       </p>
       <label className="block text-sm">
-        OpenRouter API key
+        {provider === "typesafe" ? "TypeSafe" : "OpenRouter"} API key
         <input
           type="password"
           autoComplete="off"
           value={key}
           onChange={(event) => setKey(event.target.value)}
-          placeholder={hasKey ? "Enter a replacement key" : "sk-or-…"}
+          placeholder={
+            keys[provider]
+              ? "Enter a replacement key"
+              : provider === "typesafe"
+                ? "TypeSafe API key"
+                : "sk-or-…"
+          }
           className="mt-1 block w-full rounded border bg-transparent p-2"
         />
       </label>
@@ -886,7 +915,7 @@ export function JevSettings() {
         </button>
         <button
           type="button"
-          disabled={busy || !hasKey}
+          disabled={busy || !keys[provider]}
           onClick={() => void save(null)}
           className="rounded border px-3 py-1 disabled:opacity-50"
         >
@@ -899,9 +928,9 @@ export function JevSettings() {
         </p>
       )}
       <p className="text-xs text-muted-foreground">
-        Routing usage is separate from the selected coding provider. Estimates use $0.042 per
-        million input tokens and free output; only a reported cost is labeled billed. Auto starts
-        off each app session. Manual model selection turns Auto off.
+        Routing usage is separate from the selected coding provider. TypeSafe uses the latest Jev
+        model alias. Token-based costs are estimates unless the API reports a billed cost. Auto
+        starts off each app session.
       </p>
     </section>
   );

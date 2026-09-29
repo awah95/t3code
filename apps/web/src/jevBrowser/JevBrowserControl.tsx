@@ -214,7 +214,7 @@ function ScopedJevBrowserControl({
         setNotice(
           scope,
           credentialStatus.secureStorageAvailable
-            ? "Add an OpenRouter key in Settings > General > Jev Auto routing first."
+            ? "Add a key for the selected Jev provider in Settings > General > Jev Auto routing first."
             : "Secure OS credential storage is unavailable.",
         );
         return;

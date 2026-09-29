@@ -178,9 +178,9 @@ export const layer = Layer.effect(
               () =>
                 Effect.gen(function* () {
                   const result = yield* credential
-                    .useKey((key, credentialSignal) =>
+                    .useKey((key, credentialSignal, provider) =>
                       Effect.tryPromise(() =>
-                        createOpenRouterJevAutomationDecision({ apiKey: key })
+                        createOpenRouterJevAutomationDecision({ apiKey: key, provider })
                           .decide({
                             task: input.task,
                             observation: automationObservation(input.observation),
@@ -210,7 +210,9 @@ export const layer = Layer.effect(
                       ),
                     );
                   const decision = Option.getOrElse(result, () =>
-                    unavailable("Add an OpenRouter key in Settings to use Jev browser automation."),
+                    unavailable(
+                      "Add a key for the selected Jev provider in Settings to use Jev browser automation.",
+                    ),
                   );
                   return decision;
                 }),

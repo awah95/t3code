@@ -68,6 +68,9 @@ function unwrapEnsureSshEnvironmentResult(result: unknown) {
 contextBridge.exposeInMainWorld("desktopBridge", {
   getJevStatus: () => ipcRenderer.invoke(JevChannels.GET_JEV_STATUS_CHANNEL),
   setJevApiKey: (key) => ipcRenderer.invoke(JevChannels.SET_JEV_API_KEY_CHANNEL, key),
+  setJevProvider: (provider) => ipcRenderer.invoke(JevChannels.SET_JEV_PROVIDER_CHANNEL, provider),
+  setJevProviderKey: (provider, key) =>
+    ipcRenderer.invoke(JevChannels.SET_JEV_PROVIDER_KEY_CHANNEL, { provider, key }),
   decideJevRoute: (request, receiptContext) =>
     ipcRenderer.invoke(JevChannels.DECIDE_JEV_ROUTE_CHANNEL, { request, receiptContext }),
   cancelJevRoute: (id) => ipcRenderer.invoke(JevChannels.CANCEL_JEV_ROUTE_CHANNEL, id),

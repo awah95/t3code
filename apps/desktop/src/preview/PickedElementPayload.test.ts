@@ -47,6 +47,20 @@ describe("isPickedElementPayload", () => {
     expect(isPickedElementPayload(validPayload({ stack: [] }))).toBe(true);
   });
 
+  it("accepts a bounded iframe path and rejects malformed frame steps", () => {
+    const framePath = [
+      { selector: "#canvas", pageUrl: "https://example.com/canvas", title: "Canvas" },
+    ];
+    expect(isPickedElementPayload(validPayload({ framePath }))).toBe(true);
+    expect(isPickedElementPayload(validPayload({ framePath: [{ selector: "" }] }))).toBe(false);
+    expect(
+      isPickedElementPayload(validPayload({ framePath: [{ selector: "#canvas", title: 1 }] })),
+    ).toBe(false);
+    expect(isPickedElementPayload(validPayload({ framePath: Array(9).fill(framePath[0]) }))).toBe(
+      false,
+    );
+  });
+
   it("accepts stack frames with null fields", () => {
     expect(
       isPickedElementPayload(

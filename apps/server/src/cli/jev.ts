@@ -235,12 +235,19 @@ export async function routeJevCliRequest(
   key: string | undefined,
   mode: "guided" | "auto" = "guided",
   transport: typeof fetch = fetch,
+  provider: "openrouter" | "typesafe" = "openrouter",
 ): Promise<JevCliOutcome> {
   const result = !isValidJevRouteRequest(request)
     ? failedJevDecision("Invalid routing request; using the selected model.")
     : !key?.trim()
-      ? failedJevDecision("Set OPENROUTER_API_KEY to use Jev routing.")
-      : await requestJevDecision(request, key, AbortSignal.timeout(JEV_TIMEOUT_MS), transport);
+      ? failedJevDecision("Set the selected Jev provider API key to use routing.")
+      : await requestJevDecision(
+          request,
+          key,
+          AbortSignal.timeout(JEV_TIMEOUT_MS),
+          transport,
+          provider,
+        );
   return makeJevCliOutcome(request, result, mode);
 }
 
@@ -306,7 +313,15 @@ const routeCommand = Command.make("route", {
         } catch {
           throw new Error("Could not read a valid JevRouteRequest JSON file.");
         }
-        let outcome = await routeJevCliRequest(request, process.env.OPENROUTER_API_KEY, mode);
+        let outcome = await routeJevCliRequest(
+          request,
+          process.env.JEV_API_PROVIDER === "typesafe"
+            ? process.env.TYPESAFE_API_KEY
+            : process.env.OPENROUTER_API_KEY,
+          mode,
+          fetch,
+          process.env.JEV_API_PROVIDER === "typesafe" ? "typesafe" : "openrouter",
+        );
         if (outcome.status === "review_required") {
           const pending = await persistJevCliReview(
             jevReviewDirectory(resolvedBaseDir),

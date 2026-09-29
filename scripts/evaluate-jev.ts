@@ -107,14 +107,18 @@ if (dry) {
   );
   process.exit(0);
 }
-let apiKey = process.env.OPENROUTER_API_KEY;
+const jevProvider = process.env.JEV_API_PROVIDER === "typesafe" ? "typesafe" : "openrouter";
+let apiKey =
+  jevProvider === "typesafe" ? process.env.TYPESAFE_API_KEY : process.env.OPENROUTER_API_KEY;
 if (args.includes("--key-stdin")) {
   let input = "";
   for await (const chunk of process.stdin) input += chunk.toString();
   apiKey = input.trim();
 }
 if (!apiKey)
-  throw new Error("Provide OPENROUTER_API_KEY or --key-stdin. Keys are never written to results.");
+  throw new Error(
+    "Provide the selected provider key or --key-stdin. Keys are never written to results.",
+  );
 const rows: Record<string, unknown>[] = [];
 let billed = 0;
 let estimated = 0;
@@ -144,7 +148,13 @@ for (const [index, entry] of cases.entries()) {
   const result =
     request.candidates.length === 0
       ? null
-      : await requestJevDecision(request, apiKey, AbortSignal.timeout(JEV_TIMEOUT_MS));
+      : await requestJevDecision(
+          request,
+          apiKey,
+          AbortSignal.timeout(JEV_TIMEOUT_MS),
+          fetch,
+          jevProvider,
+        );
   if (result?.costKind === "billed") billed += result.costUsd ?? 0;
   else if (result?.costKind === "estimated") estimated += result.costUsd ?? 0;
   else if (result) unknown++;

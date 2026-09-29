@@ -132,10 +132,18 @@ export const ElementContextSource = Schema.Struct({
 });
 export type ElementContextSource = typeof ElementContextSource.Type;
 
+export const ElementContextFrame = Schema.Struct({
+  selector: ShortString,
+  pageUrl: Schema.optional(ShortString),
+  title: Schema.optional(ShortString),
+});
+export type ElementContextFrame = typeof ElementContextFrame.Type;
+
 /** What a picked page element looks like to the agent; shared by element and annotation records. */
 export const ElementContextDetails = Schema.Struct({
   pageUrl: ShortString,
   pageTitle: NullableShortString,
+  framePath: Schema.optional(Schema.Array(ElementContextFrame).check(Schema.isMaxLength(8))),
   tagName: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
   selector: NullableShortString,
   htmlPreview: BoundedString(COMPOSER_CONTEXT_ELEMENT_HTML_MAX_CHARS),

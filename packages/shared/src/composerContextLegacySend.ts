@@ -99,6 +99,14 @@ function renderElementEntry(record: ComposerContextRecord): string {
 function renderElementDetailsEntry(record: ElementContextDetails): string {
   const lines: string[] = [];
   if (record.pageUrl) lines.push(`url: ${record.pageUrl}`);
+  if (record.framePath?.length) {
+    lines.push("iframe path (outermost first):");
+    for (const frame of record.framePath) {
+      lines.push(
+        `- ${frame.selector}${frame.pageUrl ? ` | url: ${frame.pageUrl}` : ""}${frame.title ? ` | title: ${frame.title}` : ""}`,
+      );
+    }
+  }
   if (record.selector) lines.push(`selector: ${record.selector}`);
   const source = record.source;
   if (source?.fileName) {

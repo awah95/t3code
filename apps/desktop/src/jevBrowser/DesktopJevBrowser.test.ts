@@ -64,9 +64,11 @@ describe("DesktopJevBrowser billing lifecycle", () => {
         const credential = Layer.succeed(DesktopJevCredential, {
           status: Effect.succeed({ hasKey: true, secureStorageAvailable: true }),
           setKey: () => Effect.void,
+          setProvider: () => Effect.void,
+          setProviderKey: () => Effect.void,
           useKey: (use) =>
             outcome === "reported"
-              ? Effect.asSome(use("test-key", new AbortController().signal))
+              ? Effect.asSome(use("test-key", new AbortController().signal, "openrouter"))
               : Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
         });
         yield* Effect.gen(function* () {

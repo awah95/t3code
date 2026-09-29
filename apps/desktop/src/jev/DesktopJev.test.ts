@@ -86,15 +86,69 @@ describe("DesktopJev credential storage", () => {
         const service = yield* DesktopJev.DesktopJev;
         const fs = yield* FileSystem.FileSystem;
         const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        assert.deepEqual(yield* service.status, { hasKey: false, secureStorageAvailable: true });
+        assert.deepInclude(yield* service.status, { hasKey: false, secureStorageAvailable: true });
         yield* service.setKey("test-private-openrouter-key");
         const file = environment.path.join(environment.stateDir, "jev-openrouter-key.encrypted");
         const bytes = yield* fs.readFile(file);
         assert.deepEqual([...bytes], [1]);
-        assert.deepEqual(yield* service.status, { hasKey: true, secureStorageAvailable: true });
+        assert.deepInclude(yield* service.status, { hasKey: true, secureStorageAvailable: true });
         yield* service.setKey(null);
         assert.isFalse(yield* fs.exists(file));
         assert.isFalse((yield* service.status).hasKey);
+      }),
+    ),
+  );
+
+  it.effect("keeps separate provider keys and restores the selected provider", () =>
+    withJev(
+      Effect.gen(function* () {
+        const service = yield* DesktopJev.DesktopJev;
+        yield* service.setKey("openrouter-key");
+        yield* service.setProvider("typesafe");
+        assert.deepInclude(yield* service.status, { provider: "typesafe", hasKey: false });
+        yield* service.setProviderKey("typesafe", "typesafe-key");
+        assert.deepInclude(yield* service.status, {
+          provider: "typesafe",
+          hasKey: true,
+          keys: { openrouter: true, typesafe: true },
+        });
+        yield* service.setProviderKey("typesafe", null);
+        assert.deepInclude(yield* service.status, {
+          provider: "typesafe",
+          hasKey: false,
+          keys: { openrouter: true, typesafe: false },
+        });
+        yield* service.setProvider("openrouter");
+        assert.isTrue((yield* service.status).hasKey);
+      }),
+    ),
+  );
+
+  it.effect("sends the selected TypeSafe key to the TypeSafe endpoint", () =>
+    withJev(
+      Effect.gen(function* () {
+        const transport = vi
+          .spyOn(globalThis, "fetch")
+          .mockResolvedValue(new Response("", { status: 401 }));
+        try {
+          const service = yield* DesktopJev.DesktopJev;
+          yield* service.setProvider("typesafe");
+          yield* service.setProviderKey("typesafe", "test-typesafe-key");
+          const result = yield* service.decide({
+            requestId: "typesafe-route",
+            prompt: "Review code",
+            candidates: [{ key: "fast", description: "Fast" }],
+            context: { existingSession: false, hasAttachments: false, interactionMode: "default" },
+          });
+          assert.include(result.error ?? "", "HTTP 401");
+          assert.equal(transport.mock.calls.length, 1);
+          const [url, init] = transport.mock.calls[0]!;
+          assert.equal(url, "https://api.typesafe.ai/v1/systemone");
+          assert.equal(new Headers(init?.headers).get("Authorization"), "Bearer test-typesafe-key");
+          assert.include(String(init?.body), '"model":"jev-latest"');
+        } finally {
+          transport.mockRestore();
+        }
       }),
     ),
   );
@@ -104,7 +158,7 @@ describe("DesktopJev credential storage", () => {
       Effect.gen(function* () {
         const service = yield* DesktopJev.DesktopJev;
         assert.isTrue(yield* Effect.isFailure(service.setKey("test-private-key")));
-        assert.deepEqual(yield* service.status, { hasKey: false, secureStorageAvailable: false });
+        assert.deepInclude(yield* service.status, { hasKey: false, secureStorageAvailable: false });
       }),
       false,
     ),
@@ -115,7 +169,7 @@ describe("DesktopJev credential storage", () => {
       Effect.gen(function* () {
         const service = yield* DesktopJev.DesktopJev;
         assert.isTrue(yield* Effect.isFailure(service.setKey("test-private-key")));
-        assert.deepEqual(yield* service.status, { hasKey: false, secureStorageAvailable: false });
+        assert.deepInclude(yield* service.status, { hasKey: false, secureStorageAvailable: false });
       }),
       true,
       "basic_text",
@@ -132,7 +186,7 @@ describe("DesktopJev credential storage", () => {
           candidates: [{ key: "fast", description: "Fast" }],
           context: { existingSession: false, hasAttachments: false, interactionMode: "default" },
         };
-        assert.include((yield* service.decide(request)).error ?? "", "OpenRouter key");
+        assert.include((yield* service.decide(request)).error ?? "", "selected Jev provider");
         const oversized = yield* service.decide({
           ...request,
           context: { ...request.context, originalTask: "x".repeat(240000) },
@@ -154,7 +208,7 @@ describe("DesktopJev credential storage", () => {
         };
         const missingKey = yield* service.decide(request);
         assert.isNull(missingKey.choice);
-        assert.include(missingKey.error ?? "", "OpenRouter key");
+        assert.include(missingKey.error ?? "", "selected Jev provider");
         yield* service.setKey("test-private-key");
         const invalid = yield* service.decide({ ...request, candidates: [] });
         assert.isNull(invalid.choice);

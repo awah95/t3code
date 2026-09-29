@@ -384,6 +384,32 @@ describe("composerContextRecords", () => {
     });
   });
 
+  it("keeps iframe provenance through record serialization and restoration", () => {
+    const framed = {
+      ...annotation,
+      elements: annotation.elements.map((target) => ({
+        ...target,
+        element: {
+          ...target.element,
+          pageUrl: "http://localhost:3000/canvas",
+          framePath: [
+            {
+              selector: "#builder-frame",
+              pageUrl: "http://localhost:3000/canvas",
+              title: "Canvas",
+            },
+          ],
+        },
+      })),
+    };
+    const record = previewAnnotationContextRecord(framed);
+    expect(record.elements?.[0]?.framePath).toEqual(framed.elements[0]?.element.framePath);
+    expect(() => decodeMessageContext({ version: 1, records: [record] })).not.toThrow();
+    expect(previewAnnotationFromRecord(record).elements[0]?.element.framePath).toEqual(
+      framed.elements[0]?.element.framePath,
+    );
+  });
+
   it("removes an expired terminal chip by its kind-scoped id, not the producer id", () => {
     const context = {
       id: "term-1",

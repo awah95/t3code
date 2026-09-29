@@ -835,6 +835,8 @@ export interface PickedElementPayload {
   pageUrl: string;
   /** Optional `<title>` of that page (best-effort). */
   pageTitle: string | null;
+  /** Outermost-to-innermost iframe chain locating this element's document. */
+  framePath?: ReadonlyArray<PickedElementFrame> | undefined;
   /** Lowercase tag name, e.g. `"button"`. */
   tagName: string;
   /** CSS selector resolving back to the element on a re-render. */
@@ -853,9 +855,24 @@ export interface PickedElementPayload {
   pickedAt: string;
 }
 
+export interface PickedElementFrame {
+  /** CSS selector of the iframe in its parent document. */
+  selector: string;
+  /** URL and title of the frame's own document when available. */
+  pageUrl?: string | undefined;
+  title?: string | undefined;
+}
+
+export const PickedElementFrameSchema: Schema.Codec<PickedElementFrame> = Schema.Struct({
+  selector: Schema.String.check(Schema.isMaxLength(2_048)),
+  pageUrl: Schema.optional(Schema.String.check(Schema.isMaxLength(2_048))),
+  title: Schema.optional(Schema.String.check(Schema.isMaxLength(2_048))),
+});
+
 export const PickedElementPayloadSchema: Schema.Codec<PickedElementPayload> = Schema.Struct({
   pageUrl: Schema.String,
   pageTitle: Schema.NullOr(Schema.String),
+  framePath: Schema.optional(Schema.Array(PickedElementFrameSchema).check(Schema.isMaxLength(8))),
   tagName: Schema.String,
   selector: Schema.NullOr(Schema.String),
   htmlPreview: Schema.String,
@@ -1126,6 +1143,11 @@ export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 export interface DesktopBridge {
   getJevStatus?: () => Promise<import("./jev.ts").JevStatus>;
   setJevApiKey?: (key: string | null) => Promise<void>;
+  setJevProvider?: (provider: import("./jev.ts").JevApiProvider) => Promise<void>;
+  setJevProviderKey?: (
+    provider: import("./jev.ts").JevApiProvider,
+    key: string | null,
+  ) => Promise<void>;
   decideJevRoute?: (
     request: import("./jev.ts").JevRouteRequest,
     receiptContext?: {

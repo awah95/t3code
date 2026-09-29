@@ -12,3 +12,6 @@ export const JEV_SUBAGENT_DECISION_CHANNEL = "desktop:jev:subagent-decision";
 export const CLEAR_JEV_SUBAGENT_POLICIES_CHANNEL = "desktop:jev:clear-subagent-policies";
 export const LIST_JEV_SUBAGENT_RECEIPTS_CHANNEL = "desktop:jev:list-subagent-receipts";
 export const ACK_JEV_SUBAGENT_RECEIPT_CHANNEL = "desktop:jev:ack-subagent-receipt";
+
+export const SET_JEV_PROVIDER_CHANNEL = "desktop:jev:provider";
+export const SET_JEV_PROVIDER_KEY_CHANNEL = "desktop:jev:provider-key";

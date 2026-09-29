@@ -6,7 +6,7 @@ and custom binaries or environment variables.
 
 ## Jev routing in this desktop fork
 
-Save an OpenRouter API key in **Settings > General > Jev Auto routing**, then open
+Choose OpenRouter or TypeSafe and save its API key in **Settings > General > Jev Auto routing**, then open
 **Jev** in a main chat header and choose **Guided** or **Automatic**. Each chat starts with Jev off and keeps its own mode when you switch chats or reload. Side chats have the same three choices beside their model and effort controls. Turning Jev on or off in one chat does not change
 another chat. Jev chooses a supported Codex model and reasoning effort in your
 selected provider instance; existing conversations stay in that instance. Selecting
@@ -33,7 +33,7 @@ Downloads include sanitized wire payloads, fingerprints and answering-model vers
 
 The log keeps the latest 50 calls plus active requests in memory; totals also include older calls. Estimated
 costs are separate from reported charges and exclude the coding model's own usage.
-OpenRouter receives the full current prompt, up to ten recent user/assistant exchanges,
+The selected Jev API provider receives the full current prompt, up to ten recent user/assistant exchanges,
 the original task, agreed plan, failure feedback, model profiles and available quota snapshots.
 Textual terminal excerpts, review comments and preview annotations attached to the message
 are included with source labels. Internal reasoning and attachment bodies are excluded.
@@ -70,8 +70,8 @@ cd apps/server && vp run build:bundle && cd ../..
 Put `~/.local/bin` on your `PATH` if needed. The launcher runs without the desktop
 app and keeps its state under `~/.t3-jev` by default. Set `T3JEV_HOME` to use
 another directory. It leaves the official `t3` command and its state alone.
-Install and sign in to the Codex CLI on this machine, and set `OPENROUTER_API_KEY`
-in the environment that runs `t3jev`. The desktop's saved Jev key is separate.
+Install and sign in to the Codex CLI on this machine, and set `OPENROUTER_API_KEY`, or set `JEV_API_PROVIDER=typesafe` and `TYPESAFE_API_KEY`
+in the environment that runs `t3jev`. The desktop's encrypted Jev keys are separate. TypeSafe requests use its `jev-latest` alias.
 
 Save a task file such as `task.json` (use an absolute workspace path and models
 available to your Codex account). Keep the same `requestId` when retrying the

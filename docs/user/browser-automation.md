@@ -3,7 +3,7 @@
 Jev can choose browser actions while your coding agent handles the task, supplies text, and
 checks the result. It uses the same signed-in preview browser as ordinary browser tools.
 
-In the desktop app, add an OpenRouter key under **Settings → General → Jev Auto routing**.
+In the desktop app, select OpenRouter or TypeSafe and add its key under **Settings → General → Jev Auto routing**.
 Then open **Browser** in the thread header and turn on **Jev browser**. This is separate from
 model routing and applies only to that environment and thread in the current client session.
 Turning it off cancels Jev work; the ordinary browser tools remain available.

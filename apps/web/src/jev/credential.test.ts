@@ -31,7 +31,7 @@ describe("Jev credential preflight", () => {
       desktopBridge: { getJevStatus: vi.fn().mockRejectedValue(new Error("IPC failed")) },
     });
     await expect(requireJevCredential()).rejects.toThrow(
-      "Could not verify Jev's OpenRouter credential",
+      "Could not verify Jev's selected API credential",
     );
   });
 });

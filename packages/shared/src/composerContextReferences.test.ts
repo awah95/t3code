@@ -147,6 +147,7 @@ describe("provider projection", () => {
         {
           pageUrl: "http://localhost:3000/checkout",
           pageTitle: null,
+          framePath: [{ selector: "#builder-frame", pageUrl: "http://localhost:3000/canvas" }],
           tagName: "button",
           selector: "#pay",
           htmlPreview: "<button>Pay</button>",
@@ -162,6 +163,9 @@ describe("provider projection", () => {
     });
     expect(projected).toContain("element 1:\n  url: http://localhost:3000/checkout");
     expect(projected).toContain("  selector: #pay");
+    expect(projected).toContain(
+      "iframe path (outermost first):\n  - #builder-frame | url: http://localhost:3000/canvas",
+    );
     expect(projected).toContain("  source: Pay.tsx:3");
     expect(projected).toContain("- font-size: 12px → 20px");
   });

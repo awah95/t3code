@@ -9,6 +9,7 @@ import type {
 } from "./jevAutomation.ts";
 
 export const JEV_AUTOMATION_MODEL = "typesafe/jev-1.13";
+export const TYPESAFE_JEV_AUTOMATION_MODEL = "jev-latest";
 export const JEV_SYSTEM_ONE_URL = "https://openrouter.ai/api/v1/systemone";
 export const JEV_AUTOMATION_REQUEST_BYTE_LIMIT = 128_000;
 export const JEV_AUTOMATION_RESPONSE_BYTE_LIMIT = 128_000;
@@ -224,13 +225,16 @@ export interface OpenRouterJevAutomationDecisionOptions {
   readonly apiKey: string;
   readonly transport?: typeof fetch;
   readonly endpoint?: string;
+  readonly provider?: "openrouter" | "typesafe";
 }
 
 export function createOpenRouterJevAutomationDecision(
   options: OpenRouterJevAutomationDecisionOptions,
 ): JevAutomationDecisionClient {
   const transport = options.transport ?? fetch;
-  const endpoint = options.endpoint ?? JEV_SYSTEM_ONE_URL;
+  const endpoint =
+    options.endpoint ??
+    (options.provider === "typesafe" ? "https://api.typesafe.ai/v1/systemone" : JEV_SYSTEM_ONE_URL);
   return {
     async decide(input) {
       if (input.signal.aborted)
@@ -239,7 +243,11 @@ export function createOpenRouterJevAutomationDecision(
           accounting: { inputTokens: null, outputTokens: null, costUsd: null },
         };
       const compiled = buildJevAutomationDecisionBody(input);
-      const payload = JSON.stringify(compiled.body);
+      const payload = JSON.stringify(
+        options.provider === "typesafe"
+          ? { ...compiled.body, model: TYPESAFE_JEV_AUTOMATION_MODEL }
+          : compiled.body,
+      );
       if (encoder.encode(payload).length > JEV_AUTOMATION_REQUEST_BYTE_LIMIT)
         return {
           decision: { outcome: "unavailable", reason: "The Jev request exceeded its byte limit." },
@@ -303,7 +311,11 @@ export function createOpenRouterJevAutomationDecision(
           accounting: { inputTokens: null, outputTokens: null, costUsd: null },
         };
       }
-      return parseJevAutomationDecision(raw, compiled.heads);
+      const parsed = parseJevAutomationDecision(raw, compiled.heads);
+      return {
+        ...parsed,
+        accounting: { ...parsed.accounting, provider: options.provider ?? "openrouter" },
+      };
     },
   };
 }

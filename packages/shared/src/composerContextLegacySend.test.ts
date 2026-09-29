@@ -48,6 +48,7 @@ const annotation = {
     {
       pageUrl: "https://example.com/checkout",
       pageTitle: "Checkout",
+      framePath: [{ selector: "#builder-frame", pageUrl: "https://example.com/canvas" }],
       tagName: "button",
       selector: "#submit-order",
       htmlPreview: '<button id="submit-order">Buy now</button>',
@@ -126,9 +127,10 @@ describe("serializeLegacyContextMessage", () => {
 
   it("retains picked-element details for preview annotations sent through an older server", () => {
     const text = `Update ${formatComposerContextReference(annotation)}`;
-    const upgraded = upgradeLegacyContextMessage(
-      serializeLegacyContextMessage({ text, records: [annotation] }),
-    );
+    const serialized = serializeLegacyContextMessage({ text, records: [annotation] });
+    expect(serialized).toContain("iframe path (outermost first):");
+    expect(serialized).toContain("#builder-frame | url: https://example.com/canvas");
+    const upgraded = upgradeLegacyContextMessage(serialized);
 
     expect(upgraded.records[0]).toMatchObject({
       kind: "preview-annotation",

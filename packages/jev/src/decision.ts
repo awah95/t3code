@@ -27,6 +27,8 @@ import {
 } from "@t3tools/shared/jevRouting";
 
 export const JEV_MODEL = "typesafe/jev-1.13";
+export type JevApiProvider = "openrouter" | "typesafe";
+export const TYPESAFE_JEV_MODEL = "jev-latest";
 export const JEV_INPUT_USD_PER_MILLION = 0.042;
 export const JEV_TIMEOUT_MS = 12_000;
 
@@ -55,7 +57,11 @@ export function failedJevDecision(error: string, latencyMs = 0): JevRouteResult 
 }
 
 // @effect-diagnostics-next-line globalDate:off -- Payload construction is a plain async transport boundary; tests supply the clock.
-export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now()) {
+export function buildJevDecisionBody(
+  request: JevRouteRequest,
+  now = Date.now(),
+  provider: JevApiProvider = "openrouter",
+) {
   const baseline41 = request.evaluationPolicy === "baseline-v4.1";
   const sanitizedContext = (baseline41 ? baselineV41.sanitizeJevContext : sanitizeJevContext)(
     request.context,
@@ -69,7 +75,7 @@ export function buildJevDecisionBody(request: JevRouteRequest, now = Date.now())
   const budgetFresh =
     Number.isFinite(budgetTime) && now >= budgetTime && now - budgetTime <= 300_000;
   const body = {
-    model: JEV_MODEL,
+    model: provider === "typesafe" ? TYPESAFE_JEV_MODEL : JEV_MODEL,
     state: {
       task: sanitizeJevText(request.prompt),
       ...context,
@@ -219,6 +225,7 @@ async function performJevDecision(
   signal: AbortSignal,
   transport: typeof fetch,
   bodyForSend: ReturnType<typeof buildJevDecisionBody>,
+  provider: JevApiProvider,
 ): Promise<JevRouteResult> {
   const started = performance.now();
   try {
@@ -251,12 +258,17 @@ async function performJevDecision(
       return failedJevDecision(
         "Routing context exceeds the request limit. No task text was silently truncated; using the selected model.",
       );
-    const response = await transport("https://openrouter.ai/api/alpha/decisions", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      signal,
-      body: payload,
-    });
+    const response = await transport(
+      provider === "typesafe"
+        ? "https://api.typesafe.ai/v1/systemone"
+        : "https://openrouter.ai/api/alpha/decisions",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        signal,
+        body: payload,
+      },
+    );
     if (!response.ok)
       return failedJevDecision(
         `Jev request failed (HTTP ${response.status}); using the selected model.`,
@@ -330,11 +342,12 @@ export async function requestJevDecision(
   key: string,
   signal: AbortSignal,
   transport: typeof fetch = fetch,
+  provider: JevApiProvider = "openrouter",
 ): Promise<JevRouteResult> {
-  const body = buildJevDecisionBody(request);
+  const body = buildJevDecisionBody(request, undefined, provider);
   const payload = JSON.stringify(body);
   const size = measureJevDecisionBody(body);
-  const result = await performJevDecision(request, key, signal, transport, body);
+  const result = await performJevDecision(request, key, signal, transport, body, provider);
   const metadata = {
     policyVersion: jevEvaluationPolicyVersion(request),
     requestFingerprint: NodeCrypto.createHash("sha256").update(payload).digest("hex"),

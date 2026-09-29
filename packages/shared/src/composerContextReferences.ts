@@ -169,6 +169,14 @@ function formatSourceLocation(source: {
 function formatElementDetails(element: ElementContextDetails): string[] {
   const lines = [`url: ${element.pageUrl}`, `tag: ${element.tagName}`];
   if (element.pageTitle) lines.push(`title: ${element.pageTitle}`);
+  if (element.framePath?.length) {
+    lines.push("iframe path (outermost first):");
+    for (const frame of element.framePath) {
+      lines.push(
+        `- ${frame.selector}${frame.pageUrl ? ` | url: ${frame.pageUrl}` : ""}${frame.title ? ` | title: ${frame.title}` : ""}`,
+      );
+    }
+  }
   if (element.selector) lines.push(`selector: ${element.selector}`);
   if (element.componentName) lines.push(`component: ${element.componentName}`);
   const location = element.source ? formatSourceLocation(element.source) : null;

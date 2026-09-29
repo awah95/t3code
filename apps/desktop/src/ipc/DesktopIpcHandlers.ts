@@ -1,7 +1,14 @@
 import * as Effect from "effect/Effect";
 
 import * as DesktopIpc from "./DesktopIpc.ts";
-import { getJevStatus, setJevApiKey, decideJevRoute, cancelJevRoute } from "./methods/jev.ts";
+import {
+  getJevStatus,
+  setJevApiKey,
+  setJevProvider,
+  setJevProviderKey,
+  decideJevRoute,
+  cancelJevRoute,
+} from "./methods/jev.ts";
 import {
   cancelJevBrowser,
   decideJevBrowser,
@@ -92,6 +99,8 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* ipc.handle(getJevStatus);
   yield* ipc.handle(setJevApiKey);
+  yield* ipc.handle(setJevProvider);
+  yield* ipc.handle(setJevProviderKey);
   yield* ipc.handle(decideJevRoute);
   yield* ipc.handle(cancelJevRoute);
   yield* ipc.handle(observeJevBrowser);

@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
+export const JevApiProvider = Schema.Literals(["openrouter", "typesafe"]);
+export type JevApiProvider = typeof JevApiProvider.Type;
+
 export const JevStatus = Schema.Struct({
+  provider: Schema.optional(JevApiProvider),
+  keys: Schema.optional(Schema.Struct({ openrouter: Schema.Boolean, typesafe: Schema.Boolean })),
   hasKey: Schema.Boolean,
   secureStorageAvailable: Schema.Boolean,
 });

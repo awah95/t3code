@@ -117,4 +117,19 @@ describe("normalizeElementContextSelection", () => {
       columnNumber: null,
     });
   });
+
+  it("preserves a bounded iframe path and the element document URL", () => {
+    const result = normalizeElementContextSelection(
+      makePayload({
+        pageUrl: "https://example.com/canvas",
+        framePath: [
+          { selector: " #canvas ", pageUrl: " https://example.com/canvas ", title: " Canvas " },
+        ],
+      }),
+    );
+    expect(result?.pageUrl).toBe("https://example.com/canvas");
+    expect(result?.framePath).toEqual([
+      { selector: "#canvas", pageUrl: "https://example.com/canvas", title: "Canvas" },
+    ]);
+  });
 });

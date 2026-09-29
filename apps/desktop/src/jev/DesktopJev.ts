@@ -1,4 +1,9 @@
-import type { JevRouteRequest, JevRouteResult, JevStatus } from "@t3tools/contracts";
+import type {
+  JevRouteRequest,
+  JevRouteResult,
+  JevStatus,
+  JevApiProvider,
+} from "@t3tools/contracts";
 import { isValidJevRouteRequest } from "@t3tools/jev/requestValidation";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -13,6 +18,11 @@ export class DesktopJev extends Context.Service<
   DesktopJev,
   {
     readonly status: Effect.Effect<JevStatus>;
+    readonly setProvider: (provider: JevApiProvider) => Effect.Effect<void, JevCredentialError>;
+    readonly setProviderKey: (
+      provider: JevApiProvider,
+      key: string | null,
+    ) => Effect.Effect<void, JevCredentialError>;
     readonly setKey: (key: string | null) => Effect.Effect<void, JevCredentialError>;
     readonly decide: (request: JevRouteRequest) => Effect.Effect<JevRouteResult>;
     readonly cancel: (id: string) => Effect.Effect<void>;
@@ -27,6 +37,8 @@ export const layer = Layer.effect(
 
     return DesktopJev.of({
       status: credential.status,
+      setProvider: (provider) => credential.setProvider(provider),
+      setProviderKey: (provider, key) => credential.setProviderKey(provider, key),
       setKey: (key) =>
         Effect.gen(function* () {
           if (key === null) {
@@ -47,7 +59,7 @@ export const layer = Layer.effect(
             return failedJevDecision("Jev is busy; using the selected model.");
           const controller = new AbortController();
           pending.set(request.requestId, controller);
-          const result = yield* credential.useKey((key, credentialSignal) =>
+          const result = yield* credential.useKey((key, credentialSignal, provider) =>
             Effect.tryPromise(async () => {
               try {
                 return await requestJevDecision(
@@ -58,6 +70,8 @@ export const layer = Layer.effect(
                     credentialSignal,
                     AbortSignal.timeout(JEV_TIMEOUT_MS),
                   ]),
+                  fetch,
+                  provider,
                 );
               } finally {
                 pending.delete(request.requestId);
@@ -73,7 +87,7 @@ export const layer = Layer.effect(
             return failedJevDecision(
               controller.signal.aborted
                 ? "Jev routing cancelled."
-                : "Add an OpenRouter key in Settings to use Jev Auto. Using the selected model.",
+                : "Add a key for the selected Jev provider in Settings to use Jev Auto. Using the selected model.",
             );
           }
           return result.value;

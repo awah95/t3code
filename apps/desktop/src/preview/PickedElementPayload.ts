@@ -31,6 +31,20 @@ function isPickedStackFrame(value: unknown): boolean {
   );
 }
 
+function isElementFrame(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const frame = value as Record<string, unknown>;
+  return (
+    typeof frame["selector"] === "string" &&
+    frame["selector"].trim().length > 0 &&
+    frame["selector"].length <= 2_048 &&
+    (frame["pageUrl"] === undefined ||
+      (typeof frame["pageUrl"] === "string" && frame["pageUrl"].length <= 2_048)) &&
+    (frame["title"] === undefined ||
+      (typeof frame["title"] === "string" && frame["title"].length <= 2_048))
+  );
+}
+
 export function isPickedElementPayload(value: unknown): value is PickedElementPayload {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -40,6 +54,13 @@ export function isPickedElementPayload(value: unknown): value is PickedElementPa
   if (typeof c["styles"] !== "string") return false;
   if (typeof c["pickedAt"] !== "string") return false;
   if (!isStringOrNull(c["pageTitle"])) return false;
+  if (
+    c["framePath"] !== undefined &&
+    (!Array.isArray(c["framePath"]) ||
+      c["framePath"].length > 8 ||
+      !c["framePath"].every(isElementFrame))
+  )
+    return false;
   if (!isStringOrNull(c["selector"])) return false;
   if (!isStringOrNull(c["componentName"])) return false;
   if (c["source"] !== null && !isPickedStackFrame(c["source"])) return false;

@@ -1,4 +1,4 @@
-import { JevRouteRequest, JevRouteResult, JevStatus } from "@t3tools/contracts";
+import { JevRouteRequest, JevRouteResult, JevStatus, JevApiProvider } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { DesktopJev } from "../../jev/DesktopJev.ts";
@@ -17,6 +17,19 @@ export const setJevApiKey = DesktopIpc.makeIpcMethod({
   payload: Schema.NullOr(Schema.String),
   result: Schema.Void,
   handler: (key) => Effect.flatMap(DesktopJev, (jev) => jev.setKey(key)),
+});
+export const setJevProvider = DesktopIpc.makeIpcMethod({
+  channel: JevChannels.SET_JEV_PROVIDER_CHANNEL,
+  payload: JevApiProvider,
+  result: Schema.Void,
+  handler: (provider) => Effect.flatMap(DesktopJev, (jev) => jev.setProvider(provider)),
+});
+export const setJevProviderKey = DesktopIpc.makeIpcMethod({
+  channel: JevChannels.SET_JEV_PROVIDER_KEY_CHANNEL,
+  payload: Schema.Struct({ provider: JevApiProvider, key: Schema.NullOr(Schema.String) }),
+  result: Schema.Void,
+  handler: ({ provider, key }) =>
+    Effect.flatMap(DesktopJev, (jev) => jev.setProviderKey(provider, key)),
 });
 export const decideJevRoute = DesktopIpc.makeIpcMethod({
   channel: JevChannels.DECIDE_JEV_ROUTE_CHANNEL,
