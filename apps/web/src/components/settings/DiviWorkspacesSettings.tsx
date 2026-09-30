@@ -31,6 +31,7 @@ import {
 import { shellEnvironment } from "../../state/shell";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { isLocalDiviEnvironment, watcherLabel } from "../chat/diviWorkspaceView";
+import { CheckoutSiteControls } from "./CheckoutSiteControls";
 import { OpenInPicker } from "../chat/OpenInPicker";
 import { Button } from "../ui/button";
 import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
@@ -152,6 +153,7 @@ export function DiviWorkspacesSettings() {
   const [inspectionErrors, setInspectionErrors] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [checkoutSiteVersion, setCheckoutSiteVersion] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [cardBusy, setCardBusy] = useState<
     Record<string, "refresh" | "measure" | "control" | "destroy">
@@ -410,7 +412,11 @@ export function DiviWorkspacesSettings() {
       }
     }
     try {
-      await newThread(scopeProjectRef(environmentId, projectId));
+      await newThread(scopeProjectRef(environmentId, projectId), {
+        envMode: "local",
+        worktreePath: null,
+        branch: null,
+      });
     } catch (cause) {
       setError(`${mainId}: ${cause instanceof Error ? cause.message : String(cause)}`);
     } finally {
@@ -553,6 +559,35 @@ export function DiviWorkspacesSettings() {
       );
       failures.push(...batch.flat());
     }
+    const mainIds = [
+      ...(originalStatus === "ready" ? ["original"] : []),
+      ...mainCheckouts.map((main) => main.id),
+    ];
+    for (let index = 0; index < mainIds.length; index += 2) {
+      setStopAllProgress(
+        `Stopping ${Math.min(index + 2, mainIds.length)} of ${mainIds.length} checkout sites`,
+      );
+      const batch = await Promise.all(
+        mainIds.slice(index, index + 2).map(async (mainId) => {
+          // Stop directly so the server queues this behind any pending start.
+          // Unprepared sites return a harmless not-prepared receipt.
+          const response = await runRpc({
+            environmentId,
+            input: { operation: "main-site-stop", mainId },
+          });
+          if (response._tag === "Failure") return `${mainId}: ${errorText(response)}`;
+          const website = response.value.runtimeStatus?.website;
+          if (
+            response.value.status !== "not-prepared" &&
+            (!website || website.state === "running" || website.state === "error")
+          )
+            return `${mainId}: website stop could not be confirmed`;
+          return null;
+        }),
+      );
+      failures.push(...batch.filter((problem): problem is string => problem !== null));
+    }
+    setCheckoutSiteVersion((version) => version + 1);
     setStopAllProgress(null);
     setBusyId(null);
     if (failures.length) setError(failures.join(" · "));
@@ -606,7 +641,10 @@ export function DiviWorkspacesSettings() {
                 size="sm"
                 variant="outline"
                 disabled={
-                  busyId !== null || Object.keys(cardBusy).length > 0 || loading || ids.length === 0
+                  busyId !== null ||
+                  Object.keys(cardBusy).length > 0 ||
+                  loading ||
+                  (ids.length === 0 && mainCheckouts.length === 0 && originalStatus !== "ready")
                 }
                 onClick={() => void stopAll()}
               >
@@ -679,6 +717,14 @@ export function DiviWorkspacesSettings() {
                   </div>
                 ))}
               </div>
+            )}
+            {local && environmentId && originalStatus === "ready" && (
+              <CheckoutSiteControls
+                environmentId={environmentId}
+                mainId="original"
+                disabled={busyId !== null}
+                refreshVersion={checkoutSiteVersion}
+              />
             )}
             {originalStatus === "unavailable" && (
               <p className="mt-2 text-xs text-muted-foreground">
@@ -771,6 +817,15 @@ export function DiviWorkspacesSettings() {
                     </div>
                   )}
                 </div>
+                {local && environmentId && (
+                  <CheckoutSiteControls
+                    environmentId={environmentId}
+                    mainId={main.id}
+                    canStart={main.status === "ready"}
+                    disabled={busyId !== null}
+                    refreshVersion={checkoutSiteVersion}
+                  />
+                )}
                 {mainIssues.length > 0 && (
                   <div className="mt-2 space-y-1 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
                     {mainIssues.map((issue) => (

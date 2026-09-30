@@ -43,6 +43,7 @@ const readOnly = new Set([
   "list",
   "identify",
   "main-info",
+  "main-site-status",
   "validate",
   "status",
   "inspect",
@@ -131,7 +132,16 @@ function argumentsFor(input: DiviWorkspaceRunInput): string[] {
   if (input.operation === "create" && !input.workspaceId) {
     throw new Error("create requires a workspace ID.");
   }
-  if (["main-create", "main-repair"].includes(input.operation) && !input.mainId) {
+  if (
+    [
+      "main-create",
+      "main-repair",
+      "main-site-status",
+      "main-site-start",
+      "main-site-stop",
+    ].includes(input.operation) &&
+    !input.mainId
+  ) {
     throw new Error(`${input.operation} requires a main checkout ID.`);
   }
   if (input.workspaceId && !/^[a-z][a-z0-9_-]{0,62}$/.test(input.workspaceId)) {
@@ -304,7 +314,9 @@ export const runDiviWorkspace = Effect.fn("DiviWorkspace.run")(function* (
               ? `${input.workspaceId}:site`
               : input.workspaceId && input.operation.startsWith("watcher-") && input.profileId
                 ? `${input.workspaceId}:watcher:${input.profileId}`
-                : (input.workspaceId ?? input.manifestPath ?? "list"),
+                : input.mainId
+                  ? `main:${input.mainId}`
+                  : (input.workspaceId ?? input.manifestPath ?? "list"),
             execute,
           );
     },

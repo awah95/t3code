@@ -52,6 +52,18 @@ it.effect("forwards only typed helper operations and their selected arguments", 
         argv: ["status", "--workspace-id", "pilot-b"],
       },
       {
+        input: { operation: "main-site-start", mainId: "module-a" } as const,
+        argv: ["main-site-start", "--main-id", "module-a"],
+      },
+      {
+        input: { operation: "main-site-stop", mainId: "original" } as const,
+        argv: ["main-site-stop", "--main-id", "original"],
+      },
+      {
+        input: { operation: "main-site-status", mainId: "module-a" } as const,
+        argv: ["main-site-status", "--main-id", "module-a"],
+      },
+      {
         input: { operation: "main-info" } as const,
         argv: ["main-info"],
       },

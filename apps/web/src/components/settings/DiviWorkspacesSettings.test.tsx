@@ -108,3 +108,167 @@ it("enables destruction after stopping a site without a manual refresh", async (
   expect(button("Destroy replica").props.disabled).toBe(false);
   expect(button("Start").props.disabled).toBe(false);
 });
+
+it("keeps a running checkout stoppable after dependency setup becomes stale", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("window", { location: { hostname: "localhost" } });
+  let setupReady = true;
+  let running = true;
+  mocks.runRpc.mockImplementation(
+    async ({ input }: { input: { operation: string; mainId?: string } }) => {
+      if (input.operation === "main-site-stop") running = false;
+      return {
+        _tag: "Success",
+        value: {
+          schemaVersion: 1,
+          helperVersion: "test",
+          operation: input.operation,
+          status: "ready",
+          ...(input.operation === "main-info"
+            ? {
+                originalRepositories: [],
+                mainCheckouts: [
+                  {
+                    id: "module-a",
+                    status: setupReady ? "ready" : "unavailable",
+                    issues: setupReady ? [] : ["prepared dependency input changed"],
+                  },
+                ],
+              }
+            : {}),
+          ...(input.operation === "list" ? { workspaces: [], operations: [] } : {}),
+          ...(input.operation.startsWith("main-site-")
+            ? {
+                status:
+                  input.mainId === "original" ? "not-prepared" : running ? "ready" : "stopped",
+                ...(input.mainId === "module-a"
+                  ? {
+                      runtimeStatus: {
+                        website: {
+                          state: running ? "running" : "stopped",
+                          health: "healthy",
+                          containerName: "module-a",
+                          port: 8080,
+                        },
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
+        },
+      };
+    },
+  );
+  await act(async () => {
+    renderer = create(<DiviWorkspacesSettings />);
+  });
+  const checkoutButton = (label: string) =>
+    renderer!.root
+      .findByProps({ mainId: "module-a" })
+      .findAllByType("button")
+      .find((node) => node.children.includes(label))!;
+  expect(checkoutButton("Stop site").props.disabled).toBe(false);
+  setupReady = false;
+  await act(async () => {
+    renderer!.root
+      .findAllByType("button")
+      .find((node) => node.children.includes("Refresh"))!
+      .props.onClick();
+  });
+  expect(checkoutButton("Start site").props.disabled).toBe(true);
+  expect(checkoutButton("Refresh site").props.disabled).toBe(false);
+  expect(checkoutButton("Stop site").props.disabled).toBe(false);
+  await act(async () => {
+    checkoutButton("Stop site").props.onClick();
+  });
+  expect(checkoutButton("Stop site").props.disabled).toBe(true);
+  expect(checkoutButton("Start site").props.disabled).toBe(true);
+});
+
+it.each([{ replicas: [] }, { replicas: ["replica-a"] }])(
+  "stops checkout sites with replica list %j and refreshes their controls",
+  async ({ replicas }) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { location: { hostname: "localhost" } });
+    let checkoutRunning = true;
+    let replicaRunning = true;
+    let completeStop: (() => void) | undefined;
+    const success = (operation: string, value: object) => ({
+      _tag: "Success",
+      value: { schemaVersion: 1, helperVersion: "test", operation, ...value },
+    });
+    const website = (running: boolean) => ({
+      state: running ? "running" : "stopped",
+      health: "healthy",
+      containerName: "test",
+      port: 8080,
+    });
+    mocks.runRpc.mockImplementation(
+      async ({ input }: { input: { operation: string; mainId?: string } }) => {
+        const operation = input.operation;
+        if (operation === "main-info")
+          return success(operation, {
+            status: "ready",
+            originalRepositories: [],
+            mainCheckouts: [{ id: "module-a", status: "ready" }],
+          });
+        if (operation === "list")
+          return success(operation, { status: "ready", workspaces: replicas, operations: [] });
+        if (operation.startsWith("main-site-")) {
+          if (input.mainId === "original") return success(operation, { status: "not-prepared" });
+          if (operation === "main-site-stop")
+            return new Promise((resolve) => {
+              completeStop = () => {
+                checkoutRunning = false;
+                resolve(
+                  success(operation, {
+                    status: "stopped",
+                    runtimeStatus: { website: website(false) },
+                  }),
+                );
+              };
+            });
+          return success(operation, {
+            status: checkoutRunning ? "ready" : "stopped",
+            runtimeStatus: { website: website(checkoutRunning) },
+          });
+        }
+        if (operation === "stop") replicaRunning = false;
+        return success(operation, {
+          status: "ready",
+          changed: false,
+          watcherDetails: {},
+          runtimeStatus: { website: website(replicaRunning) },
+        });
+      },
+    );
+    await act(async () => {
+      renderer = create(<DiviWorkspacesSettings />);
+    });
+    const stopAll = () =>
+      renderer!.root.findAllByType("button").find((node) => node.children.includes("Stop all"))!;
+    const checkoutButton = (label: string) =>
+      renderer!.root
+        .findByProps({ mainId: "module-a" })
+        .findAllByType("button")
+        .find((node) => node.children.includes(label))!;
+    expect(stopAll().props.disabled).toBe(false);
+    expect(checkoutButton("Stop site").props.disabled).toBe(false);
+    await act(async () => {
+      stopAll().props.onClick();
+    });
+    expect(checkoutButton("Start site").props.disabled).toBe(true);
+    expect(checkoutButton("Stop site").props.disabled).toBe(true);
+    expect(completeStop).toBeDefined();
+    await act(async () => {
+      completeStop!();
+    });
+    expect(checkoutButton("Start site").props.disabled).toBe(false);
+    expect(checkoutButton("Stop site").props.disabled).toBe(true);
+    expect(checkoutRunning).toBe(false);
+    if (replicas.length) expect(replicaRunning).toBe(false);
+    expect(stopAll().props.disabled).toBe(false);
+  },
+);
