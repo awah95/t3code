@@ -3137,3 +3137,225 @@ usageLimitLayer("CodexAdapterLive usage limits", (it) => {
     }),
   );
 });
+
+it.effect("managed runtime rotation restarts app-server and resumes the same native thread", () => {
+  const runtimes: FakeCodexRuntime[] = [];
+  let revision = "first";
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        resolveRuntime: Effect.sync(() => ({
+          config: decodeCodexSettings({
+            binaryPath: "/t3/tools/codex/0.155.1/bin/codex",
+            homePath: "/t3/caches/codex/home",
+            launchArgs: "-c 'model_provider=managed'",
+          }),
+          environment: { ACCESS_TOKEN: `dummy-${revision}` },
+          revision,
+        })),
+        makeRuntime: (options) => {
+          const runtime = new FakeCodexRuntime(options);
+          runtime.startImpl.mockImplementation(() =>
+            Promise.resolve({
+              provider: ProviderDriverKind.make("codex"),
+              threadId: options.threadId,
+              runtimeMode: options.runtimeMode,
+              cwd: options.cwd,
+              status: "ready",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              resumeCursor: { threadId: "native-managed-thread" },
+            }),
+          );
+          runtimes.push(runtime);
+          return Effect.succeed(runtime);
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("managed-token-rotation");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+    yield* adapter.sendTurn({ threadId, input: "first" });
+    NodeAssert.equal(runtimes.length, 1);
+    revision = "rotated";
+    yield* adapter.sendTurn({ threadId, input: "second" });
+    NodeAssert.equal(runtimes.length, 2);
+    NodeAssert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+    NodeAssert.deepEqual(runtimes[1]?.options.resumeCursor, { threadId: "native-managed-thread" });
+    NodeAssert.equal(runtimes[1]?.options.environment?.ACCESS_TOKEN, "dummy-rotated");
+    NodeAssert.equal(runtimes[1]?.options.binaryPath, "/t3/tools/codex/0.155.1/bin/codex");
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("managed rotation reloads Jev hooks once and evaluates the refreshed runtime", () => {
+  const runtimes: FakeCodexRuntime[] = [];
+  let revision = "first";
+  let oldHookChecks = 0;
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        resolveRuntime: Effect.sync(() => ({
+          config: decodeCodexSettings({
+            binaryPath: "/t3/tools/codex/0.155.1/bin/codex",
+            homePath: "/t3/caches/codex/home",
+            launchArgs: "-c 'model_provider=managed'",
+          }),
+          environment: { ACCESS_TOKEN: `dummy-${revision}` },
+          revision,
+        })),
+        makeRuntime: (options) => {
+          const runtime = new FakeCodexRuntime(options);
+          runtime.startImpl.mockImplementation(() =>
+            Promise.resolve({
+              provider: ProviderDriverKind.make("codex"),
+              threadId: options.threadId,
+              runtimeMode: options.runtimeMode,
+              cwd: options.cwd,
+              status: "ready",
+              createdAt: "2026-01-01T00:00:00Z",
+              updatedAt: "2026-01-01T00:00:00Z",
+              resumeCursor: { threadId: "native-managed-thread" },
+            }),
+          );
+          runtime.prepareJevRestart = Effect.succeed(false);
+          runtimes.push(runtime);
+          return Effect.succeed(runtime);
+        },
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    const threadId = asThreadId("managed-token-rotation");
+    yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+    yield* adapter.sendTurn({ threadId, input: "first" });
+    NodeAssert.equal(runtimes.length, 1);
+    runtimes[0]!.prepareJevRestart = Effect.sync(() => {
+      oldHookChecks++;
+      return true;
+    });
+    revision = "rotated";
+    yield* adapter.sendTurn({ threadId, input: "second" });
+    NodeAssert.equal(runtimes.length, 2);
+    NodeAssert.equal(oldHookChecks, 0);
+    NodeAssert.equal(runtimes[1]?.sendTurnImpl.mock.calls.length, 1);
+    NodeAssert.equal(runtimes[0]?.closeImpl.mock.calls.length, 1);
+    NodeAssert.deepEqual(runtimes[1]?.options.resumeCursor, { threadId: "native-managed-thread" });
+    NodeAssert.equal(runtimes[1]?.options.environment?.ACCESS_TOKEN, "dummy-rotated");
+    NodeAssert.equal(runtimes[1]?.options.binaryPath, "/t3/tools/codex/0.155.1/bin/codex");
+  }).pipe(Effect.provide(layer));
+});
+
+for (const customHooks of [false, true]) {
+  it.effect(
+    `managed Jev preparation uses effective environment and respects custom hooks (${customHooks})`,
+    () =>
+      Effect.gen(function* () {
+        const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "managed-jev-hooks-"));
+        const factory = makeRuntimeFactory();
+        const adapterLayer = Layer.effect(
+          CodexAdapter,
+          makeCodexAdapter(decodeCodexSettings({}), {
+            environment: {},
+            resolveRuntime: Effect.succeed({
+              config: decodeCodexSettings({ launchArgs: customHooks ? "-c 'hooks=[]'" : "" }),
+              environment: {
+                T3CODE_JEV_BROKER_URL: "http://127.0.0.1:12345/subagent-route",
+                T3CODE_JEV_BROKER_TOKEN: "test-token",
+              },
+              revision: "test",
+            }),
+            makeRuntime: factory.factory,
+          }),
+        ).pipe(
+          Layer.provideMerge(ServerConfig.layerTest(directory, directory)),
+          Layer.provideMerge(ServerSettingsService.layerTest()),
+          Layer.provideMerge(providerSessionDirectoryTestLayer),
+          Layer.provideMerge(NodeServices.layer),
+        );
+        try {
+          yield* Effect.gen(function* () {
+            const adapter = yield* CodexAdapter;
+            yield* adapter.startSession({
+              threadId: asThreadId("managed-jev-hooks"),
+              runtimeMode: "full-access",
+            });
+            const runtime = factory.lastRuntime;
+            NodeAssert.ok(runtime);
+            NodeAssert.equal(Boolean(runtime.options.jevHookCommand), !customHooks);
+            NodeAssert.equal(runtime.options.environment?.T3CODE_JEV_BROKER_TOKEN, "test-token");
+            if (!customHooks)
+              NodeAssert.ok(NodeFS.existsSync(NodePath.join(directory, "userdata", "jev")));
+          }).pipe(Effect.provide(adapterLayer));
+        } finally {
+          NodeFS.rmSync(directory, { recursive: true, force: true });
+        }
+      }),
+  );
+}
+
+it.effect("managed turn failures preserve the sharing-limit code for client notices", () => {
+  const factory = makeRuntimeFactory();
+  const layer = Layer.effect(
+    CodexAdapter,
+    Effect.gen(function* () {
+      return yield* makeCodexAdapter(decodeCodexSettings({}), {
+        makeRuntime: factory.factory,
+        resolveRuntime: Effect.succeed({
+          config: decodeCodexSettings({}),
+          environment: {},
+          revision: "managed",
+        }),
+      });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
+  return Effect.gen(function* () {
+    const adapter = yield* CodexAdapter;
+    yield* adapter.startSession({ threadId: asThreadId("thread-1"), runtimeMode: "full-access" });
+    const eventsFiber = yield* adapter.streamEvents.pipe(
+      Stream.take(2),
+      Stream.runCollect,
+      Effect.forkChild,
+    );
+    const notification = codexUsageLimitTurnFailed("managed-sharing-limit");
+    yield* factory.lastRuntime!.emit({
+      ...notification,
+      payload: {
+        threadId: "thread-1",
+        turn: {
+          id: "turn-limit",
+          items: [],
+          status: "failed",
+          error: { message: "subscription_sharing_usage_limit_exceeded", codexErrorInfo: "other" },
+        },
+      },
+    });
+    const events = Array.from(yield* Fiber.join(eventsFiber));
+    NodeAssert.equal(events[0]?.type, "runtime.error");
+    if (events[0]?.type === "runtime.error") {
+      NodeAssert.equal(events[0].payload.code, "subscription_sharing_usage_limit_exceeded");
+      NodeAssert.match(events[0].payload.message, /ChatGPT usage limit/);
+    }
+    NodeAssert.equal(events[1]?.type, "turn.completed");
+    if (events[1]?.type === "turn.completed") NodeAssert.equal(events[1].payload.state, "failed");
+  }).pipe(Effect.provide(layer));
+});

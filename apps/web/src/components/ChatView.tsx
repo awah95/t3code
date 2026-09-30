@@ -1,5 +1,6 @@
 import { JevComposerReview, JevPanel } from "../jev/JevControls";
 import { useDiviWorkspaceControls } from "../hooks/useDiviWorkspaceControls";
+import { isChatGptUsageLimitError } from "@t3tools/shared/usageLimits";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -10594,6 +10595,7 @@ export default function ChatView(props: ChatViewProps) {
               />
               <ThreadErrorBanner
                 error={visibleThreadError}
+                chatGptUsageLimit={isChatGptUsageLimitError(threadActivities, visibleThreadError)}
                 onDismiss={() => {
                   setThreadError(activeThread.id, null);
                   dismissThreadErrorBannerForSession(threadErrorBannerKey);

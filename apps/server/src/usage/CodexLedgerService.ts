@@ -28,6 +28,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
@@ -54,7 +55,7 @@ import {
   type CodexLedgerFileCursor,
 } from "./codexLedgerReader.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { expandHomePath } from "../pathExpansion.ts";
+import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "../provider/ProviderInstanceEnvironment.ts";
 
 type LedgerEffect<A> = Effect.Effect<A, CodexLedgerError>;
@@ -2783,29 +2784,36 @@ export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const settingsService = yield* ServerSettings.ServerSettingsService;
     const resolveHomes = settingsService.getSettings.pipe(
-      Effect.map((settings) => {
-        const homes = new Set<string>();
-        const instances: {
-          config?: unknown;
-          environment?: Parameters<typeof mergeProviderInstanceEnvironment>[0];
-        }[] = Object.values(settings.providerInstances)
-          .filter((instance) => instance.driver === "codex")
-          .map((instance) => ({ config: instance.config, environment: instance.environment }));
-        if (!Object.hasOwn(settings.providerInstances, "codex")) {
-          instances.push({ config: settings.providers.codex });
-        }
-        for (const instance of instances) {
-          const decoded = decodeCodexSettings(instance.config ?? {});
-          if (Option.isNone(decoded)) continue;
-          const environment = mergeProviderInstanceEnvironment(instance.environment);
-          const home =
-            decoded.value.homePath.trim() ||
-            environment.CODEX_HOME?.trim() ||
-            NodePath.join(NodeOS.homedir(), ".codex");
-          homes.add(NodePath.resolve(expandHomePath(home)));
-        }
-        return [...homes];
-      }),
+      Effect.flatMap((settings) =>
+        Effect.gen(function* () {
+          const homes = new Set<string>();
+          const instances = Object.values(settings.providerInstances)
+            .filter((instance) => instance.driver === "codex")
+            .map((instance) => ({ config: instance.config, environment: instance.environment }));
+          if (!Object.hasOwn(settings.providerInstances, "codex")) {
+            instances.push({ config: settings.providers.codex, environment: undefined });
+          }
+          for (const instance of instances) {
+            const decoded = decodeCodexSettings(instance.config ?? {});
+            if (Option.isNone(decoded)) continue;
+            const config = decoded.value;
+            const environmentHome = mergeProviderInstanceEnvironment(
+              instance.environment,
+            ).CODEX_HOME?.trim();
+            const layout = yield* resolveCodexHomeLayout(
+              config.setupMode !== "managed" &&
+                !config.homePath.trim() &&
+                !config.shadowHomePath.trim() &&
+                environmentHome
+                ? { ...config, homePath: environmentHome }
+                : config,
+            );
+            homes.add(layout.sharedHomePath);
+          }
+          return [...homes];
+        }),
+      ),
+      Effect.provide(Path.layer),
       Effect.mapError(err),
     );
     return Layer.effect(CodexLedgerService, make(resolveHomes));
