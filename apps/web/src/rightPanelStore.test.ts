@@ -21,6 +21,17 @@ beforeEach(() => {
 });
 
 describe("rightPanelStore", () => {
+  it("keeps one Divi Workspace tab per thread and updates its bound replica", () => {
+    const store = useRightPanelStore.getState();
+    store.openDiviWorkspace(refA, "replica-one");
+    store.openDiviWorkspace(refA, "replica-two");
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces,
+    ).toEqual([{ id: "divi-workspace", kind: "divi-workspace", workspaceId: "replica-two" }]);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refB).surfaces,
+    ).toEqual([]);
+  });
   it("keeps independent side-chat tabs scoped to their main thread", () => {
     const store = useRightPanelStore.getState();
     store.openSideChat(refA, "side-1", "First question");

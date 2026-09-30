@@ -57,7 +57,7 @@ describe("Codex Standard API scenario pricing", () => {
       estimateKind: "standard_api_scenario",
       longContextApplied: false,
     });
-    expect(priced.rateSnapshotId).toBe("openai-standard-scenario-2026-09-22-v2");
+    expect(priced.rateSnapshotId).toBe("openai-standard-scenario-2026-09-30-v3");
   });
 
   it("uses each response's model and measured cache after a switch", () => {
@@ -75,6 +75,8 @@ describe("Codex Standard API scenario pricing", () => {
   it("prices new Sol and Luna responses while keeping legacy rates", () => {
     const sol = priceCodexResponse(response("gpt-6-sol", usage(100, 40, 10, 20), "new-sol"));
     const luna = priceCodexResponse(response("gpt-6-luna", usage(100, 40, 10, 20), "new-luna"));
+    const sol61 = priceCodexResponse(response("gpt-6.1-sol", usage(100, 40, 10, 20), "sol61"));
+    expect(sol61.totalUsd).toBe("0.000329");
     expect(sol.totalUsd).toBe("0.000333");
     expect(luna.totalUsd).toBe("0.00001665");
     expect(CODEX_STANDARD_RATE_SNAPSHOT.models["gpt-5.6-terra"]).toBeDefined();

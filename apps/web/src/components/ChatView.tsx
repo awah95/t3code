@@ -1,4 +1,5 @@
 import { JevComposerReview, JevPanel } from "../jev/JevControls";
+import { useDiviWorkspaceControls } from "../hooks/useDiviWorkspaceControls";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import type { UsageLimitSourceSnapshots } from "@t3tools/contracts";
@@ -208,6 +209,12 @@ import {
 import { previewRuntimeTabId } from "../browser/previewRuntimeTabId";
 import { BrowserSettingsReadError } from "../browser/openFileInPreview";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
+import { openPreviewSession } from "./preview/openPreviewSession";
+import { resolveDiscoveredServerUrl } from "../browser/browserTargetResolver";
+import { diviWorkspaceRun } from "../state/diviWorkspace";
+import { DiviWorkspacePanel } from "./chat/DiviWorkspacePanel";
+import { OpenInPicker } from "./chat/OpenInPicker";
+import type { DiviWorkspaceOperation, DiviWorkspaceRunResult } from "@t3tools/contracts";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { ThreadPreviewMiniPlayer } from "./preview/ThreadPreviewMiniPlayer";
 import { subscribePreviewAction } from "./preview/previewActionBus";
@@ -1595,6 +1602,7 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: false });
+  const runDiviWorkspace = useAtomCommand(diviWorkspaceRun, { reportFailure: false });
   const closePreview = useAtomCommand(previewEnvironment.close, "preview close");
   const { environments } = useEnvironments();
   const primaryEnvironment = usePrimaryEnvironment();
@@ -2207,6 +2215,186 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread?.environmentId, activeThread?.projectId],
   );
   const activeProject = useProject(activeProjectRef);
+  const diviProjectPath = activeProject?.workspaceRoot ?? null;
+  const diviIdentityKey = diviProjectPath ? `${environmentId}:${diviProjectPath}` : null;
+  const [diviIdentity, setDiviIdentity] = useState<{ key: string; workspaceId: string } | null>(
+    null,
+  );
+  const [diviWorkspace, setDiviWorkspace] = useState<DiviWorkspaceRunResult | null>(null);
+  const [diviLoading, setDiviLoading] = useState(false);
+  const [diviError, setDiviError] = useState<string | null>(null);
+  const { busyResources: diviBusyResources, runResource: runDiviResource } =
+    useDiviWorkspaceControls(diviIdentityKey);
+  const [diviLogs, setDiviLogs] = useState<Record<string, string>>({});
+  const [diviLoadingLogId, setDiviLoadingLogId] = useState<string | null>(null);
+  const diviCurrentKey = useRef(diviIdentityKey);
+  const diviStatusGeneration = useRef(0);
+  diviCurrentKey.current = diviIdentityKey;
+  useEffect(() => {
+    diviStatusGeneration.current += 1;
+    setDiviIdentity(null);
+    setDiviWorkspace(null);
+    setDiviError(null);
+    setDiviLogs({});
+    setDiviLoading(false);
+    setDiviLoadingLogId(null);
+    if (!diviProjectPath || !diviIdentityKey) return;
+    let current = true;
+    void runDiviWorkspace({
+      environmentId,
+      input: { operation: "identify", projectPath: diviProjectPath },
+    }).then((response) => {
+      if (!current || diviCurrentKey.current !== diviIdentityKey) return;
+      if (response._tag === "Success" && response.value.available && response.value.workspaceId) {
+        setDiviIdentity({ key: diviIdentityKey, workspaceId: response.value.workspaceId });
+      }
+    });
+    return () => {
+      current = false;
+    };
+  }, [diviIdentityKey, diviProjectPath, environmentId, runDiviWorkspace]);
+  const identifiedDiviWorkspaceId =
+    diviIdentity?.key === diviIdentityKey ? diviIdentity.workspaceId : null;
+  const refreshDiviWorkspace = useCallback(async () => {
+    if (!diviProjectPath || !diviIdentityKey || !identifiedDiviWorkspaceId) return;
+    const generation = ++diviStatusGeneration.current;
+    setDiviLoading(true);
+    const response = await runDiviWorkspace({
+      environmentId,
+      input: {
+        operation: "status",
+        workspaceId: identifiedDiviWorkspaceId,
+        projectPath: diviProjectPath,
+      },
+    });
+    if (diviCurrentKey.current !== diviIdentityKey || generation !== diviStatusGeneration.current)
+      return;
+    setDiviLoading(false);
+    if (response._tag === "Success" && response.value.workspaceId === identifiedDiviWorkspaceId) {
+      setDiviWorkspace(response.value);
+      setDiviError(null);
+    } else {
+      setDiviWorkspace(null);
+      setDiviError(
+        response._tag === "Failure"
+          ? String(squashAtomCommandFailure(response))
+          : "This replica is no longer available for this project.",
+      );
+    }
+  }, [
+    diviProjectPath,
+    diviIdentityKey,
+    identifiedDiviWorkspaceId,
+    environmentId,
+    runDiviWorkspace,
+  ]);
+  useEffect(() => {
+    if (
+      rightPanelOpen &&
+      activeRightPanelSurface?.kind === "divi-workspace" &&
+      identifiedDiviWorkspaceId === activeRightPanelSurface.workspaceId
+    ) {
+      void refreshDiviWorkspace();
+    }
+  }, [rightPanelOpen, activeRightPanelSurface, identifiedDiviWorkspaceId, refreshDiviWorkspace]);
+  const runDiviControl = useCallback(
+    async (operation: DiviWorkspaceOperation, profileId?: string) => {
+      if (!diviProjectPath || !diviIdentityKey || !identifiedDiviWorkspaceId) return;
+      const resource = profileId ? `watcher-${profileId}` : "site";
+      await runDiviResource(resource, async (isCurrent) => {
+        setDiviError(null);
+        const identity = await runDiviWorkspace({
+          environmentId,
+          input: { operation: "identify", projectPath: diviProjectPath },
+        });
+        if (!isCurrent()) return;
+        if (
+          identity._tag !== "Success" ||
+          !identity.value.available ||
+          identity.value.workspaceId !== identifiedDiviWorkspaceId
+        ) {
+          setDiviWorkspace(null);
+          setDiviError(
+            "This project is no longer linked to this replica. Refresh the thread before retrying.",
+          );
+          return;
+        }
+        const response = await runDiviWorkspace({
+          environmentId,
+          input: {
+            operation,
+            workspaceId: identifiedDiviWorkspaceId,
+            projectPath: diviProjectPath,
+            ...(profileId ? { profileId } : {}),
+          },
+        });
+        if (!isCurrent()) return;
+        const actionError =
+          response._tag === "Failure" ? String(squashAtomCommandFailure(response)) : null;
+        await refreshDiviWorkspace();
+        if (actionError && isCurrent()) setDiviError(actionError);
+      });
+    },
+    [
+      diviProjectPath,
+      diviIdentityKey,
+      identifiedDiviWorkspaceId,
+      environmentId,
+      runDiviWorkspace,
+      refreshDiviWorkspace,
+      runDiviResource,
+    ],
+  );
+  const requestDiviLog = useCallback(
+    async (profileId: string) => {
+      if (!diviProjectPath || !diviIdentityKey || !identifiedDiviWorkspaceId) return;
+      setDiviLoadingLogId(profileId);
+      const response = await runDiviWorkspace({
+        environmentId,
+        input: {
+          operation: "watcher-log",
+          workspaceId: identifiedDiviWorkspaceId,
+          projectPath: diviProjectPath,
+          profileId,
+        },
+      });
+      if (diviCurrentKey.current !== diviIdentityKey) return;
+      setDiviLoadingLogId(null);
+      if (response._tag === "Success" && response.value.watcherLog?.profileId === profileId) {
+        setDiviLogs((current) => ({
+          ...current,
+          [profileId]: response.value.watcherLog?.logTail ?? "",
+        }));
+      } else if (response._tag === "Failure")
+        setDiviError(String(squashAtomCommandFailure(response)));
+    },
+    [diviProjectPath, diviIdentityKey, identifiedDiviWorkspaceId, environmentId, runDiviWorkspace],
+  );
+  const refreshDiviTab = useCallback(async () => {
+    if (!diviProjectPath || !diviIdentityKey) return;
+    const identity = await runDiviWorkspace({
+      environmentId,
+      input: { operation: "identify", projectPath: diviProjectPath },
+    });
+    if (diviCurrentKey.current !== diviIdentityKey) return;
+    if (identity._tag !== "Success" || !identity.value.available || !identity.value.workspaceId) {
+      setDiviError("This project is no longer linked to a Divi replica.");
+      return;
+    }
+    setDiviIdentity({ key: diviIdentityKey, workspaceId: identity.value.workspaceId });
+    if (identity.value.workspaceId === identifiedDiviWorkspaceId) void refreshDiviWorkspace();
+    else
+      setDiviError(
+        "This tab belongs to a different replica. Close it and open Divi Workspace again.",
+      );
+  }, [
+    diviProjectPath,
+    diviIdentityKey,
+    identifiedDiviWorkspaceId,
+    environmentId,
+    runDiviWorkspace,
+    refreshDiviWorkspace,
+  ]);
   // Environment settings with the active project's overrides applied.
   const activeProjectSettings = useMemo(
     () => resolveProjectSettings(settings, activeProject?.id ?? null, activeProject ?? undefined),
@@ -4684,6 +4872,55 @@ export default function ChatView(props: ChatViewProps) {
       });
     },
     [activeThreadRef, openPreview],
+  );
+  const addDiviWorkspaceSurface = useCallback(() => {
+    if (activeThreadRef && identifiedDiviWorkspaceId) {
+      useRightPanelStore.getState().openDiviWorkspace(activeThreadRef, identifiedDiviWorkspaceId);
+    }
+  }, [activeThreadRef, identifiedDiviWorkspaceId]);
+  const reachableDiviSiteUrl = useCallback(
+    (url: string): string | null => {
+      const resolvedUrl = resolveDiscoveredServerUrl(environmentId, url);
+      const resolvedHost = new URL(resolvedUrl).hostname;
+      if (!/^(localhost|127\.0\.0\.1|::1|\[::1\])$/.test(resolvedHost)) return resolvedUrl;
+      const connection = readPreparedConnection(environmentId);
+      const environmentHost = connection ? new URL(connection.httpBaseUrl).hostname : null;
+      if (
+        environmentHost &&
+        /^(localhost|127\.0\.0\.1|::1|\[::1\])$/.test(environmentHost) &&
+        (isElectron || /^(localhost|127\.0\.0\.1|::1|\[::1\])$/.test(window.location.hostname))
+      )
+        return resolvedUrl;
+      setDiviError(
+        "This replica's local site address is unavailable from the connected environment.",
+      );
+      return null;
+    },
+    [environmentId],
+  );
+  const openDiviSiteInApp = useCallback(
+    (url: string) => {
+      if (!activeThreadRef || !isPreviewSupportedInRuntime()) return;
+      const resolvedUrl = reachableDiviSiteUrl(url);
+      if (!resolvedUrl) return;
+      void openPreviewSession({ openPreview, threadRef: activeThreadRef, url: resolvedUrl }).then(
+        (result) => {
+          if (result._tag === "Success")
+            useRightPanelStore.getState().openBrowser(activeThreadRef, result.value.tabId);
+          else if (!isAtomCommandInterrupted(result))
+            setDiviError(String(squashAtomCommandFailure(result)));
+        },
+      );
+    },
+    [activeThreadRef, openPreview, reachableDiviSiteUrl],
+  );
+  const openDiviSiteExternal = useCallback(
+    (url: string) => {
+      const resolvedUrl = reachableDiviSiteUrl(url);
+      if (!resolvedUrl) return;
+      window.open(resolvedUrl, "_blank", "noopener,noreferrer");
+    },
+    [reachableDiviSiteUrl],
   );
   const addDiffSurface = useCallback(() => {
     if (!activeThreadRef || !isServerThread || !isGitRepo) return;
@@ -10030,7 +10267,50 @@ export default function ChatView(props: ChatViewProps) {
     </div>
   );
   const rightPanelContent = activeThreadRef ? (
-    renderedRightPanelSurface?.kind === "preview" ? (
+    renderedRightPanelSurface?.kind === "divi-workspace" ? (
+      <DiviWorkspacePanel
+        workspaceId={renderedRightPanelSurface.workspaceId}
+        workspace={
+          identifiedDiviWorkspaceId === renderedRightPanelSurface.workspaceId ? diviWorkspace : null
+        }
+        loading={diviLoading}
+        busy={false}
+        busyResources={diviBusyResources}
+        error={
+          identifiedDiviWorkspaceId === renderedRightPanelSurface.workspaceId
+            ? diviError
+            : "This tab no longer matches the current project's Divi replica."
+        }
+        onRefresh={() => {
+          void refreshDiviTab();
+        }}
+        onOperation={(operation, profileId) => {
+          void runDiviControl(operation, profileId);
+        }}
+        onRestartWebsite={() => {
+          void runDiviControl("restart");
+        }}
+        onLogRequest={(profileId) => {
+          void requestDiviLog(profileId);
+        }}
+        logs={diviLogs}
+        loadingLogId={diviLoadingLogId}
+        onOpenInApp={openDiviSiteInApp}
+        onOpenExternal={openDiviSiteExternal}
+        renderEditor={(taskPath) =>
+          availableEditors.length > 0 ? (
+            <OpenInPicker
+              environmentId={environmentId}
+              keybindings={keybindings}
+              availableEditors={availableEditors}
+              openInCwd={taskPath}
+              compact
+              enableShortcut={false}
+            />
+          ) : null
+        }
+      />
+    ) : renderedRightPanelSurface?.kind === "preview" ? (
       <Suspense fallback={null}>
         <PreviewPanel
           mode="embedded"
@@ -10827,6 +11107,7 @@ export default function ChatView(props: ChatViewProps) {
               }
             : {})}
           onAddDevice={addDeviceSurface}
+          onAddDiviWorkspace={addDiviWorkspaceSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeProject !== null}
           diffAvailable={isServerThread && isGitRepo}
@@ -10835,6 +11116,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           agentsAvailable
           deviceAvailable={activeThreadRef !== null}
+          diviWorkspaceAvailable={identifiedDiviWorkspaceId !== null}
           liveAgentCount={agentPanelModel.liveCount}
         >
           {rightPanelContent}
@@ -10891,6 +11173,7 @@ export default function ChatView(props: ChatViewProps) {
                 }
               : {})}
             onAddDevice={addDeviceSurface}
+            onAddDiviWorkspace={addDiviWorkspaceSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeProject !== null}
             diffAvailable={isServerThread && isGitRepo}
@@ -10899,6 +11182,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             agentsAvailable
             deviceAvailable={activeThreadRef !== null}
+            diviWorkspaceAvailable={identifiedDiviWorkspaceId !== null}
             liveAgentCount={agentPanelModel.liveCount}
           >
             {rightPanelContent}

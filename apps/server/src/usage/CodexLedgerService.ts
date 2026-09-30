@@ -624,11 +624,15 @@ const make = (resolveHomes: Effect.Effect<readonly string[], CodexLedgerError>) 
         }
       });
 
-    if ((yield* activeSnapshotId) === PREVIOUS_STANDARD_RATE_SNAPSHOT_ID) {
+    const previousActiveSnapshotId = yield* activeSnapshotId;
+    if (
+      previousActiveSnapshotId === PREVIOUS_STANDARD_RATE_SNAPSHOT_ID ||
+      previousActiveSnapshotId === "openai-standard-scenario-2026-09-22-v2"
+    ) {
       yield* revalueSnapshot(CODEX_STANDARD_RATE_SNAPSHOT);
       yield* sql`UPDATE codex_ledger_settings
         SET active_snapshot_id=${CODEX_STANDARD_RATE_SNAPSHOT.id},updated_at=${now()}
-        WHERE id=1 AND active_snapshot_id=${PREVIOUS_STANDARD_RATE_SNAPSHOT_ID}`;
+        WHERE id=1 AND active_snapshot_id=${previousActiveSnapshotId}`;
     }
 
     const ingestEvent = (event: CodexLedgerEvent, sourceDomain: string) =>

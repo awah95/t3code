@@ -72,12 +72,15 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
+import { openDiviWorkspacePanel } from "../diviWorkspacePanelBus";
+import { isElectron } from "../env";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { useClientSettings } from "../hooks/useSettings";
 import { useTheme } from "../hooks/useTheme";
+import { isLocalDiviEnvironment } from "./chat/diviWorkspaceView";
 import { useCustomThemes } from "../hooks/useCustomThemes";
 import { useEnvironmentThemeDefinitions } from "../hooks/useEnvironmentTheme";
 import { BUILT_IN_THEMES } from "@t3tools/shared/themePalettes";
@@ -1520,6 +1523,29 @@ function OpenCommandPaletteDialog(props: {
           },
         },
       ];
+      const target = environments.find((entry) => entry.environmentId === environmentId)?.entry
+        .target;
+      if (
+        isLocalDiviEnvironment(
+          window.location.hostname,
+          isElectron,
+          target?._tag,
+          target?._tag === "PrimaryConnectionTarget" ? target.httpBaseUrl : undefined,
+        )
+      ) {
+        sourceItems.push({
+          kind: "action",
+          value: "action:add-project:" + environmentId + ":divi-workspace",
+          searchTerms: ["divi", "wordpress", "workspace", "website", "builder"],
+          title: "Divi workspace",
+          description: "Prepare separate code and a website for a Divi task",
+          icon: <FolderPlusIcon className={ITEM_ICON_CLASS} />,
+          run: async () => {
+            setOpen(false);
+            openDiviWorkspacePanel({ environmentId });
+          },
+        });
+      }
 
       const orderedSources: ReadonlyArray<AddProjectRemoteSource> = [
         "url",
@@ -1591,7 +1617,7 @@ function OpenCommandPaletteDialog(props: {
 
       return [{ value: `sources:${environmentId}`, label: "Sources", items: sourceItems }];
     },
-    [openSourceControlSettings, startAddProjectBrowse, startAddProjectClone],
+    [environments, openSourceControlSettings, setOpen, startAddProjectBrowse, startAddProjectClone],
   );
 
   const startAddProjectSourceSelection = useCallback(

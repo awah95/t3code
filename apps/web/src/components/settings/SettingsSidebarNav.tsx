@@ -15,6 +15,7 @@ import {
   BotIcon,
   createLucideIcon,
   GitBranchIcon,
+  FolderKanbanIcon,
   HardDriveIcon,
   PanelsTopLeftIcon,
   KeyboardIcon,
@@ -85,6 +86,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/integrations": BlocksIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/storage": HardDriveIcon,
+  "/settings/divi-workspaces": FolderKanbanIcon,
   "/settings/connections": Link2Icon,
   "/settings/archived": ArchiveIcon,
 };

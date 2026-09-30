@@ -1,6 +1,6 @@
 import type { JevCandidate, JevEffort, JevRoutingContext } from "@t3tools/contracts";
 
-export const JEV_POLICY_VERSION = "2026-09-22.gpt-6.v5.4";
+export const JEV_POLICY_VERSION = "2026-09-30.gpt-6.1.v5.5";
 export const JEV_MAX_REQUEST_CHARS = 240_000;
 export const JEV_HISTORY_CHAR_BUDGET = 100_000;
 export const JEV_EFFORTS: readonly JevEffort[] = ["low", "medium", "high", "xhigh"];
@@ -41,6 +41,22 @@ export const JEV_MODEL_PROFILES = [
     inputUsdPerMillion: 2,
     outputUsdPerMillion: 10,
     source: "https://developers.openai.com/api/docs/models/gpt-6-sol",
+  },
+  {
+    model: "gpt-6.1-sol",
+    capabilityRank: 3,
+    summary: "Near-Astra performance for complex coding, computer use and professional work.",
+    goodFor: [
+      "Cross-component debugging",
+      "Frontend/PHP/generated-metadata consistency",
+      "Demanding code review and multi-file implementation",
+    ],
+    avoidFor: [
+      "Routine mechanical work already fully specified when a smaller model is sufficient",
+    ],
+    inputUsdPerMillion: 2,
+    outputUsdPerMillion: 10,
+    source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
   },
   {
     model: "gpt-6-astra",

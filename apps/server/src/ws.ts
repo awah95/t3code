@@ -91,6 +91,7 @@ import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
+import { runDiviWorkspace } from "./diviWorkspace/Helper.ts";
 import {
   projectActivityEvent,
   projectThreadDetailSnapshot,
@@ -3333,6 +3334,10 @@ const makeWsRpcLayer = (
           ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
+            "rpc.aggregate": "workspace",
+          }),
+        [WS_METHODS.diviWorkspaceRun]: (input) =>
+          observeRpcEffect(WS_METHODS.diviWorkspaceRun, runDiviWorkspace(input), {
             "rpc.aggregate": "workspace",
           }),
         [WS_METHODS.filesystemBrowse]: (input) =>

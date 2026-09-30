@@ -23,6 +23,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  FolderKanban,
   Plus,
   TerminalSquare,
   Volume2,
@@ -124,6 +125,7 @@ interface RightPanelTabsProps {
   onAddPullRequests: () => void;
   onAddAgents: () => void;
   onAddDevice: () => void;
+  onAddDiviWorkspace?: () => void;
   onAddSideChat?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -133,6 +135,7 @@ interface RightPanelTabsProps {
   pullRequestsAvailable: boolean;
   agentsAvailable: boolean;
   deviceAvailable: boolean;
+  diviWorkspaceAvailable?: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   /** Running + waiting subagents; badges the Agents card in the empty state. */
   liveAgentCount: number;
@@ -328,6 +331,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequests: () => void;
   onAddAgents: () => void;
   onAddDevice: () => void;
+  onAddDiviWorkspace?: () => void;
   onAddSideChat?: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
@@ -337,6 +341,7 @@ function RightPanelEmptyState(props: {
   pullRequestsAvailable: boolean;
   agentsAvailable: boolean;
   deviceAvailable: boolean;
+  diviWorkspaceAvailable: boolean;
   liveAgentCount: number;
 }) {
   // -1 means no highlight: it only appears on hover or arrow use.
@@ -416,6 +421,20 @@ function RightPanelEmptyState(props: {
       onClick: props.onAddSideChat ?? (() => undefined),
       badgeCount: 0,
     },
+    ...(props.diviWorkspaceAvailable && props.onAddDiviWorkspace
+      ? [
+          {
+            label: "Divi Workspace",
+            description: "Manage this replica and its watchers.",
+            icon: FolderKanban,
+            shortcut: "W",
+            available: true,
+            disabledReason: "",
+            onClick: props.onAddDiviWorkspace,
+            badgeCount: 0,
+          },
+        ]
+      : []),
     {
       label: "Device",
       description: "Watch an iOS Simulator or Android Emulator.",
@@ -643,6 +662,8 @@ function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "divi-workspace":
+      return "Divi Workspace";
     case "side-chat":
       return surface.title || "Side chat";
     case "device":
@@ -730,6 +751,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "divi-workspace":
+      return <FolderKanban className="size-3 shrink-0" />;
     case "side-chat":
       return <MessageSquareText className="size-3 shrink-0" />;
     case "device":
@@ -950,6 +973,18 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: "",
       onClick: props.onAddSideChat ?? (() => undefined),
     },
+    ...(props.diviWorkspaceAvailable && props.onAddDiviWorkspace
+      ? [
+          {
+            label: "Divi Workspace",
+            icon: FolderKanban,
+            shortcut: "W",
+            available: true,
+            disabledReason: "",
+            onClick: props.onAddDiviWorkspace,
+          },
+        ]
+      : []),
     {
       label: "Device",
       icon: Smartphone,
@@ -1441,6 +1476,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequests={props.onAddPullRequests}
             onAddAgents={props.onAddAgents}
             onAddDevice={props.onAddDevice}
+            {...(props.onAddDiviWorkspace ? { onAddDiviWorkspace: props.onAddDiviWorkspace } : {})}
             {...(props.onAddSideChat ? { onAddSideChat: props.onAddSideChat } : {})}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
@@ -1450,6 +1486,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestsAvailable={props.pullRequestsAvailable}
             agentsAvailable={props.agentsAvailable}
             deviceAvailable={props.deviceAvailable}
+            diviWorkspaceAvailable={props.diviWorkspaceAvailable ?? false}
             liveAgentCount={props.liveAgentCount}
           />
         ) : (

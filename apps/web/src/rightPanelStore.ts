@@ -30,6 +30,7 @@ const RIGHT_PANEL_KINDS = [
   "pull-requests",
   "agents",
   "side-chat",
+  "divi-workspace",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -87,6 +88,7 @@ export type RightPanelSurface =
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
   | { id: "pull-requests"; kind: "pull-requests" }
   | { id: "agents"; kind: "agents" }
+  | { id: "divi-workspace"; kind: "divi-workspace"; workspaceId: string }
   | { id: `side-chat:${string}`; kind: "side-chat"; threadId: string; title: string };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
@@ -131,9 +133,13 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "side-chat" | "divi-workspace"
+    >,
   ) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
+  openDiviWorkspace: (ref: ScopedThreadRef, workspaceId: string) => void;
   openSideChat: (ref: ScopedThreadRef, threadId: string, title: string) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -171,7 +177,10 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "side-chat">,
+    kind: Exclude<
+      RightPanelKind,
+      "file" | "terminal" | "pull-request" | "side-chat" | "divi-workspace"
+    >,
   ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -183,7 +192,10 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "side-chat">,
+  kind: Exclude<
+    RightPanelKind,
+    "file" | "preview" | "terminal" | "pull-request" | "side-chat" | "divi-workspace"
+  >,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -517,6 +529,16 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               return upsertSurface(current, existing ?? browserSurface(null));
             }
             return upsertSurface(current, singletonSurface(kind));
+          }),
+        ),
+      openDiviWorkspace: (ref, workspaceId) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => {
+            const surface = { id: "divi-workspace", kind: "divi-workspace", workspaceId } as const;
+            return upsertSurface(
+              { ...current, surfaces: current.surfaces.filter((entry) => entry.id !== surface.id) },
+              surface,
+            );
           }),
         ),
       openDevice: (ref, target, automatic = false) =>

@@ -22,8 +22,8 @@ export interface CodexRateSnapshot {
 
 /** Historical scenario, not a served-tier receipt, invoice, or subscription debit. */
 export const CODEX_STANDARD_RATE_SNAPSHOT: CodexRateSnapshot = Object.freeze({
-  id: "openai-standard-scenario-2026-09-22-v2",
-  retrievedOn: "2026-09-22",
+  id: "openai-standard-scenario-2026-09-30-v3",
+  retrievedOn: "2026-09-30",
   currency: "USD",
   serviceTierAssumption: "standard",
   valuationBasis:
@@ -105,6 +105,17 @@ export const CODEX_STANDARD_RATE_SNAPSHOT: CodexRateSnapshot = Object.freeze({
       longContextScope: "request",
       longContextThresholdInputTokens: 272000,
       source: "https://developers.openai.com/api/docs/models/gpt-6-sol",
+    }),
+    "gpt-6.1-sol": Object.freeze({
+      ordinaryInput: "2",
+      cachedInput: "0.1",
+      cacheWriteInput: "2.5",
+      output: "10",
+      longContextInputMultiplier: "2",
+      longContextOutputMultiplier: "1.5",
+      longContextScope: "request",
+      longContextThresholdInputTokens: 272000,
+      source: "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
     }),
   }),
 });

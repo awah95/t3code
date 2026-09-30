@@ -51,6 +51,7 @@ import {
 import { cn } from "~/lib/utils";
 import { JevControls } from "../../jev/JevControls";
 import { JevBrowserControl } from "../../jevBrowser";
+import { DiviWorkspaceTrigger } from "./DiviWorkspaceTrigger";
 import { useThreadDetail } from "../../state/entities";
 import { isElectron } from "../../env";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -521,6 +522,13 @@ export const ChatHeader = memo(function ChatHeader({
           "[[data-panel-animations=true]_&]:motion-safe:transition-[padding-right] [[data-panel-animations=true]_&]:motion-safe:duration-(--panel-animation-duration) [[data-panel-animations=true]_&]:motion-safe:ease-out",
         )}
       >
+        {activeThreadEnvironmentId === primaryEnvironmentId && (
+          <DiviWorkspaceTrigger
+            environmentId={activeThreadEnvironmentId}
+            threadId={activeThreadId}
+            projectCwd={activeProject?.workspaceRoot}
+          />
+        )}
         <Menu open={actionsCollapsed && actionsOpen} onOpenChange={setActionsOpen}>
           <MenuTrigger
             className={

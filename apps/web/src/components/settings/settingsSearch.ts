@@ -21,6 +21,7 @@ export type SettingsPath =
   | "/settings/integrations"
   | "/settings/source-control"
   | "/settings/storage"
+  | "/settings/divi-workspaces"
   | "/settings/connections"
   | "/settings/archived";
 
@@ -92,6 +93,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/integrations": "Integrations",
   "/settings/source-control": "Source Control",
   "/settings/storage": "Storage",
+  "/settings/divi-workspaces": "Divi Workspaces",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
 };
@@ -129,6 +131,12 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "divi-workspaces",
+    title: "Divi workspaces",
+    to: "/settings/divi-workspaces",
+    searchTerms: ["Divi replica copies inspect disk changes destroy delete workspace"],
+  },
   {
     id: "storage-worktrees",
     title: "Worktree cleanup",
@@ -858,6 +866,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/integrations": null,
   "/settings/source-control": "environment-defaults",
   "/settings/storage": "project-defaults",
+  "/settings/divi-workspaces": null,
   "/settings/connections": "connections",
   "/settings/archived": "project-defaults",
 };

@@ -16,6 +16,11 @@ import {
 
 import { ExternalLauncherError, LaunchEditorInput } from "./editor.ts";
 import {
+  DiviWorkspaceError,
+  DiviWorkspaceRunInput,
+  DiviWorkspaceRunResult,
+} from "./diviWorkspace.ts";
+import {
   AuthAccessStreamError,
   AuthAccessStreamEvent,
   EnvironmentAuthorizationError,
@@ -313,6 +318,7 @@ export const WS_METHODS = {
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
+  diviWorkspaceRun: "diviWorkspace.run",
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
@@ -1097,6 +1103,12 @@ const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
 });
 
+const WsDiviWorkspaceRunRpc = Rpc.make(WS_METHODS.diviWorkspaceRun, {
+  payload: DiviWorkspaceRunInput,
+  success: DiviWorkspaceRunResult,
+  error: Schema.Union([DiviWorkspaceError, EnvironmentAuthorizationError]),
+});
+
 const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   payload: FilesystemBrowseInput,
   success: FilesystemBrowseResult,
@@ -1628,6 +1640,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
+  WsDiviWorkspaceRunRpc,
   WsFilesystemBrowseRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
