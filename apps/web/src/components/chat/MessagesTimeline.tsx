@@ -292,6 +292,7 @@ interface TimelineRowSharedState {
   toolCallsByTurn: ReadonlyMap<TurnId, ToolCallReportGroup[]>;
   turnIdsWithUsageFold: ReadonlySet<TurnId>;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
+  renderAssistantMessageActions: ((message: ChatMessage) => ReactNode) | undefined;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
   onRunShellCommand: ((command: string) => void) | undefined;
   onImageExpand: (preview: ExpandedImagePreview) => void;
@@ -446,6 +447,7 @@ interface MessagesTimelineProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   supportsConversationRollback: boolean;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
+  renderAssistantMessageActions?: ((message: ChatMessage) => ReactNode) | undefined;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onRunShellCommand?: (command: string) => void;
   isRevertingCheckpoint: boolean;
@@ -520,6 +522,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onOpenTurnDiff,
   supportsConversationRollback,
   onRevertToTurnCount,
+  renderAssistantMessageActions,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onRunShellCommand,
   isRevertingCheckpoint,
@@ -1185,6 +1188,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       toolCallsByTurn,
       turnIdsWithUsageFold,
       onRevertToTurnCount,
+      renderAssistantMessageActions,
       onUseArtifactTemplate,
       onRunShellCommand,
       onImageExpand,
@@ -1224,6 +1228,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       toolCallsByTurn,
       turnIdsWithUsageFold,
       onRevertToTurnCount,
+      renderAssistantMessageActions,
       onUseArtifactTemplate,
       onRunShellCommand,
       onImageExpand,
@@ -2547,7 +2552,7 @@ function AssistantMessageMeta({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
+        "flex flex-wrap items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
         alwaysVisible
           ? "opacity-100"
           : "opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100",
@@ -2559,6 +2564,7 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      {ctx.renderAssistantMessageActions?.(message)}
       {!message.streaming && (
         <Tooltip>
           <TooltipTrigger render={<p className="text-muted-foreground text-xs tabular-nums" />}>

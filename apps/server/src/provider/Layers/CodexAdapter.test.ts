@@ -7,6 +7,7 @@ import {
   ApprovalRequestId,
   CodexSettings,
   EventId,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderItemId,
@@ -47,6 +48,7 @@ import {
   type CodexThreadSnapshot,
 } from "./CodexSessionRuntime.ts";
 import { makeCodexAdapter } from "./CodexAdapter.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* CodexAdapter`.
@@ -272,6 +274,48 @@ validationLayer("CodexAdapterLive validation", (it) => {
         }),
       );
       NodeAssert.equal(validationRuntimeFactory.factory.mock.calls.length, 0);
+    }),
+  );
+  it.effect("injects only the side chat MCP credential when the parent also has tools", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const parentThreadId = asThreadId("mcp-parent");
+      const threadId = asThreadId("mcp-child");
+      const makeConfig = (id: ThreadId, bearer: string) => ({
+        environmentId: EnvironmentId.make("mcp-environment"),
+        threadId: id,
+        providerSessionId: `mcp-session-${id}`,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        endpoint: "http://127.0.0.1:4321/mcp",
+        authorizationHeader: `Bearer ${bearer}`,
+        capabilities: new Set(["preview", "pull-requests"]),
+      });
+      McpProviderSession.setMcpProviderSession(makeConfig(parentThreadId, "parent-token"));
+      McpProviderSession.setMcpProviderSession(makeConfig(threadId, "child-token"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          McpProviderSession.clearMcpProviderSession(parentThreadId);
+          McpProviderSession.clearMcpProviderSession(threadId);
+        }),
+      );
+      yield* adapter.startSession({
+        threadId,
+        parentThreadId,
+        runtimeMode: "full-access",
+        resumeCursor: { threadId: "native-child" },
+      });
+      const options = validationRuntimeFactory.lastRuntime?.options;
+      NodeAssert.equal(options?.threadId, threadId);
+      NodeAssert.equal(options?.sideChat, true);
+      NodeAssert.equal(options?.environment?.T3_MCP_BEARER_TOKEN, "child-token");
+      NodeAssert.deepStrictEqual(options?.mcpCapabilities, new Set(["preview", "pull-requests"]));
+      NodeAssert.deepStrictEqual(options?.appServerArgs, [
+        "-c",
+        "mcp_servers.t3-code.url=http://127.0.0.1:4321/mcp",
+        "-c",
+        'mcp_servers.t3-code.bearer_token_env_var="T3_MCP_BEARER_TOKEN"',
+      ]);
+      yield* adapter.stopSession(threadId);
     }),
   );
   it.effect("maps codex model options before starting a session", () =>

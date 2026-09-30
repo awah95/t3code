@@ -1881,3 +1881,62 @@ it.effect("keeps a host that responds with an operation timeout", () =>
     }),
   ),
 );
+
+it.effect("routes simultaneous main and side chat calls to their own visible panels", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const childScope = {
+        ...scope,
+        threadId: ThreadId.make("side-chat"),
+        providerSessionId: "side-chat-session",
+      };
+      const connections = new Map<string, string>();
+      const routed: Array<{ clientId: string; threadId: ThreadId }> = [];
+      for (const clientId of ["main-host", "side-host"]) {
+        const requests = requestsFrom(
+          yield* broker.connect(makeHost({ clientId })),
+          (connectionId) => connections.set(clientId, connectionId),
+        );
+        yield* Stream.runForEach(requests, (request) => {
+          routed.push({ clientId, threadId: request.threadId });
+          return broker.respond({
+            clientId,
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: clientId,
+          });
+        }).pipe(Effect.forkScoped);
+      }
+      yield* Effect.yieldNow;
+      for (const [clientId, threadId] of [
+        ["main-host", scope.threadId],
+        ["side-host", childScope.threadId],
+      ] as const) {
+        yield* broker.focusHost({
+          clientId,
+          environmentId: scope.environmentId,
+          connectionId: connections.get(clientId)!,
+          focused: clientId === "main-host",
+          liveTabs: [{ threadId, tabId: PreviewTabId.make(`${clientId}-tab`), visible: true }],
+        });
+      }
+      expect(
+        yield* Effect.all(
+          [
+            broker.invoke<string>({ scope, operation: "snapshot", input: {} }),
+            broker.invoke<string>({ scope: childScope, operation: "snapshot", input: {} }),
+          ],
+          { concurrency: "unbounded" },
+        ),
+      ).toEqual(["main-host", "side-host"]);
+      expect(routed).toEqual(
+        expect.arrayContaining([
+          { clientId: "main-host", threadId: scope.threadId },
+          { clientId: "side-host", threadId: childScope.threadId },
+        ]),
+      );
+    }),
+  ),
+);

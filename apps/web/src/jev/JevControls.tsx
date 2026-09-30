@@ -23,6 +23,10 @@ type JevControlsProps = {
 
 type JevScope = { environmentId: string; threadId: string };
 
+function panelIdForScope(scope: JevScope): string {
+  return `jev-routing-panel-${encodeURIComponent(`${scope.environmentId}:${scope.threadId}`)}`;
+}
+
 function callsForScope(calls: readonly JevCall[], scope: JevScope): JevCall[] {
   return calls.filter(
     (call) =>
@@ -36,8 +40,10 @@ export function JevControls({
   presentation = "toolbar",
   onRequestMenuClose,
 }: JevControlsProps) {
-  const { setThreadMode, panelOpen, setPanelOpen, calls } = useJevStore();
-  const mode = useJevStore((state) => state.getThreadMode(scope.environmentId, scope.threadId));
+  const { setThreadMode, togglePanel: toggleScopedPanel, calls } = useJevStore();
+  const { environmentId, threadId } = scope;
+  const panelOpen = useJevStore((state) => state.isPanelOpen(scope));
+  const mode = useJevStore((state) => state.getThreadMode(environmentId, threadId));
   const enabled = mode !== "off";
   useEffect(listenForJevSubagents, []);
   useEffect(() => {
@@ -45,19 +51,19 @@ export function JevControls({
     let active = true;
     void requireJevCredential().catch((cause: unknown) => {
       if (!active) return;
-      setThreadMode(scope.environmentId, scope.threadId, "off");
+      setThreadMode(environmentId, threadId, "off");
       useJevStore.setState({
-        panelOpen: true,
         notice:
           cause instanceof Error
             ? cause.message
             : "Could not verify Jev's selected API credential.",
       });
+      useJevStore.getState().setPanelOpen(true, { environmentId, threadId });
     });
     return () => {
       active = false;
     };
-  }, [enabled, scope.environmentId, scope.threadId, setThreadMode]);
+  }, [enabled, environmentId, threadId, setThreadMode]);
   if (!isElectron) return null;
   const threadCalls = callsForScope(calls, scope);
   const pending = threadCalls.some((call) => call.status === "pending");
@@ -73,7 +79,7 @@ export function JevControls({
             : "Auto"
           : "Off";
   const togglePanel = () => {
-    setPanelOpen(!panelOpen);
+    toggleScopedPanel(scope);
     onRequestMenuClose?.();
   };
   if (presentation === "menu") {
@@ -97,7 +103,7 @@ export function JevControls({
       size="compact"
       onClick={togglePanel}
       aria-expanded={panelOpen}
-      aria-controls="jev-routing-panel"
+      aria-controls={panelIdForScope(scope)}
       aria-label={`Jev routing: ${reviewCount > 0 ? `${reviewCount} recommendation${reviewCount === 1 ? "" : "s"} awaiting review` : pending ? "routing in progress" : enabled ? `${mode} mode enabled` : "off"}`}
     >
       <RouteIcon className="size-3.5" />
@@ -457,7 +463,6 @@ export function JevComposerReview({ scope }: { scope: JevScope }) {
 export function JevPanel({ scope }: { scope: { environmentId: string; threadId: string } }) {
   const {
     setThreadMode,
-    panelOpen,
     setPanelOpen,
     calls,
     clearCalls,
@@ -468,6 +473,8 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
     subagentsEnabled,
     setSubagentsEnabled,
   } = useJevStore();
+  const panelOpen = useJevStore((state) => state.isPanelOpen(scope));
+  const panelId = panelIdForScope(scope);
   const mode = useJevStore((state) => state.getThreadMode(scope.environmentId, scope.threadId));
   const enabled = mode !== "off";
   const [checkingStatus, setCheckingStatus] = useState(false);
@@ -512,7 +519,7 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
   };
   return (
     <aside
-      id="jev-routing-panel"
+      id={panelId}
       aria-label="Jev routing calls"
       className="flex h-full min-h-0 min-w-0 w-[min(25rem,42%)] shrink-0 flex-col gap-4 overflow-hidden border-l bg-background p-4 pt-[calc(var(--workspace-topbar-height,3rem)+1rem)] [overflow-wrap:anywhere]"
     >
@@ -521,7 +528,7 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
           <div>
             <div className="flex items-center gap-2">
               <RouteIcon className="size-4 text-primary" />
-              <h2 className="text-sm font-semibold tracking-tight">Jev · main chat</h2>
+              <h2 className="text-sm font-semibold tracking-tight">Jev · this chat</h2>
               <span
                 className={`size-1.5 rounded-full ${enabled ? "bg-success" : "bg-muted-foreground/50"}`}
               />
@@ -564,7 +571,7 @@ export function JevPanel({ scope }: { scope: { environmentId: string; threadId: 
               type="button"
               variant="ghost-muted"
               size="icon-xs"
-              onClick={() => setPanelOpen(false)}
+              onClick={() => setPanelOpen(false, scope)}
               aria-label="Close Jev panel"
             >
               <XIcon className="size-3.5" />

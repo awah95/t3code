@@ -163,3 +163,47 @@ it.effect("does not keep credentials of other threads alive", () =>
     expect(yield* registry.resolve(token)).toBeUndefined();
   }),
 );
+
+it.effect("keeps main and side chat credentials independent when rotating and revoking", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const parentThreadId = ThreadId.make("main-chat");
+    const childThreadId = ThreadId.make("side-chat");
+    const issue = (threadId: ThreadId, capabilities: ReadonlySet<"preview" | "device">) =>
+      registry.issue({
+        threadId,
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        capabilities,
+      });
+    const [parent, child] = yield* Effect.all(
+      [issue(parentThreadId, new Set(["preview"])), issue(childThreadId, new Set(["device"]))],
+      { concurrency: "unbounded" },
+    );
+    const tokenOf = (credential: typeof parent) =>
+      credential.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const parentToken = tokenOf(parent);
+    const childToken = tokenOf(child);
+    expect(parentToken).not.toBe(childToken);
+    expect(parent.config.providerSessionId).not.toBe(child.config.providerSessionId);
+    const [parentScope, childScope] = yield* Effect.all(
+      [registry.resolve(parentToken), registry.resolve(childToken)],
+      { concurrency: "unbounded" },
+    );
+    expect(parentScope?.threadId).toBe(parentThreadId);
+    expect(childScope?.threadId).toBe(childThreadId);
+    expect(childScope?.capabilities).toEqual(new Set(["device", "pull-requests"]));
+    expect(parentScope?.capabilities).toEqual(new Set(["preview", "pull-requests"]));
+
+    yield* registry.revokeThread(childThreadId);
+    const replacement = yield* issue(childThreadId, new Set());
+    expect(yield* registry.resolve(childToken)).toBeUndefined();
+    expect((yield* registry.resolve(tokenOf(replacement)))?.capabilities).toEqual(
+      new Set(["pull-requests"]),
+    );
+    expect((yield* registry.resolve(parentToken))?.threadId).toBe(parentThreadId);
+
+    yield* registry.revokeThread(parentThreadId);
+    expect(yield* registry.resolve(parentToken)).toBeUndefined();
+    expect((yield* registry.resolve(tokenOf(replacement)))?.threadId).toBe(childThreadId);
+  }),
+);

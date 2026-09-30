@@ -29,86 +29,81 @@ import {
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 describe("Codex thread history", () => {
-  it.effect("forks through the last completed turn while the main turn is running", () =>
-    Effect.gen(function* () {
-      const requests: Array<{ method: string; payload: unknown }> = [];
-      const client = {
-        raw: {
-          request: (method: string, payload: unknown) =>
-            Effect.sync(() => {
-              requests.push({ method, payload });
-              return { thread: { historyMode: "legacy" } };
-            }),
-        },
-        request: (method: string, payload: unknown) =>
-          Effect.sync(() => {
-            requests.push({ method, payload });
-            if (method === "thread/read")
-              return {
-                thread: {
-                  id: "main-native",
-                  turns: [
-                    { id: "completed-turn", items: [] },
-                    { id: "active-turn", items: [] },
-                  ],
-                },
-              };
-            return { thread: { id: "side-native" }, cwd: "/workspace", model: "gpt" };
-          }),
-      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
-      yield* openCodexFork({
-        client,
-        threadId: ThreadId.make("side"),
-        forkSource: {
-          threadId: "main-native",
-          activeTurnId: "active-turn",
-        },
-        cwd: "/workspace",
-        runtimeMode: "approval-required",
-        requestedModel: undefined,
-        serviceTier: undefined,
-        sideChat: true,
-      });
-      const fork = requests.find((request) => request.method === "thread/fork");
-      NodeAssert.deepEqual(fork?.payload, {
-        threadId: "main-native",
-        lastTurnId: "completed-turn",
-        cwd: "/workspace",
-        approvalPolicy: "untrusted",
-        sandbox: "read-only",
-        approvalsReviewer: "user",
-        ephemeral: false,
-      });
-    }),
-  );
+  for (const source of [
+    { description: "a running parent", activeTurnId: "active-turn" },
+    { description: "the first running parent turn", activeTurnId: "first-turn" },
+    {
+      description: "a parent that finished after the session snapshot",
+      activeTurnId: "stale-turn",
+    },
+    { description: "a parent that started after the session snapshot", activeTurnId: undefined },
+  ]) {
+    it.effect(
+      `forks ${source.description} without reading history or pinning a stale boundary`,
+      () =>
+        Effect.gen(function* () {
+          const requests: Array<{ method: string; payload: unknown }> = [];
+          const client = {
+            request: (method: string, payload: unknown) =>
+              Effect.sync(() => {
+                requests.push({ method, payload });
+                NodeAssert.equal(method, "thread/fork");
+                return { thread: { id: "side-native" }, cwd: "/workspace", model: "gpt" };
+              }),
+          } as unknown as Parameters<typeof openCodexFork>[0]["client"];
+          const opened = yield* openCodexFork({
+            client,
+            threadId: ThreadId.make("side"),
+            forkSource: { threadId: "main-native", activeTurnId: source.activeTurnId },
+            cwd: "/workspace",
+            runtimeMode: "approval-required",
+            requestedModel: undefined,
+            serviceTier: undefined,
+            sideChat: true,
+          });
+          NodeAssert.equal(opened.thread.id, "side-native");
+          NodeAssert.deepEqual(requests, [
+            {
+              method: "thread/fork",
+              payload: {
+                threadId: "main-native",
+                cwd: "/workspace",
+                approvalPolicy: "untrusted",
+                sandbox: "read-only",
+                approvalsReviewer: "user",
+                ephemeral: false,
+                excludeTurns: true,
+              },
+            },
+          ]);
+        }),
+    );
+  }
 
-  it.effect("starts fresh when the first main turn is still running", () =>
+  it.effect("propagates fork failure without silently starting a context-free thread", () =>
     Effect.gen(function* () {
+      const rejection = CodexErrors.CodexAppServerRequestError.invalidRequest("Source unavailable");
       const methods: string[] = [];
       const client = {
-        raw: { request: () => Effect.succeed({ thread: { historyMode: "legacy" } }) },
-        request: (method: string) =>
-          Effect.sync(() => {
-            methods.push(method);
-            if (method === "thread/read")
-              return { thread: { id: "main-native", turns: [{ id: "active-turn", items: [] }] } };
-            return { thread: { id: "side-native" }, cwd: "/workspace", model: "gpt" };
-          }),
-      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
-      yield* openCodexFork({
-        client,
-        threadId: ThreadId.make("side"),
-        forkSource: {
-          threadId: "main-native",
-          activeTurnId: "active-turn",
+        request: (method: string) => {
+          methods.push(method);
+          return Effect.fail(rejection);
         },
-        cwd: "/workspace",
-        runtimeMode: "approval-required",
-        requestedModel: undefined,
-        serviceTier: undefined,
-        sideChat: true,
-      });
-      NodeAssert.deepEqual(methods, ["thread/read", "thread/start"]);
+      } as unknown as Parameters<typeof openCodexFork>[0]["client"];
+      const error = yield* Effect.flip(
+        openCodexFork({
+          client,
+          threadId: ThreadId.make("side"),
+          forkSource: { threadId: "main-native", activeTurnId: "first-turn" },
+          cwd: "/workspace",
+          runtimeMode: "approval-required",
+          requestedModel: undefined,
+          serviceTier: undefined,
+          sideChat: true,
+        }),
+      );
+      NodeAssert.strictEqual(error, rejection);
+      NodeAssert.deepEqual(methods, ["thread/fork"]);
     }),
   );
 
@@ -139,6 +134,7 @@ describe("Codex thread history", () => {
         sandbox: "workspace-write",
         approvalsReviewer: "auto_review",
         ephemeral: false,
+        excludeTurns: true,
       });
     }),
   );

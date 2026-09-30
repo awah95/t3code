@@ -356,13 +356,16 @@ export const useJevStore = create<{
   subagentsEnabled: boolean;
   setSubagentsEnabled: (enabled: boolean) => void;
   panelOpen: boolean;
+  panelScope: { environmentId: string; threadId: string } | null;
+  isPanelOpen: (scope?: { environmentId: string; threadId: string }) => boolean;
   revision: number;
   calls: JevCall[];
   notice: string | null;
   billedUsd: number;
   estimatedUsd: number;
   unknownCostCalls: number;
-  setPanelOpen: (open: boolean) => void;
+  setPanelOpen: (open: boolean, scope?: { environmentId: string; threadId: string }) => void;
+  togglePanel: (scope: { environmentId: string; threadId: string }) => void;
   pinManual: (environmentId: string, threadId: string) => void;
   addCall: (call: JevCall) => void;
   finishCall: (id: string, result: JevRouteResult, cancelled?: boolean) => void;
@@ -418,6 +421,15 @@ export const useJevStore = create<{
   },
   subagentsEnabled: false,
   panelOpen: false,
+  panelScope: null,
+  isPanelOpen: (scope) => {
+    const state = get();
+    if (!state.panelOpen || !scope || !state.panelScope) return state.panelOpen;
+    return (
+      state.panelScope.environmentId === scope.environmentId &&
+      state.panelScope.threadId === scope.threadId
+    );
+  },
   revision: 0,
   calls: [],
   notice: null,
@@ -428,7 +440,12 @@ export const useJevStore = create<{
     if (!subagentsEnabled) disableSubagentPolicies();
     set({ subagentsEnabled });
   },
-  setPanelOpen: (panelOpen) => set({ panelOpen }),
+  setPanelOpen: (panelOpen, scope) =>
+    set({ panelOpen, panelScope: panelOpen && scope ? scope : null }),
+  togglePanel: (scope) => {
+    const isOpen = get().isPanelOpen(scope);
+    set({ panelOpen: !isOpen, panelScope: isOpen ? null : scope });
+  },
   pinManual: (environmentId, threadId) => {
     if (!get().getThreadEnabled(environmentId, threadId)) return;
     get().setThreadMode(environmentId, threadId, "off");

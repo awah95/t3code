@@ -26,6 +26,7 @@ describe("Jev credential preflight", () => {
     useJevStore.setState({
       modesByThread: {},
       panelOpen: false,
+      panelScope: null,
       calls: [],
       notice: null,
       revision: 0,
@@ -103,6 +104,53 @@ describe("Jev credential preflight", () => {
     expect(root.findByProps({ "aria-label": "Jev routing: off" })).toBeDefined();
     expect(useJevStore.getState().getThreadEnabled("env", "thread")).toBe(true);
     expect(useJevStore.getState().getThreadEnabled("env", "other-thread")).toBe(false);
+  });
+});
+
+describe("Jev panel ownership", () => {
+  beforeEach(() => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.stubGlobal("window", { desktopBridge: {} });
+    useJevStore.setState({ panelOpen: false, panelScope: null, calls: [], notice: null });
+  });
+
+  afterEach(async () => {
+    await act(() => renderer?.unmount());
+    renderer = undefined;
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the requested chat panel and keeps only that chat visible", async () => {
+    const main = { environmentId: "env", threadId: "main" };
+    const side = { environmentId: "env", threadId: "side" };
+    const root = await renderComponent(
+      <div>
+        <JevControls scope={main} />
+        <JevPanel scope={main} />
+        <JevControls scope={side} />
+        <JevPanel scope={side} />
+      </div>,
+    );
+    const mainControl = root.findByProps({ "aria-controls": "jev-routing-panel-env%3Amain" });
+    const sideControl = root.findByProps({ "aria-controls": "jev-routing-panel-env%3Aside" });
+
+    await act(() => mainControl.props.onClick());
+    expect(useJevStore.getState().panelScope).toEqual(main);
+    expect(root.findAllByProps({ "aria-label": "Jev routing calls" })).toHaveLength(1);
+    expect(root.findByProps({ id: "jev-routing-panel-env%3Amain" })).toBeDefined();
+    expect(mainControl.props["aria-expanded"]).toBe(true);
+    expect(sideControl.props["aria-expanded"]).toBe(false);
+
+    await act(() => sideControl.props.onClick());
+    expect(useJevStore.getState().panelScope).toEqual(side);
+    expect(root.findByProps({ id: "jev-routing-panel-env%3Aside" })).toBeDefined();
+    expect(mainControl.props["aria-expanded"]).toBe(false);
+    expect(sideControl.props["aria-expanded"]).toBe(true);
+
+    const close = root.findByProps({ "aria-label": "Close Jev panel" });
+    await act(() => close.props.onClick());
+    expect(useJevStore.getState().panelOpen).toBe(false);
+    expect(root.findAllByProps({ "aria-label": "Jev routing calls" })).toHaveLength(0);
   });
 });
 

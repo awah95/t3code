@@ -5067,7 +5067,11 @@ describe("agent browser access", () => {
     access: boolean | { readonly browser: boolean; readonly device: boolean },
     threadId: ThreadId,
     projectOverride?: boolean | { readonly browser?: boolean; readonly device?: boolean },
-    options?: { readonly withoutOrchestration?: boolean },
+    options?: {
+      readonly withoutOrchestration?: boolean;
+      readonly parentThreadId?: ThreadId;
+      readonly recover?: boolean;
+    },
   ) =>
     Effect.gen(function* () {
       const enableAgentBrowserAccess = typeof access === "boolean" ? access : access.browser;
@@ -5113,6 +5117,7 @@ describe("agent browser access", () => {
                 id: threadId,
                 projectId,
                 title: "Browser access test",
+                ...(options?.parentThreadId ? { parentThreadId: options.parentThreadId } : {}),
                 modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
                 runtimeMode: "full-access",
                 branch: null,
@@ -5178,16 +5183,44 @@ describe("agent browser access", () => {
 
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService.ProviderService;
-        return yield* provider.startSession(threadId, {
+        yield* provider.startSession(threadId, {
           provider: CODEX_DRIVER,
           providerInstanceId: codexInstanceId,
           threadId,
           runtimeMode: "full-access",
+          ...(options?.parentThreadId ? { resumeCursor: { threadId: "native-side-chat" } } : {}),
         });
+        if (options?.recover) {
+          yield* codex.stopSession(threadId);
+          yield* provider.uploadFeedback({ threadId });
+        }
       }).pipe(Effect.provide(providerLayer));
 
       return issued;
     });
+
+  for (const recover of [false, true]) {
+    it.effect(
+      `issues child-owned MCP capabilities for a side chat on ${recover ? "recovery" : "start"}`,
+      () =>
+        Effect.gen(function* () {
+          const threadId = asThreadId(`side-chat-mcp-${recover}`);
+          const issued = yield* startSessionWith(
+            true,
+            threadId,
+            { browser: false },
+            { parentThreadId: asThreadId("main-chat-mcp"), recover },
+          );
+          assert.deepEqual(
+            issued,
+            Array.from({ length: recover ? 2 : 1 }, () => ({
+              threadId,
+              capabilities: ["device", "pull-requests"],
+            })),
+          );
+        }).pipe(Effect.provide(NodeServices.layer)),
+    );
+  }
 
   // The capability on the credential is the observable that matters: a session
   // always gets a credential (the pull request toolkit is never withheld), and

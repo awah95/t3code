@@ -29,6 +29,7 @@ import {
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -47,6 +48,7 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
+import { measureCodexStartupPhase } from "./CodexStartupTiming.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import {
   buildCodexAdditionalContext,
@@ -1304,7 +1306,7 @@ export const readCodexThread = Effect.fn("readCodexThread")(function* (
 });
 
 export const openCodexFork = Effect.fn("openCodexFork")(function* (input: {
-  readonly client: CodexHistoryClient & CodexThreadOpenClient;
+  readonly client: Pick<CodexClient.CodexAppServerClient["Service"], "request">;
   readonly threadId: ThreadId;
   readonly forkSource: NonNullable<CodexSessionRuntimeOptions["forkSource"]>;
   readonly cwd: string;
@@ -1314,38 +1316,26 @@ export const openCodexFork = Effect.fn("openCodexFork")(function* (input: {
   readonly sideChat?: boolean;
   readonly sideChatMode?: "discuss" | "implement";
 }) {
-  const { threadId: sourceThreadId, activeTurnId } = input.forkSource;
-  const history = activeTurnId ? yield* readCodexThread(input.client, sourceThreadId) : undefined;
-  const completedTurn = history?.turns.filter((turn) => turn.id !== activeTurnId).at(-1);
-  if (activeTurnId && !completedTurn) {
-    yield* Effect.logWarning(
-      "Codex side chat source has no completed turn; starting without inherited history",
-      {
-        sourceThreadId,
-      },
-    );
-    return yield* openCodexThread({
-      client: input.client,
-      threadId: input.threadId,
-      runtimeMode: input.runtimeMode,
-      cwd: input.cwd,
-      requestedModel: input.requestedModel,
-      serviceTier: input.serviceTier,
-      resumeThreadId: undefined,
-    });
-  }
   const config = runtimeModeToThreadConfig(input.runtimeMode);
-  return yield* input.client.request("thread/fork", {
-    threadId: sourceThreadId,
-    ...(completedTurn ? { lastTurnId: completedTurn.id } : {}),
-    cwd: input.cwd,
-    ...(input.requestedModel ? { model: input.requestedModel } : {}),
-    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-    approvalPolicy: config.approvalPolicy,
-    sandbox: config.sandbox,
-    approvalsReviewer: config.approvalsReviewer,
-    ephemeral: false,
-  });
+  // Omitting lastTurnId lets Codex snapshot the current history atomically. If
+  // the parent is mid-turn, its copied turn receives an interruption marker;
+  // the parent keeps running. This also retains context during its first turn
+  // and avoids a race with a stale activeTurnId or reading full history here.
+  return yield* measureCodexStartupPhase(
+    "fork",
+    input.sideChat === true,
+    input.client.request("thread/fork", {
+      threadId: input.forkSource.threadId,
+      cwd: input.cwd,
+      ...(input.requestedModel ? { model: input.requestedModel } : {}),
+      ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+      approvalPolicy: config.approvalPolicy,
+      sandbox: config.sandbox,
+      approvalsReviewer: config.approvalsReviewer,
+      ephemeral: false,
+      excludeTurns: true,
+    }),
+  );
 });
 
 export const rollbackCodexThread = Effect.fn("rollbackCodexThread")(function* (
@@ -1372,6 +1362,7 @@ export const makeCodexSessionRuntime = (
   ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto | Scope.Scope
 > =>
   Effect.gen(function* () {
+    const runtimeStartedAt = yield* Clock.currentTimeMillis;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
     const crypto = yield* Crypto.Crypto;
@@ -1417,30 +1408,38 @@ export const makeCodexSessionRuntime = (
       env,
       extendEnv,
     });
-    const child = yield* spawner
-      .spawn(
-        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-          cwd: options.cwd,
-          env,
-          extendEnv,
-          forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
-          shell: spawnCommand.shell,
-        }),
-      )
-      .pipe(
-        Effect.provideService(Scope.Scope, runtimeScope),
-        Effect.mapError(
-          (cause) =>
-            new CodexErrors.CodexAppServerSpawnError({
-              command: `${options.binaryPath} app-server`,
-              cause,
-            }),
+    const child = yield* measureCodexStartupPhase(
+      "spawn",
+      options.sideChat === true,
+      spawner
+        .spawn(
+          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+            cwd: options.cwd,
+            env,
+            extendEnv,
+            forceKillAfter: CODEX_APP_SERVER_FORCE_KILL_AFTER,
+            shell: spawnCommand.shell,
+          }),
+        )
+        .pipe(
+          Effect.provideService(Scope.Scope, runtimeScope),
+          Effect.mapError(
+            (cause) =>
+              new CodexErrors.CodexAppServerSpawnError({
+                command: `${options.binaryPath} app-server`,
+                cause,
+              }),
+          ),
         ),
-      );
+    );
 
-    const clientContext = yield* CodexClient.layerChildProcess(child).pipe(
-      Layer.build,
-      Effect.provideService(Scope.Scope, runtimeScope),
+    const clientContext = yield* measureCodexStartupPhase(
+      "client",
+      options.sideChat === true,
+      CodexClient.layerChildProcess(child).pipe(
+        Layer.build,
+        Effect.provideService(Scope.Scope, runtimeScope),
+      ),
     );
     const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
       Effect.provide(clientContext),
@@ -2621,53 +2620,70 @@ export const makeCodexSessionRuntime = (
       ),
     );
 
-    const start = Effect.fn("CodexSessionRuntime.start")(function* () {
-      yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
-      yield* client.request("initialize", buildCodexInitializeParams());
-      yield* client.notify("initialized", undefined);
-      jevHookLoaded = (yield* prepareJevTrust) === true;
+    const start = Effect.fn("CodexSessionRuntime.start")(
+      function* () {
+        yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
+        yield* measureCodexStartupPhase(
+          "initialize",
+          options.sideChat === true,
+          client
+            .request("initialize", buildCodexInitializeParams())
+            .pipe(Effect.andThen(client.notify("initialized", undefined))),
+        );
+        jevHookLoaded =
+          (yield* measureCodexStartupPhase(
+            "jev-hook",
+            options.sideChat === true,
+            prepareJevTrust,
+          )) === true;
 
-      const requestedModel = normalizeCodexModelSlug(options.model);
+        const requestedModel = normalizeCodexModelSlug(options.model);
 
-      const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
-      const opened =
-        options.forkSource && !resumeThreadId
-          ? yield* openCodexFork({
-              client,
-              threadId: options.threadId,
-              forkSource: options.forkSource,
-              cwd: options.cwd,
-              runtimeMode: options.runtimeMode,
-              requestedModel,
-              serviceTier: options.serviceTier,
-              ...(options.sideChat
-                ? { sideChat: true, sideChatMode: options.sideChatMode ?? "discuss" }
-                : {}),
-            })
-          : yield* openCodexThread({
-              client,
-              threadId: options.threadId,
-              runtimeMode: options.runtimeMode,
-              cwd: options.cwd,
-              requestedModel,
-              serviceTier: options.serviceTier,
-              resumeThreadId,
-              ...(options.strictResume ? { strictResume: true } : {}),
-            });
+        const resumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+        const opened = yield* measureCodexStartupPhase(
+          "thread-open",
+          options.sideChat === true,
+          options.forkSource && !resumeThreadId
+            ? openCodexFork({
+                client,
+                threadId: options.threadId,
+                forkSource: options.forkSource,
+                cwd: options.cwd,
+                runtimeMode: options.runtimeMode,
+                requestedModel,
+                serviceTier: options.serviceTier,
+                ...(options.sideChat
+                  ? { sideChat: true, sideChatMode: options.sideChatMode ?? "discuss" }
+                  : {}),
+              })
+            : openCodexThread({
+                client,
+                threadId: options.threadId,
+                runtimeMode: options.runtimeMode,
+                cwd: options.cwd,
+                requestedModel,
+                serviceTier: options.serviceTier,
+                resumeThreadId,
+                ...(options.strictResume ? { strictResume: true } : {}),
+              }),
+        );
 
-      const providerThreadId = opened.thread.id;
-      const session = {
-        ...(yield* Ref.get(sessionRef)),
-        status: "ready",
-        cwd: opened.cwd,
-        model: opened.model,
-        resumeCursor: { threadId: providerThreadId },
-        updatedAt: yield* nowIso,
-      } satisfies ProviderSession;
-      yield* Ref.set(sessionRef, session);
-      yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
-      return session;
-    });
+        const providerThreadId = opened.thread.id;
+        const session = {
+          ...(yield* Ref.get(sessionRef)),
+          status: "ready",
+          cwd: opened.cwd,
+          model: opened.model,
+          resumeCursor: { threadId: providerThreadId },
+          updatedAt: yield* nowIso,
+        } satisfies ProviderSession;
+        yield* Ref.set(sessionRef, session);
+        yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
+        return session;
+      },
+      (effect) =>
+        measureCodexStartupPhase("startup", options.sideChat === true, effect, runtimeStartedAt),
+    );
 
     const readProviderThreadId = Effect.gen(function* () {
       const providerThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));

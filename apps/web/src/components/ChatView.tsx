@@ -97,6 +97,7 @@ import {
   type SetStateAction,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
   useEffectEvent,
   useLayoutEffect,
@@ -236,6 +237,12 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs } from "./RightPanelTabs";
+import {
+  ChatSurfaceScopeContext,
+  chatSurfaceKeyFromEvent,
+  chatSurfaceOwnsEvent,
+  closeChatSurfacePanel,
+} from "./chat/chatSurfaceScope";
 import { SideChatPanelHost, useSideChats } from "./chat/useSideChats";
 import { AgentsPanel } from "./AgentsPanel";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
@@ -382,6 +389,7 @@ import {
   useProjects,
   useThread,
   useThreadRefs,
+  readThreadShell,
   useThreadShell,
 } from "../state/entities";
 import { environmentShell } from "../state/shell";
@@ -770,6 +778,14 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: ThreadSyncPhase | null;
+      sideChatSurface?: {
+        onClose: () => void;
+        draftInsertion?: { id: string; text: string };
+        onDraftInsertionHandled?: (id: string) => void;
+        onNewSideChat: () => void;
+        onAddToMainDraft: (text: string) => Promise<void>;
+        onSendToMain?: (text: string) => Promise<void>;
+      };
       routeKind: "server";
       draftId?: never;
     }
@@ -780,6 +796,7 @@ type ChatViewProps =
       reserveTitleBarControlInset?: boolean;
       forceExpandedMobileComposer?: boolean;
       threadSyncPhase?: never;
+      sideChatSurface?: never;
       routeKind: "draft";
       draftId: DraftId;
     };
@@ -1503,6 +1520,8 @@ export default function ChatView(props: ChatViewProps) {
     reserveTitleBarControlInset = true,
     forceExpandedMobileComposer = false,
   } = props;
+  const sideChatSurface = props.sideChatSurface;
+  const isSideChatSurface = sideChatSurface !== undefined;
   const draftId = routeKind === "draft" ? props.draftId : null;
   const threadSyncPhase = routeKind === "server" ? (props.threadSyncPhase ?? null) : null;
   const threadDetailLoading = threadSyncPhase === "loading";
@@ -1520,6 +1539,33 @@ export default function ChatView(props: ChatViewProps) {
     [environmentId, threadId],
   );
   const routeThreadKey = useMemo(() => scopedThreadKey(routeThreadRef), [routeThreadRef]);
+  const inheritedSurfaceScope = useContext(ChatSurfaceScopeContext);
+  const localActiveSurfaceKey = useRef(routeThreadKey);
+  const activeSurfaceKey = inheritedSurfaceScope?.activeSurfaceKey ?? localActiveSurfaceKey;
+  const surfaceScope = useMemo(
+    () => ({ activeSurfaceKey, surfaceKey: routeThreadKey }),
+    [activeSurfaceKey, routeThreadKey],
+  );
+  const ownsSurfaceEvent = useCallback(
+    (event: Event) => chatSurfaceOwnsEvent(event, routeThreadKey, activeSurfaceKey.current),
+    [activeSurfaceKey, routeThreadKey],
+  );
+  const activateSurface = useCallback(
+    (event: { nativeEvent: Event }) => {
+      const key = chatSurfaceKeyFromEvent(event.nativeEvent);
+      activeSurfaceKey.current = key ?? routeThreadKey;
+    },
+    [activeSurfaceKey, routeThreadKey],
+  );
+  useEffect(() => {
+    if (!inheritedSurfaceScope) activeSurfaceKey.current = routeThreadKey;
+    return () => {
+      if (activeSurfaceKey.current === routeThreadKey && inheritedSurfaceScope) {
+        activeSurfaceKey.current = inheritedSurfaceScope.surfaceKey;
+      }
+    };
+  }, [activeSurfaceKey, inheritedSurfaceScope, routeThreadKey]);
+
   const currentRouteThreadKeyRef = useRef<string | null>(routeThreadKey);
   useLayoutEffect(() => {
     currentRouteThreadKeyRef.current = routeThreadKey;
@@ -1540,6 +1586,7 @@ export default function ChatView(props: ChatViewProps) {
     reportFailure: false,
   });
   useEffect(() => {
+    if (isSideChatSurface) return;
     setJevLedgerReceiptWriter(
       async (receipt) => {
         const result = await writeJevLedgerReceipt({
@@ -1560,7 +1607,7 @@ export default function ChatView(props: ChatViewProps) {
       },
       (message) => useJevStore.setState({ notice: message }),
     );
-  }, [writeJevLedgerReceipt]);
+  }, [isSideChatSurface, writeJevLedgerReceipt]);
   const upsertKeybinding = useAtomCommand(serverEnvironment.upsertKeybinding, {
     reportFailure: false,
   });
@@ -1667,11 +1714,12 @@ export default function ChatView(props: ChatViewProps) {
     }),
   });
   const citationRequest = useMemo<AssistantCitationRequest | null>(() => {
+    if (isSideChatSurface) return null;
     const citation = assistantCitationFromLocation(citationLocation.href);
     return citation && citation.environmentId === environmentId && citation.threadId === threadId
       ? { citation, key: citationLocation.key ?? citationLocation.href }
       : null;
-  }, [citationLocation.href, citationLocation.key, environmentId, threadId]);
+  }, [citationLocation.href, citationLocation.key, environmentId, isSideChatSurface, threadId]);
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
   const composerRuntimeMode = useComposerDraftStore(
@@ -1918,9 +1966,15 @@ export default function ChatView(props: ChatViewProps) {
     () =>
       mountedTerminalThreadKeys.flatMap((mountedThreadKey) => {
         const mountedThreadRef = parseScopedThreadKey(mountedThreadKey);
+        if (
+          mountedThreadKey !== routeThreadKey &&
+          (isSideChatSurface ||
+            (mountedThreadRef && readThreadShell(mountedThreadRef)?.parentThreadId))
+        )
+          return [];
         return mountedThreadRef ? [{ key: mountedThreadKey, threadRef: mountedThreadRef }] : [];
       }),
-    [mountedTerminalThreadKeys],
+    [isSideChatSurface, mountedTerminalThreadKeys, routeThreadKey],
   );
 
   const fallbackDraftProjectRef = draftThread
@@ -2170,8 +2224,18 @@ export default function ChatView(props: ChatViewProps) {
 
   const existingOpenTerminalThreadKeys = useMemo(() => {
     const existingThreadKeys = new Set<string>([...serverThreadKeys, ...draftThreadKeys]);
-    return openTerminalThreadKeys.filter((nextThreadKey) => existingThreadKeys.has(nextThreadKey));
-  }, [draftThreadKeys, openTerminalThreadKeys, serverThreadKeys]);
+    return openTerminalThreadKeys.filter(
+      (nextThreadKey) =>
+        existingThreadKeys.has(nextThreadKey) &&
+        (!isSideChatSurface || nextThreadKey === activeThreadKey),
+    );
+  }, [
+    activeThreadKey,
+    draftThreadKeys,
+    isSideChatSurface,
+    openTerminalThreadKeys,
+    serverThreadKeys,
+  ]);
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const activeRunningTurnId =
     (activeThread?.session?.status === "running" ? activeThread.session.activeTurnId : null) ??
@@ -2864,9 +2928,10 @@ export default function ChatView(props: ChatViewProps) {
       ? null
       : clampFileAttachmentUploadBytes(advertisedFileAttachmentBytes);
   const envLocked = Boolean(
-    activeThread &&
-    (activeThread.messages.length > 0 ||
-      (activeThread.session !== null && activeThread.session.status !== "stopped")),
+    isSideChatSurface ||
+    (activeThread &&
+      (activeThread.messages.length > 0 ||
+        (activeThread.session !== null && activeThread.session.status !== "stopped"))),
   );
 
   const loadBalancingSettings = useClientSettings();
@@ -4305,7 +4370,75 @@ export default function ChatView(props: ChatViewProps) {
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, [composerRef]);
-  useEffect(() => subscribeSnapShotComposerFocus(focusComposer), [focusComposer]);
+  useEffect(
+    () => (isSideChatSurface ? undefined : subscribeSnapShotComposerFocus(focusComposer)),
+    [focusComposer, isSideChatSurface],
+  );
+  const seenSideInsertionId = useRef<string | null>(null);
+  const sideDraftInsertion = sideChatSurface?.draftInsertion;
+  const onSideDraftInsertionHandled = sideChatSurface?.onDraftInsertionHandled;
+  useEffect(() => {
+    if (!sideDraftInsertion || seenSideInsertionId.current === sideDraftInsertion.id) return;
+    seenSideInsertionId.current = sideDraftInsertion.id;
+    const store = useComposerDraftStore.getState();
+    const prompt = store.getComposerDraft(composerDraftTarget)?.prompt ?? "";
+    store.setPrompt(
+      composerDraftTarget,
+      [prompt.trimEnd(), sideDraftInsertion.text].filter(Boolean).join("\n\n"),
+    );
+    activeSurfaceKey.current = routeThreadKey;
+    onSideDraftInsertionHandled?.(sideDraftInsertion.id);
+    requestAnimationFrame(focusComposer);
+  }, [
+    activeSurfaceKey,
+    composerDraftTarget,
+    focusComposer,
+    onSideDraftInsertionHandled,
+    routeThreadKey,
+    sideDraftInsertion,
+  ]);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const addToMainDraft = sideChatSurface?.onAddToMainDraft;
+  const sendToMain = sideChatSurface?.onSendToMain;
+  const renderAssistantMessageActions = useCallback(
+    (message: ChatMessage) => {
+      if (!addToMainDraft || message.streaming) return null;
+      const handoff = async (action: (text: string) => Promise<void>) => {
+        if (handoffBusy) return;
+        setHandoffBusy(true);
+        try {
+          await action(message.text);
+        } catch (error) {
+          setThreadError(threadId, chatActionErrorMessage(error));
+        } finally {
+          setHandoffBusy(false);
+        }
+      };
+      return (
+        <>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={handoffBusy}
+            onClick={() => void handoff(addToMainDraft)}
+          >
+            Add to main draft
+          </Button>
+          {sendToMain ? (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={handoffBusy}
+              onClick={() => void handoff(sendToMain)}
+            >
+              Send to main
+            </Button>
+          ) : null}
+        </>
+      );
+    },
+    [addToMainDraft, handoffBusy, sendToMain, setThreadError, threadId],
+  );
   const scheduleComposerFocus = useCallback(() => {
     window.requestAnimationFrame(() => {
       focusComposer();
@@ -4949,23 +5082,11 @@ export default function ChatView(props: ChatViewProps) {
     },
     [activeThreadRef],
   );
-  const sideEnvironmentTarget = activeThreadRef
-    ? environmentById.get(activeThreadRef.environmentId)?.entry.target
-    : undefined;
-  const sideEnvironmentIsLocal =
-    sideEnvironmentTarget !== undefined &&
-    (sideEnvironmentTarget._tag === "PrimaryConnectionTarget" ||
-      isDesktopLocalConnectionTarget(sideEnvironmentTarget));
   const sideChats = useSideChats({
     activeThreadRef,
-    activeServerThread,
+    activeServerThread: isSideChatSurface ? null : activeServerThread,
     selectedProvider,
-    providerInstanceEntries,
-    settings,
-    sideEnvironmentIsLocal,
     composerDraftTarget,
-    sideThreadId:
-      renderedRightPanelSurface?.kind === "side-chat" ? renderedRightPanelSurface.threadId : null,
     lifecycle: { archiveThread, unarchiveThread, deleteSideThread },
   });
   const { addSideChatSurface, askInSideChat } = sideChats;
@@ -5613,9 +5734,10 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(
     () =>
       subscribePreviewAction((action) => {
+        if (activeSurfaceKey.current !== routeThreadKey) return;
         if (action === "toggle-panel") togglePreviewPanel();
       }),
-    [togglePreviewPanel],
+    [activeSurfaceKey, routeThreadKey, togglePreviewPanel],
   );
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
@@ -5913,6 +6035,7 @@ export default function ChatView(props: ChatViewProps) {
         // the end on the next stream chunk. Clicking message text can leave
         // DOM focus on body, so these keys must also be heard at document.
         const handleKeyDown = (event: KeyboardEvent) => {
+          if (!ownsSurfaceEvent(event)) return;
           if (
             !(event.target instanceof Node) ||
             (!scrollNode.contains(event.target) &&
@@ -5989,7 +6112,12 @@ export default function ChatView(props: ChatViewProps) {
       }
       removeListeners?.();
     };
-  }, [activeThread?.id, isTimelineAtLogicalEnd, timelineRealContentOverflowsViewport]);
+  }, [
+    activeThread?.id,
+    isTimelineAtLogicalEnd,
+    ownsSurfaceEvent,
+    timelineRealContentOverflowsViewport,
+  ]);
 
   const onTimelineAnchorReady = useCallback((messageId: MessageId, anchorIndex: number) => {
     // Anchored-end space can be remeasured when the turn completes. Once the
@@ -6145,14 +6273,14 @@ export default function ChatView(props: ChatViewProps) {
   }, [activeThread?.id, routeThreadKey]);
 
   useEffect(() => {
-    if (!activeThread?.id || terminalUiState.terminalOpen) return;
+    if (isSideChatSurface || !activeThread?.id || terminalUiState.terminalOpen) return;
     const frame = window.requestAnimationFrame(() => {
       focusComposer();
     });
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, terminalUiState.terminalOpen]);
+  }, [activeThread?.id, focusComposer, isSideChatSurface, terminalUiState.terminalOpen]);
 
   // Tabbing back into the app lands focus wherever it last was, often the right panel or the
   // body. Put it in the composer unless something that takes typing already holds it. The
@@ -6163,6 +6291,7 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThread?.id || terminalUiState.terminalOpen || isMobileViewport) return;
     let frame: number | null = null;
     const onWindowFocus = () => {
+      if (activeSurfaceKey.current !== routeThreadKey) return;
       if (frame !== null) window.cancelAnimationFrame(frame);
       // The element that held focus receives it again after the window's own event, and the
       // composer ignores that same frame so a restored focus does not lift a scroll-collapsed
@@ -6170,7 +6299,11 @@ export default function ChatView(props: ChatViewProps) {
       frame = window.requestAnimationFrame(() => {
         frame = window.requestAnimationFrame(() => {
           frame = null;
-          if (shouldRefocusComposerOnWindowFocus(document.activeElement)) focusComposer();
+          if (
+            activeSurfaceKey.current === routeThreadKey &&
+            shouldRefocusComposerOnWindowFocus(document.activeElement)
+          )
+            focusComposer();
         });
       });
     };
@@ -6179,7 +6312,14 @@ export default function ChatView(props: ChatViewProps) {
       window.removeEventListener("focus", onWindowFocus);
       if (frame !== null) window.cancelAnimationFrame(frame);
     };
-  }, [activeThread?.id, focusComposer, isMobileViewport, terminalUiState.terminalOpen]);
+  }, [
+    activeSurfaceKey,
+    activeThread?.id,
+    focusComposer,
+    isMobileViewport,
+    routeThreadKey,
+    terminalUiState.terminalOpen,
+  ]);
 
   useEffect(() => {
     if (!activeThread?.id) return;
@@ -7095,6 +7235,7 @@ export default function ChatView(props: ChatViewProps) {
 
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (!ownsSurfaceEvent(event)) return;
       if (preventRepeatedTerminalCloseShortcut(event, keybindings)) {
         event.stopPropagation();
         return;
@@ -7205,12 +7346,13 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       if (command === "rightPanel.close") {
-        // Nothing open: leave the event alone so the shortcut keeps its
-        // native meaning (close window on desktop, close tab in a browser).
-        if (!activeRightPanelSurface) return;
-        event.preventDefault();
-        event.stopPropagation();
-        if (!event.repeat) closeRightPanelSurface(activeRightPanelSurface);
+        closeChatSurfacePanel(
+          event,
+          activeRightPanelSurface
+            ? () => closeRightPanelSurface(activeRightPanelSurface)
+            : undefined,
+          sideChatSurface?.onClose,
+        );
         return;
       }
 
@@ -7371,6 +7513,8 @@ export default function ChatView(props: ChatViewProps) {
     supportsSettlement,
     confirmAndUnpinThread,
     copyActiveThreadReference,
+    ownsSurfaceEvent,
+    sideChatSurface?.onClose,
     getShortcutContext,
     toggleRightPanel,
     toggleRightPanelMaximized,
@@ -7383,6 +7527,7 @@ export default function ChatView(props: ChatViewProps) {
   // Route it to the composer like a typed key, which also expands it.
   useEffect(() => {
     const keyHandler = (event: KeyboardEvent) => {
+      if (!ownsSurfaceEvent(event)) return;
       if (
         shouldRedirectInputToComposer(event) &&
         isPasteAsTextShortcut(event, isMacPlatform(navigator.platform))
@@ -7391,6 +7536,7 @@ export default function ChatView(props: ChatViewProps) {
       }
     };
     const handler = (event: ClipboardEvent) => {
+      if (!ownsSurfaceEvent(event)) return;
       if (!activeThreadId || isCommandPaletteOpen()) return;
       if (getTerminalFocusOwner() !== null) return;
       if (composerRef.current?.isModelPickerOpen()) return;
@@ -7414,7 +7560,7 @@ export default function ChatView(props: ChatViewProps) {
       window.removeEventListener("keydown", keyHandler, true);
       window.removeEventListener("paste", handler, true);
     };
-  }, [activeThreadId, composerRef]);
+  }, [activeThreadId, composerRef, ownsSurfaceEvent]);
 
   const [pendingRevert, setPendingRevert] = useState<{
     turnCount: number;
@@ -10484,8 +10630,13 @@ export default function ChatView(props: ChatViewProps) {
     addFolders: (folders) => composerRef.current?.addDroppedFolders(folders),
   });
 
-  return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+  const chatSurface = (
+    <div
+      data-chat-surface={routeThreadKey}
+      onFocusCapture={activateSurface}
+      onPointerDownCapture={activateSurface}
+      className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+    >
       <Dialog
         open={
           deviceSetupThread !== null &&
@@ -10550,7 +10701,7 @@ export default function ChatView(props: ChatViewProps) {
             availableEditors={availableEditors}
             rightPanelOpen={rightPanelOpen}
             gitCwd={gitCwd}
-            onNewThreadInProject={handleNewThreadInActiveProject}
+            onNewThreadInProject={sideChatSurface?.onNewSideChat ?? handleNewThreadInActiveProject}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettings }
               : {})}
@@ -10607,12 +10758,15 @@ export default function ChatView(props: ChatViewProps) {
             <div className="relative flex min-h-0 flex-1 flex-col bg-background">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
+                renderAssistantMessageActions={
+                  isSideChatSurface ? renderAssistantMessageActions : undefined
+                }
                 citationRequest={paintOnlyDisplayedTimeline ? null : citationRequest}
                 citationHistoryLoading={threadDetailLoading}
                 {...(!paintOnlyDisplayedTimeline
                   ? {
                       onCiteAssistantText: citeAssistantText,
-                      ...(selectedProvider === "codex" && activeServerThread
+                      ...(!isSideChatSurface && selectedProvider === "codex" && activeServerThread
                         ? {
                             onAskInSideChat: (
                               citation: AssistantCitation,
@@ -10791,8 +10945,9 @@ export default function ChatView(props: ChatViewProps) {
                           <ChatComposer
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={
+                              !isSideChatSurface &&
                               serverConfig?.environment.capabilities.requiredWorktreeBootstrap ===
-                              true
+                                true
                             }
                             onMultipleModelSelectionsChange={setMultipleModelSelections}
                             composerRef={composerRef}
@@ -11101,7 +11256,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddAgents={addAgentsSurface}
-          {...(selectedProvider === "codex"
+          {...(!isSideChatSurface && selectedProvider === "codex"
             ? {
                 onAddSideChat: () => {
                   void addSideChatSurface();
@@ -11167,7 +11322,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddAgents={addAgentsSurface}
-            {...(selectedProvider === "codex"
+            {...(!isSideChatSurface && selectedProvider === "codex"
               ? {
                   onAddSideChat: () => {
                     void addSideChatSurface();
@@ -11235,7 +11390,7 @@ export default function ChatView(props: ChatViewProps) {
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
-      <LinkPullRequestDialogHost />
+      {!isSideChatSurface ? <LinkPullRequestDialogHost /> : null}
       {expandedImage && (
         <ExpandedImageDialog
           key={expandedImageKey(expandedImage)}
@@ -11245,4 +11400,6 @@ export default function ChatView(props: ChatViewProps) {
       )}
     </div>
   );
+
+  return <ChatSurfaceScopeContext value={surfaceScope}>{chatSurface}</ChatSurfaceScopeContext>;
 }

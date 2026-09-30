@@ -1313,7 +1313,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         );
       }
 
-      if (!parentThreadId) yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
+      yield* prepareMcpSession(input.binding.threadId, bindingInstanceId);
       const resumed = yield* adapter
         .startSession({
           threadId: input.binding.threadId,
@@ -1551,17 +1551,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             `Main thread '${parentThreadId}' has no compatible saved Codex history to fork.`,
           );
         }
-        const parentActiveSession = parentThreadId
-          ? (yield* listSessions()).find((session) => session.threadId === parentThreadId)
-          : undefined;
         const forkSource =
           parentThreadId && !effectiveResumeCursor && parentNativeThreadId
-            ? {
-                threadId: parentNativeThreadId,
-                ...(parentActiveSession?.activeTurnId
-                  ? { activeTurnId: String(parentActiveSession.activeTurnId) }
-                  : {}),
-              }
+            ? { threadId: parentNativeThreadId }
             : undefined;
         const effectiveCwd =
           (sideChatMode === "implement" ? (savedThread?.worktreePath ?? undefined) : input.cwd) ??
@@ -1603,7 +1595,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
-        if (!parentThreadId) yield* prepareMcpSession(threadId, resolvedInstanceId);
+        yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
             ...input,

@@ -18,12 +18,19 @@ already own an isolated worktree retain that checkout until deleted; cleanup
 follows your storage settings.
 
 Select text in a main-chat answer and choose **Ask in side chat** to cite it in a
-new or existing side chat. New side chats begin with **Supervised** access. Side
-chats can inherit completed main-chat history, but the current in-progress turn is not
-included. If the main chat has not completed a turn yet, the side chat begins
-without that history. Browser and device tools are not available in side chats.
+new or existing side chat. New side chats begin with **Supervised** access. On
+their first send, they inherit a snapshot of the main conversation, including
+available context from its current turn. Later main-chat messages do not
+automatically appear in an existing side chat.
 
-On desktop, each side chat starts with Jev off. Choose **Off**, **Guided**, or **Automatic** beside its model and effort controls. Guided reviews appear above that side chat's composer; the Jev panel keeps the routing log. Choose **Off** to use its selected model and effort. Each chat keeps its choice when you switch chats or reload.
+On web and desktop, side chats use the same transcript and composer as the main
+chat: attach files, mention skills, add context, choose Plan mode, and queue or
+steer follow-ups in the usual way. Browser and device tools follow the
+environment's access settings and operate in the side chat's own panels.
+
+On desktop, each side chat starts with Jev off. Open **Jev** in that chat to choose
+**Off**, **Guided**, or **Automatic**. Guided reviews appear above that side chat's
+composer; each chat keeps its choice when you switch chats or reload.
 
 On a side-chat answer, **Add to main draft** puts its text in the main composer for
 editing. **Send to main** sends the answer to the main Codex conversation. On mobile,

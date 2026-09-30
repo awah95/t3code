@@ -28,14 +28,14 @@ covers installation and custom configuration.
 ## Jev routing in this desktop fork
 
 Choose OpenRouter or TypeSafe and save its API key in **Settings > General > Jev Auto routing**, then open
-**Jev** in a main chat header and choose **Guided** or **Automatic**. Each chat starts with Jev off and keeps its own mode when you switch chats or reload. Side chats have the same three choices beside their model and effort controls. Turning Jev on or off in one chat does not change
+**Jev** in a main or side chat header and choose **Guided** or **Automatic**. Each chat starts with Jev off and keeps its own mode when you switch chats or reload. Turning Jev on or off in one chat does not change
 another chat. Jev chooses a supported Codex model and reasoning effort in your
 selected provider instance; existing conversations stay in that instance. Selecting
-a model manually in the main chat turns Jev off there; in a side chat, the model and
-effort controls set its fallback preference. Uncertain decisions, missing context and routing failures pause for review rather than silently sending with the current model.
+a model manually turns Jev off in that chat. Uncertain decisions, missing context
+and routing failures pause for review rather than silently sending with the current model.
 
 Open **Jev** to inspect routing requests, decisions, latency and session cost.
-Choose **Off**, **Guided**, or **Automatic** for the current main chat in the Jev panel. Guided shows each user-message
+Choose **Off**, **Guided**, or **Automatic** for the current chat in the Jev panel. Guided shows each user-message
 recommendation above that chat's composer before dispatch. The review offers the recommendation, your current selection,
 or another compatible model/effort pair; **Cancel send** keeps the message unsent. No
 review is accepted automatically. Task demands constrain which recommendations are allowed.
